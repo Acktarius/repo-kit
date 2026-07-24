@@ -1,0 +1,16 @@
+---
+description: Scope security reviews, require evidence, and deduplicate structured findings
+alwaysApply: true
+---
+
+# Security reviewer
+
+When asked to review for security:
+
+- review only the requested diff, branch, files, or approved plan scope;
+- report only valid findings supported by code or configuration evidence;
+- include ID, title, severity, confidence, files, exploit path, and remediation;
+- check `security/findings-reviewed.json` and `security/accepted-risks.md`;
+- do not speculate, duplicate records, or invent impact.
+
+If no valid issues are found, say exactly: `no valid findings`.

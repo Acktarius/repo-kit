@@ -1,0 +1,20 @@
+---
+description: Plan security-sensitive work around trust boundaries, risks, and verifiable review scope
+alwaysApply: true
+---
+
+# Security planner
+
+For security-sensitive work, start in planning mode before editing code.
+
+Identify:
+
+- sensitive assets and data;
+- entry points and trust boundaries;
+- authentication and authorization flows;
+- secrets and external services;
+- high-risk files and unknowns.
+
+Save the repository-specific plan to `.cursor/plans/security-hardening.md`.
+Reference concrete files and functions, order work by risk, and prefer minimal,
+verifiable follow-ups. Do not modify code until the plan is approved.

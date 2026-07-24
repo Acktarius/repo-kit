@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Security Findings Store",
+  "type": "object",
+  "required": ["repo", "findings"],
+  "properties": {
+    "repo": {
+      "type": "string",
+      "description": "Repository identifier"
+    },
+    "lastReviewed": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "status", "severity", "files"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^SG-[0-9]{3,}$" },
+          "title": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["open", "fixed", "accepted-risk", "duplicate", "rejected"]
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"]
+          },
+          "confidence": {
+            "type": ["string", "null"],
+            "enum": ["low", "medium", "high", null]
+          },
+          "firstSeen": { "type": ["string", "null"], "format": "date-time" },
+          "lastReviewed": { "type": ["string", "null"], "format": "date-time" },
+          "source": { "type": ["string", "null"] },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "summary": { "type": ["string", "null"] },
+          "exploitPath": { "type": ["string", "null"] },
+          "remediation": { "type": ["string", "null"] },
+          "duplicateOf": { "type": ["string", "null"] },
+          "acceptedRiskId": { "type": ["string", "null"] },
+          "notes": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
