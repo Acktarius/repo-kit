@@ -7,7 +7,7 @@ Human-readable mirror of `modules/*/manifest.sh`.
 - **Description:** Minimal repository scaffolding
 - **Depends:** —
 - **Conflicts:** —
-- **Provides:** `docs/repo-kit.md`, `docs/.gitkeep`
+- **Provides:** `.cursor/rules/plan-mode-safety.mdc`, `docs/repo-kit.md`, `docs/.gitkeep`
 
 ## typescript
 
@@ -17,6 +17,7 @@ Human-readable mirror of `modules/*/manifest.sh`.
 - **Provides:**
   - `.cursor/commands/package-preferences.md`
   - `.cursor/skills/package-preferences/SKILL.md`
+  - `.cursor/rules/code-comments.mdc`
   - `.biome.json`, `.gitattributes`, `.npmrc`, `tsconfig.json`
   - `.github/workflows/ci-check.yml`
   - `docs/typescript-standards.md`

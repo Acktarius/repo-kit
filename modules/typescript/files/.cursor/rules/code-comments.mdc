@@ -1,0 +1,25 @@
+---
+description: Keep code comments short (≤2 lines); put long guidance in docs/
+alwaysApply: true
+---
+
+# Code comments
+
+- Prefer **JSDoc** (`/** … */`) for modules, exports, and non-obvious APIs.
+- Inline/file comments: **at most two lines** of prose (plus tags like `@see`, `@param`).
+- If you need more than two lines of explanation, **do not** expand the comment — update the matching file under `docs/` and point at it with `@see`.
+- Do not paste runbooks, env tables, architecture narratives, or threat-model essays into source files.
+- Decorative section banners (`// ── Foo ──`) are optional; keep them to one line or omit them.
+- Biome does not enforce comment length; this rule is for humans and coding agents.
+
+## Examples
+
+```js
+/** Electron shell: Vite UI + holepunch-sidecar child. @see docs/architecture/electron-desktop.md */
+```
+
+```ts
+/** Post-connect L1 proof before marking connected. @see docs/security/encryption.md */
+```
+
+Avoid multi-paragraph file headers that duplicate `docs/`.
