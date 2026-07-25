@@ -59,4 +59,6 @@ echo "installing into ${TARGET_DIR}"
 echo "resolved: ${RESOLVED_MODULES[*]}"
 echo
 CURSOR_ONLY=0
+# install_modules copies module files/ (including base .chat seeds + chat-context
+# skill) and ensures .chat/{sessions,decisions,archive} via mkdir -p.
 install_modules

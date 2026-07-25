@@ -7,7 +7,14 @@ Human-readable mirror of `modules/*/manifest.sh`.
 - **Description:** Minimal repository scaffolding
 - **Depends:** —
 - **Conflicts:** —
-- **Provides:** `.cursor/rules/plan-mode-safety.mdc`, `docs/repo-kit.md`, `docs/.gitkeep`
+- **Provides:**
+  - `.cursor/rules/plan-mode-safety.mdc`
+  - `.cursor/commands/chat-context-refresh.md`
+  - `.cursor/commands/suggest-commit-message.md`
+  - `.cursor/skills/chat-context/SKILL.md` (plus `templates/`, `references/`)
+  - `.cursor/skills/suggest-commit-message/SKILL.md`
+  - `.chat/` scaffold (`current.json`, `current.md`, `sessions/`, `decisions/`, `archive/`)
+  - `docs/repo-kit.md`, `docs/.gitkeep`
 
 ## typescript
 
@@ -16,7 +23,9 @@ Human-readable mirror of `modules/*/manifest.sh`.
 - **Conflicts:** `cpp11`, `rust`
 - **Provides:**
   - `.cursor/commands/package-preferences.md`
+  - `.cursor/commands/biome-review.md`
   - `.cursor/skills/package-preferences/SKILL.md`
+  - `.cursor/skills/biome-review/SKILL.md`
   - `.cursor/rules/code-comments.mdc`
   - `.biome.json`, `.gitattributes`, `.npmrc`, `tsconfig.json`
   - `.github/workflows/ci-check.yml`
@@ -62,5 +71,6 @@ Human-readable mirror of `modules/*/manifest.sh`.
 - **Provides:**
   - `.cursor/commands/rust-setup.md`
   - `.cursor/skills/rust-standards/SKILL.md`
+  - `.cursor/rules/doc-and-readme.mdc`
   - `rustfmt.toml`
   - `docs/rust-guidelines.md`

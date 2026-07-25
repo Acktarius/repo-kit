@@ -186,6 +186,19 @@ copy_module_files() {
   done < <(find "${src_root}" -type f -print0 | sort -z)
 }
 
+# Ensure project-local .chat/ dirs exist (idempotent).
+# Seed files (.chat/current.json, current.md, *.gitkeep) come from base/files
+# via _copy_file (skipped unless --force). mkdir covers empty dirs on re-run.
+ensure_chat_scaffold() {
+  local chat_root="${TARGET_DIR}/.chat"
+  mkdir -p \
+    "${chat_root}" \
+    "${chat_root}/sessions" \
+    "${chat_root}/decisions" \
+    "${chat_root}/archive"
+  echo "chat scaffold: ${chat_root#"${TARGET_DIR}"/}/{sessions,decisions,archive}"
+}
+
 install_modules() {
   local name
   ADDED_COUNT=0
@@ -197,6 +210,11 @@ install_modules() {
   for name in "${RESOLVED_MODULES[@]}"; do
     copy_module_files "${name}"
   done
+
+  # .chat/ is project data, not a Cursor asset — skip during sync-cursor.
+  if [[ "${CURSOR_ONLY}" -eq 0 ]] && array_contains "base" "${RESOLVED_MODULES[@]}"; then
+    ensure_chat_scaffold
+  fi
 
   echo
   echo "summary"
