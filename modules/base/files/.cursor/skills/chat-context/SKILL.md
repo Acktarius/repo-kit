@@ -54,19 +54,38 @@ Always capture:
 - Write human-readable handoff to `current.md`.
 - Create optional timestamped snapshots in `.chat/sessions/`.
 
+## Privacy — never log
+
+**Never write any of the following into `.chat/` files** (including
+`current.*`, `sessions/`, `decisions/`, `archive/`), confirmations, or notes:
+
+- Secrets: passwords, API keys, tokens, credentials, private keys, connection
+  strings with credentials, `.env` values, auth headers/cookies
+- Phone numbers
+- Email addresses
+- IP addresses (IPv4 or IPv6)
+
+If the session needs the *fact* that something sensitive was used, redact it:
+write a placeholder (e.g. `[REDACTED_TOKEN]`, `[REDACTED_EMAIL]`) or refer by
+role/path only (`"API key from CI secret"`, `".env:DATABASE_URL"`). Strip
+sensitive values from copied commands, logs, URLs, and error messages before
+writing. When merging an existing handoff, remove any of the above if present.
+
 ## Workflow
 
 1. Read existing `.chat/current.json` / `.chat/current.md` when present; merge
    forward rather than discarding prior handoff unless the user asks to reset.
 2. Infer fields from the conversation and repo evidence (paths, commands run,
-   decisions stated). Prefer concrete paths and short bullets.
+   decisions stated). Prefer concrete paths and short bullets. Scrub per
+   **Privacy — never log** before writing.
 3. Set `timestamp` to ISO-8601 UTC (e.g. `2026-07-24T21:08:00Z`).
 4. Write `.chat/current.json` using the template schema (camelCase keys).
 5. Write `.chat/current.md` using the template section layout.
 6. When checkpointing or the user asks to snapshot, also copy both files to:
    `.chat/sessions/YYYYMMDD-HHMMSS-<slug>.json` and `.md`
    (`slug` from a short kebab-case title fragment).
-7. Reply with a one-line confirmation: title, next step, and paths written.
+7. Reply with a one-line confirmation: title, next step, and paths written
+   (still no secrets/PII).
 
 ## Compactness
 

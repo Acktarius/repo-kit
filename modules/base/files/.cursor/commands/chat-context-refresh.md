@@ -18,4 +18,5 @@ Read `.cursor/skills/chat-context/SKILL.md` and follow it.
 - Keep only goal, constraints, decisions made, unresolved questions, relevant files, relevant commands, artifacts, next step, notes, and tags.
 - Prefer compact wording.
 - Preserve exact file paths and commands when known.
+- Never log secrets, phone numbers, email addresses, or IP addresses (scrub/redact before write).
 - If `.chat/` does not exist, instruct the user to run project init or create it safely if project conventions allow.

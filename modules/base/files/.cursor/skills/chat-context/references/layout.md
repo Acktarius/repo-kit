@@ -21,3 +21,6 @@ Use camelCase keys matching `templates/current.json`:
 `nextStep`, `notes`, `tags`.
 
 Array fields hold short strings. Prefer paths relative to the repo root.
+
+Never store secrets, phone numbers, email addresses, or IP addresses in any
+`.chat/` file. Redact before write; see `SKILL.md` → Privacy.
