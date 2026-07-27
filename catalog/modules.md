@@ -60,6 +60,7 @@ Human-readable mirror of `modules/*/manifest.sh`.
 - **Provides:**
   - `.cursor/commands/cpp11-setup.md`
   - `.cursor/skills/cpp11-standards/SKILL.md`
+  - `.cursor/rules/main-rule.mdc`, `architecture.mdc`, `docs.mdc`, and `planning.mdc`
   - `.clang-format`, `CMakeLists.txt`
   - `docs/cpp11-guidelines.md`
 

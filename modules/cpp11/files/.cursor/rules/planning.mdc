@@ -1,0 +1,51 @@
+---
+description: Keep plans, roadmaps, and strategy documentation aligned with implementation changes
+alwaysApply: true
+---
+
+# Planning synchronization rule
+
+Planning artifacts are part of the deliverable, not optional follow-up work.
+
+When a task changes scope, priorities, sequencing, assumptions, dependencies, risks, milestones, rollout approach, or post-quantum direction:
+
+1. Review `docs/` before making planning updates.
+2. Find the most relevant existing plan, roadmap, strategy note, or migration document.
+3. Update the existing document instead of creating a near-duplicate whenever possible.
+4. If the new work supersedes an older plan, mark the older plan as superseded and link to the replacement.
+5. Preserve decision history when the team changes direction; do not silently overwrite prior assumptions.
+
+## Trigger conditions
+
+This rule applies when a task changes any of the following:
+- Post-quantum migration phases or sequencing
+- Priority order of technical work
+- Definition of milestones, release gates, or deliverables
+- Risk assumptions or dependency assumptions
+- Success criteria, acceptance criteria, or measurement criteria
+- Rollout, compatibility, fallback, or deprecation strategy
+- Benchmarks that influence roadmap decisions
+- Cross-team coordination needs or workstream ownership
+
+## Required planning actions
+
+When triggered, the assistant must:
+- Review affected documents in `docs/`
+- Update sections such as `Status`, `Scope`, `Dependencies`, `Risks`, `Open Questions`, `Milestones`, `Rollout`, or `Next Steps`
+- Note whether the change is incremental, corrective, or a strategy shift
+- Add a short dated update note when the change materially alters previous direction
+- Keep planning language consistent with current code and architecture terminology
+
+## Completion gate
+
+The task is not complete until one of these is true:
+- The relevant planning docs in `docs/` were updated, or
+- The assistant explicitly states that planning docs were reviewed and no update was needed, with a one-sentence reason
+
+## Preferred output note
+
+At the end of the task, include a short planning impact summary:
+- Plans updated: [list]
+- Plans reviewed but unchanged: [list]
+- Strategy shift: [yes/no]
+- Reason if unchanged: [one sentence]

@@ -20,6 +20,7 @@ Existing files are skipped unless --force is passed.
 Examples:
   ./scripts/sync-cursor.sh /path/to/project --typescript --security
   ./scripts/sync-cursor.sh /path/to/project --react --force
+  ./scripts/sync-cursor.sh /path/to/project --cpp11
   ./scripts/sync-cursor.sh --list
 EOF
 }

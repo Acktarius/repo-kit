@@ -10,5 +10,6 @@
 
 - Command: `cpp11-setup`
 - Skill: `cpp11-standards`
+- Rules: `main-rule`, `architecture`, `docs`, `planning`
 
 Create `src/main.cpp` (or adjust `CMakeLists.txt`) after init.
