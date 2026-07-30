@@ -4,4 +4,7 @@ This repository was initialized with **repo-kit**. Keep standards docs under `do
 
 Session handoff lives under `.chat/` (see `.cursor/skills/chat-context/`).
 
+Crypto security review notes live under gitignored `.findings/` (see
+`.cursor/skills/crypto-security-review/`).
+
 Do not rely on symlinks back to the kit — copied files are the project source of truth after init.

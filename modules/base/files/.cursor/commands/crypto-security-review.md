@@ -74,3 +74,16 @@ Then still provide:
 - likely weak spots
 - assumptions that must be validated manually
 - tests or abuse cases to run next
+
+## Persist to `.findings/`
+
+After the review (including when there are confirmed findings):
+
+1. Ensure root `.gitignore` includes `.findings/` (add if missing).
+2. Write each confirmed finding to `.findings/NN-slug.md` in risk order
+   (`01-…`, `02-…`, kebab-case slug from the short title).
+3. Each file = finding body + `# follow-up` with `- [ ]` items for that topic
+   only (from suggested solution / residual risk).
+4. Replace this run’s set; delete leftover higher-index `.findings/*.md` from a
+   prior run.
+5. Do not commit `.findings/` contents. Summarize paths written in chat.
