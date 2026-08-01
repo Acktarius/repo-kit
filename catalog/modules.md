@@ -14,7 +14,7 @@ Human-readable mirror of `modules/*/manifest.sh`.
   - `.cursor/commands/crypto-security-review.md`
   - `.cursor/skills/chat-context/SKILL.md` (plus `templates/`, `references/`)
   - `.cursor/skills/suggest-commit-message/SKILL.md`
-  - `.cursor/skills/crypto-security-review/SKILL.md` (persists to gitignored `.findings/`)
+  - `.cursor/skills/crypto-security-review/SKILL.md` (persists to gitignored `.repo-kit/findings/`)
   - `.chat/` scaffold (`current.json`, `current.md`, `sessions/`, `decisions/`, `archive/`)
   - `docs/repo-kit.md`, `docs/.gitkeep`
 

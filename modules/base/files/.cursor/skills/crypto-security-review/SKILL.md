@@ -4,7 +4,7 @@ description: >-
   Senior application security review with cryptography focus. Use when reviewing
   code, diffs, or architecture for exploitable flaws, cryptographic misuse,
   trust-boundary errors, unsafe assumptions, or protocol weaknesses. Persists
-  confirmed findings under gitignored .findings/.
+  confirmed findings under gitignored .repo-kit/findings/.
 ---
 
 # Crypto Security Review
@@ -58,7 +58,7 @@ When cryptography is present, explicitly check for:
 - If no confirmed flaw is found, say that clearly and list the highest-value manual checks.
 - Emit findings as Markdown, sorted by risk (Critical → High → Medium → Low). Within the same severity, put higher confidence first.
 - Every finding must include a concrete suggested solution (smallest safe remediation).
-- After the review, persist confirmed findings under `.findings/` (see **Persist findings**).
+- After the review, persist confirmed findings under `.repo-kit/findings/` (see **Persist findings**).
 
 ## Severity guidance
 
@@ -96,8 +96,8 @@ For each finding, use exactly this structure:
 
 Local working notes — not for commit.
 
-1. Ensure root `.gitignore` contains `.findings/` (add it if missing).
-2. Create `.findings/` if needed.
+1. Ensure root `.gitignore` contains `.repo-kit/findings/` (add it if missing).
+2. Create `.repo-kit/findings/` if needed.
 3. For this review run, write one file per **confirmed** finding, sorted by risk
    (then higher confidence within the same severity).
 4. Filename: zero-padded index + kebab-case slug from the short title, e.g.
@@ -113,12 +113,14 @@ Local working notes — not for commit.
 
 6. Follow-up items are per-topic: actionable remediations and checks for that
    finding only (not the global remediation plan dump).
-7. Replace this review’s set: write `01…N`; remove leftover `.findings/*.md`
-   with higher indices from a prior run.
+7. Replace this review’s set: write `01…N`; remove leftover
+   `.repo-kit/findings/*.md` with higher indices from a prior run.
 8. If there are no confirmed findings, do not invent files; still ensure
-   `.findings/` is gitignored. Optionally leave a short note in the chat only.
+   `.repo-kit/findings/` is gitignored. Optionally leave a short note in the
+   chat only.
 
-Do not commit `.findings/` contents. Committing the `.gitignore` line is fine.
+Do not commit `.repo-kit/findings/` contents. Committing the `.gitignore` line
+is fine.
 
 ## Preferred style
 
