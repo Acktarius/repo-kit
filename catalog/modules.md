@@ -81,6 +81,7 @@ Human-readable mirror of `modules/*/manifest.sh`.
 ## Extensions
 
 Not modules — install with `--ext <name>` on `init.sh` / `sync-cursor.sh`.
+Extension deps resolve like modules (`forge` → `openspec` first).
 
 ### continue
 
@@ -91,3 +92,17 @@ Not modules — install with `--ext <name>` on `init.sh` / `sync-cursor.sh`.
   - `.repo-kit/bashrc_repokit` (sourced from `~/.bashrc`)
 - **Host deps (prompted):** `cn`, `python3`, `grep`, `gh`, `curl`, `rg`
 - **`ai-git-issue`:** drafts GitHub issues from `.repo-kit/findings/*.md` via `cn -p`, creates them with `gh`
+
+### openspec
+
+- **Description:** OpenSpec CLI + Cursor-oriented project init
+- **Depends:** —
+- **Host:** `npm i -g @fission-ai/openspec@latest`
+- **Target:** `openspec init --tools cursor` when `openspec/config.yaml` is missing (re-run with `--force`)
+
+### forge
+
+- **Description:** [Forgekit](https://github.com/izkac/forgekit) skills + `forge` project wiring
+- **Depends:** `openspec` (always installed first)
+- **Host:** `npm i -g @izkac/forgekit@latest`, then `forgekit install --skills forge --agents cursor --openspec --force`
+- **Target:** `forge init --cursor --openspec` when `.forge/config.json` is missing (re-run with `--force`)

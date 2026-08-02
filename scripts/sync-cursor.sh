@@ -11,11 +11,14 @@ usage() {
 Usage:
   ./scripts/sync-cursor.sh <target> --<module> [--<module> ...] [--ext <name>] [--force]
   ./scripts/sync-cursor.sh <target> --ext continue
+  ./scripts/sync-cursor.sh <target> --ext openspec
+  ./scripts/sync-cursor.sh <target> --ext forge
   ./scripts/sync-cursor.sh --list
   ./scripts/sync-cursor.sh --help
 
 Copy only files under each selected module's files/.cursor/ into <target>/.cursor/.
-Optionally install extensions with --ext (currently: continue).
+Optionally install extensions with --ext (continue, openspec, forge).
+--ext forge always installs openspec first.
 Dependencies and conflicts are resolved the same way as init.sh.
 Existing files are skipped unless --force is passed.
 
@@ -24,6 +27,7 @@ Examples:
   ./scripts/sync-cursor.sh /path/to/project --react --force
   ./scripts/sync-cursor.sh /path/to/project --cpp11
   ./scripts/sync-cursor.sh /path/to/project --ext continue
+  ./scripts/sync-cursor.sh /path/to/project --ext forge
   ./scripts/sync-cursor.sh /path/to/project --base --ext continue --force
   ./scripts/sync-cursor.sh --list
 EOF
@@ -47,7 +51,7 @@ fi
 }
 if [[ ${#SELECTED_MODULES[@]} -eq 0 && ${#SELECTED_EXTENSIONS[@]} -eq 0 ]]; then
   usage >&2
-  die "select at least one module (e.g. --typescript) or --ext continue"
+  die "select at least one module (e.g. --typescript) or --ext (continue|openspec|forge)"
 fi
 
 mkdir -p "${TARGET_DIR}"

@@ -11,11 +11,14 @@ usage() {
 Usage:
   ./scripts/init.sh <target> --<module> [--<module> ...] [--ext <name>] [--force]
   ./scripts/init.sh <target> --ext continue
+  ./scripts/init.sh <target> --ext openspec
+  ./scripts/init.sh <target> --ext forge
   ./scripts/init.sh --list
   ./scripts/init.sh --help
 
 Copy selected modules (and their dependencies) into <target>.
-Optionally install extensions with --ext (currently: continue).
+Optionally install extensions with --ext (continue, openspec, forge).
+--ext forge always installs openspec first.
 Existing files are skipped unless --force is passed.
 
 Examples:
@@ -25,6 +28,8 @@ Examples:
   ./scripts/init.sh /path/to/project --rust --security
   ./scripts/init.sh /path/to/project --base --force
   ./scripts/init.sh /path/to/project --ext continue
+  ./scripts/init.sh /path/to/project --ext openspec
+  ./scripts/init.sh /path/to/project --ext forge
   ./scripts/init.sh /path/to/project --typescript --ext continue
   ./scripts/init.sh --list
 EOF
@@ -49,7 +54,7 @@ fi
 }
 if [[ ${#SELECTED_MODULES[@]} -eq 0 && ${#SELECTED_EXTENSIONS[@]} -eq 0 ]]; then
   usage >&2
-  die "select at least one module (e.g. --typescript) or --ext continue"
+  die "select at least one module (e.g. --typescript) or --ext (continue|openspec|forge)"
 fi
 
 # Resolve absolute target for cleaner summary paths

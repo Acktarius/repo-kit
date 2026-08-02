@@ -20,7 +20,7 @@ SKIPPED_COUNT=0
 OVERWRITTEN_COUNT=0
 
 # Known extensions (non-module tooling). Expand as new --ext values land.
-KNOWN_EXTENSIONS=("continue")
+KNOWN_EXTENSIONS=("continue" "openspec" "forge")
 
 die() {
   echo "error: $*" >&2
@@ -148,22 +148,16 @@ list_modules() {
   done
 
   echo
-  printf "%-12s  %s\n" "EXTENSION" "DESCRIPTION"
-  printf "%-12s  %s\n" "---------" "-----------"
-  local ext_dir ext_name ext_desc
+  printf "%-12s  %-50s  %s\n" "EXTENSION" "DESCRIPTION" "DEPENDS"
+  printf "%-12s  %-50s  %s\n" "---------" "-----------" "-------"
+  local ext_dir ext_name ext_desc ext_depends
   for name in "${KNOWN_EXTENSIONS[@]}"; do
-    ext_dir="${EXTENSIONS_DIR}/${name}"
-    ext_name="${name}"
-    ext_desc="(no manifest)"
-    if [[ -f "${ext_dir}/manifest.sh" ]]; then
-      EXT_NAME=""
-      EXT_DESC=""
-      # shellcheck source=/dev/null
-      source "${ext_dir}/manifest.sh"
-      ext_name="${EXT_NAME:-${name}}"
-      ext_desc="${EXT_DESC:-}"
-    fi
-    printf "%-12s  %s\n" "${ext_name}" "${ext_desc}"
+    load_ext_manifest "${name}"
+    ext_name="${EXT_NAME:-${name}}"
+    ext_desc="${EXT_DESC:-}"
+    ext_depends="${EXT_DEPENDS[*]:-}"
+    [[ -n "${ext_depends}" ]] || ext_depends="-"
+    printf "%-12s  %-50s  %s\n" "${ext_name}" "${ext_desc}" "${ext_depends}"
   done
 }
 
@@ -313,6 +307,60 @@ extension_exists() {
   return 1
 }
 
+# Load one extension's manifest into EXT_* variables (caller scope).
+load_ext_manifest() {
+  local name="$1"
+  local manifest="${EXTENSIONS_DIR}/${name}/manifest.sh"
+  EXT_NAME="${name}"
+  EXT_DESC=""
+  EXT_DEPENDS=()
+  [[ -f "${manifest}" ]] || return 0
+  # shellcheck source=/dev/null
+  source "${manifest}"
+}
+
+# Resolve SELECTED_EXTENSIONS in-place: deps first (e.g. forge → openspec then forge).
+resolve_extension_dependencies() {
+  [[ ${#SELECTED_EXTENSIONS[@]} -gt 0 ]] || return 0
+
+  local selected=("${SELECTED_EXTENSIONS[@]}")
+  local resolved=()
+  local visiting=()
+  local visited=()
+
+  _resolve_ext_one() {
+    local name="$1"
+    local dep
+
+    extension_exists "${name}" || die "unknown extension '${name}'"
+
+    if array_contains "${name}" "${visited[@]+"${visited[@]}"}"; then
+      return 0
+    fi
+    if array_contains "${name}" "${visiting[@]+"${visiting[@]}"}"; then
+      die "circular extension dependency involving '${name}'"
+    fi
+
+    visiting+=("${name}")
+    load_ext_manifest "${name}"
+    for dep in "${EXT_DEPENDS[@]+"${EXT_DEPENDS[@]}"}"; do
+      _resolve_ext_one "${dep}"
+    done
+    if [[ ${#visiting[@]} -gt 0 ]]; then
+      visiting=("${visiting[@]:0:$((${#visiting[@]} - 1))}")
+    fi
+    visited+=("${name}")
+    resolved+=("${name}")
+  }
+
+  local sel
+  for sel in "${selected[@]+"${selected[@]}"}"; do
+    _resolve_ext_one "${sel}"
+  done
+
+  SELECTED_EXTENSIONS=("${resolved[@]}")
+}
+
 # Idempotently append/update a source line in ~/.bashrc for this target.
 hook_bashrc_repokit() {
   local bashrc_file="$1"
@@ -407,13 +455,73 @@ install_continue_ext() {
   echo "  or:            source ${bashrc_dest}"
 }
 
+# Host: npm i -g @fission-ai/openspec@latest; project: openspec init --tools cursor if needed.
+install_openspec_ext() {
+  echo "extension: openspec"
+
+  cmd_exists npm || die "npm is required to install openspec (@fission-ai/openspec)"
+
+  echo "  npm i -g @fission-ai/openspec@latest..."
+  npm i -g @fission-ai/openspec@latest
+  cmd_exists openspec || die "installed openspec but it is still not on PATH"
+
+  if [[ -f "${TARGET_DIR}/openspec/config.yaml" && "${FORCE_COPY}" -eq 0 ]]; then
+    echo "  openspec already initialized in ${TARGET_DIR}; skipping init (pass --force to re-run)"
+    return 0
+  fi
+
+  echo "  openspec init --tools cursor..."
+  (
+    cd "${TARGET_DIR}"
+    if [[ "${FORCE_COPY}" -eq 1 ]]; then
+      openspec init --tools cursor --force
+    else
+      openspec init --tools cursor
+    fi
+  )
+  echo "  openspec ready in ${TARGET_DIR}"
+}
+
+# Host: npm i -g @izkac/forgekit@latest + forgekit install; project: forge init if needed.
+# Ordering: resolve_extension_dependencies always runs openspec before forge.
+install_forge_ext() {
+  echo "extension: forge"
+
+  cmd_exists npm || die "npm is required to install forgekit (@izkac/forgekit)"
+
+  echo "  npm i -g @izkac/forgekit@latest..."
+  npm i -g @izkac/forgekit@latest
+  cmd_exists forgekit || die "installed forgekit but it is still not on PATH"
+  cmd_exists forge || die "installed forgekit but 'forge' is still not on PATH"
+
+  echo "  forgekit install (cursor + openspec)..."
+  forgekit install --skills forge --agents cursor --openspec --force
+
+  if [[ -f "${TARGET_DIR}/.forge/config.json" && "${FORCE_COPY}" -eq 0 ]]; then
+    echo "  forge already initialized in ${TARGET_DIR}; skipping init (pass --force to re-run)"
+    return 0
+  fi
+
+  echo "  forge init --cursor --openspec..."
+  (
+    cd "${TARGET_DIR}"
+    forge init --cursor --openspec
+  )
+  echo "  forge ready in ${TARGET_DIR}"
+}
+
 install_extensions() {
   local name
   [[ ${#SELECTED_EXTENSIONS[@]} -gt 0 ]] || return 0
 
+  resolve_extension_dependencies
+  echo "extensions: ${SELECTED_EXTENSIONS[*]}"
+
   for name in "${SELECTED_EXTENSIONS[@]}"; do
     case "${name}" in
       continue) install_continue_ext ;;
+      openspec) install_openspec_ext ;;
+      forge) install_forge_ext ;;
       *) die "unsupported extension '${name}'" ;;
     esac
   done
