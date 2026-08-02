@@ -394,6 +394,8 @@ hook_bashrc_repokit() {
 install_continue_ext() {
   local ext_root="${EXTENSIONS_DIR}/continue"
   local scripts_src="${ext_root}/files/scripts"
+  local cursor_rules_src="${ext_root}/files/.cursor/rules"
+  local agents_src="${ext_root}/files/AGENTS.md"
   local rules_src="${ext_root}/.continue/rules"
   local prompts_src="${ext_root}/.continue/prompts"
   local template="${ext_root}/bashrc_repokit"
@@ -417,8 +419,19 @@ install_continue_ext() {
     warn "~/.continue/config.yaml not found — Continue CLI may need local config before cn works"
   fi
 
-  echo "  copying .continue/rules and prompts..."
+  echo "  copying .cursor/rules (dispatch + continue-sidekick)..."
   shopt -s nullglob
+  for src in "${cursor_rules_src}"/*; do
+    [[ -f "${src}" ]] || continue
+    dest="${TARGET_DIR}/.cursor/rules/$(basename "${src}")"
+    _copy_file "${src}" "${dest}"
+  done
+
+  echo "  copying AGENTS.md..."
+  [[ -f "${agents_src}" ]] || die "continue extension missing files/AGENTS.md"
+  _copy_file "${agents_src}" "${TARGET_DIR}/AGENTS.md"
+
+  echo "  copying .continue/rules and prompts..."
   for src in "${rules_src}"/*; do
     [[ -f "${src}" ]] || continue
     dest="${TARGET_DIR}/.continue/rules/$(basename "${src}")"

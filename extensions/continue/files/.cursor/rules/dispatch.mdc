@@ -1,0 +1,84 @@
+---
+description: Minimize Cursor token spending by routing search, drafting, coding, and review work to the cheapest effective tool first.
+alwaysApply: true
+---
+# Dispatch policy
+
+## Goal
+Use the cheapest tool that can complete the task reliably.
+Preserve Cursor Agent tokens for repo-aware coding, multi-file edits, refactors, debugging, and changes that need strong in-editor context.
+
+## Routing rules
+
+### Search and factual lookup
+When the request is mainly research, documentation lookup, API reference lookup, release-note lookup, or internet search:
+- Do not spend Cursor tokens on broad research first.
+- Prefer Perplexity Ask via MCP.
+- Prefer terminal tools for direct retrieval when a URL or domain is already known, for example `curl`, `wget`, `grep`, `rg`, `sed`, or local docs search.
+- Return a short findings summary, then ask whether implementation in code is needed.
+
+### Drafting and lightweight generation
+When the request is mainly:
+- README writing
+- small code snippets
+- boilerplate
+- summarization
+- rewrite/cleanup
+- regex help
+- isolated functions with low repo context
+
+Then:
+- Recommend Continue with local Qwen 2.5 14B Q4 first.
+- Keep the task narrow and file-scoped.
+- If the local result looks weak, incomplete, or the user asks for a higher quality pass, suggest Kilo as a second pass.
+- Only switch to Cursor Agent when the task requires repo-wide awareness or direct codebase edits.
+
+### Coding and repo changes
+When the request involves:
+- multi-file implementation
+- refactoring
+- debugging across files
+- agentic editing
+- tests and fixes in the repo
+- architecture-aware changes
+
+Then:
+- Use Cursor Agent.
+- Before acting, restate the exact files, scope, and acceptance criteria.
+- Avoid broad repo scans unless necessary.
+- Prefer targeted edits over exploratory changes.
+- Prefer patching existing files over generating large new systems from scratch.
+
+### Review and verification
+When the request is mainly review, QA, sanity checking, regression checking, or second-opinion validation:
+- Prefer Kilo as reviewer for Cursor output.
+- For a cheap parallel sanity pass, use Continue (`cn -p --silent`) per `.cursor/rules/continue-sidekick.mdc` — sidekick only, limited context; not Forge-certified or high-risk final authority.
+- Ask for a diff, changed files, or commit hash if available.
+- Focus review on correctness, regressions, edge cases, and test gaps.
+- If no external review is available, perform an in-Cursor review only after implementation is complete.
+
+## Cost controls
+- Never do broad internet research in Cursor if Perplexity or terminal retrieval can do it first.
+- Never use Cursor first for README drafts or trivial snippets.
+- Ask for exact filenames before starting repo work.
+- Keep prompts concrete: objective, files, constraints, acceptance criteria.
+- Stop and clarify when the task is ambiguous rather than exploring with expensive agent loops.
+- For large work, propose a plan before editing.
+- Prefer one bounded task per run.
+
+## Preferred workflow
+1. Search: Perplexity Ask via MCP or terminal retrieval.
+2. Draft: Continue with local Qwen first.
+3. Implement: Cursor Agent only when repo-aware coding is actually needed.
+4. Review: Kilo reviews Cursor output before commit when possible; Continue sidekick optional for cheap passes (see continue-sidekick.mdc).
+
+## Response behavior
+If a user asks for something that fits search or draft categories, explicitly recommend the cheaper path first.
+If the user still wants Cursor to do it, comply but state that it is not the cheapest route.
+If the task crosses categories, split it into phases: research, draft, implement, review.
+
+## Examples
+- "Search latest library docs" -> Perplexity Ask or terminal fetch first.
+- "Write a README for this small tool" -> Continue/Qwen first.
+- "Refactor auth flow across backend and frontend" -> Cursor Agent.
+- "Review this diff for bugs" -> Kilo review first.

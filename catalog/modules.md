@@ -85,8 +85,10 @@ Extension deps resolve like modules (`forge` → `openspec` first).
 
 ### continue
 
-- **Description:** Continue CLI (`cn`) project rules/prompts, `ai-*.sh` helpers, and bashrc PATH hook
+- **Description:** Continue CLI (`cn`) project rules/prompts, Cursor dispatch rules, `AGENTS.md`, `ai-*.sh` helpers, and bashrc PATH hook
 - **Provides:**
+  - `.cursor/rules/continue-sidekick.mdc`, `.cursor/rules/dispatch.mdc`
+  - `AGENTS.md` (cheap-tool dispatch policy at target root)
   - `.continue/rules/`, `.continue/prompts/`
   - `.repo-kit/scripts/ai-*.sh` (`ai-commit`, `ai-context`, `ai-dep`, `ai-prompter`, `ai-git-issue`)
   - `.repo-kit/bashrc_repokit` (sourced from `~/.bashrc`)

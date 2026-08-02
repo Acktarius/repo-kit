@@ -1,0 +1,55 @@
+---
+description: Use Continue (local Qwen 2.5 14B Q4) as a cheap review/draft sidekick with limited context — never as the authoritative Forge or security reviewer.
+alwaysApply: true
+---
+
+# Continue sidekick (local Qwen)
+
+Continue CLI runs a **local** model (`Qwen2.5-14B` Q4). It is cheap and useful, but **context-limited** and weaker than Cursor/Kilo on multi-file or security judgment.
+
+## Role
+
+- **Sidekick only** — second opinion, sanity check, or first draft.
+- **Not** the Forge host-certified reviewer (task/final), money/auth/contracts gate, or crypto-security authority.
+- Forge / Cursor Task / Kilo keep the authoritative review record.
+
+## When to use
+
+Prefer `cn -p --silent` for:
+
+- Short task-review packets (APPROVED/REJECTED + a few bullets)
+- Doc / checklist / finding follow-up sanity passes
+- Narrow rewrites, summaries, small snippets (also see `dispatch.mdc`)
+- Parallel cheap check while a Cursor Task reviewer runs
+
+Skip Continue when the job needs broad repo reads, deep architecture, or high-risk final sign-off.
+
+## How to invoke
+
+```bash
+cn -p --silent "$(cat <<'EOF'
+Sidekick review. No tools. Answer only from this paste.
+
+<tight packet: goal, 1–3 file paths, small excerpts or summary>
+Reply APPROVED or REJECTED and up to N short bullets.
+EOF
+)"
+```
+
+- Paste a **tight packet** (paths + short excerpt/summary). Do not ask it to “read the repo.”
+- Say **no tools** so it does not emit tool-call JSON.
+- If the sandbox blocks the CLI, retry with unrestricted permissions (`all` / full network as needed).
+- One weak or empty reply → one smaller retry, then escalate to Cursor/Kilo. Do not loop.
+
+## Authority and Forge
+
+- Continue APPROVED does **not** replace a Forge Task `task-review.md` / `final-review.md`.
+- Continue cannot satisfy the money/auth/contracts independent-review floor.
+- Record Continue notes optionally under the session task folder; keep the official `Reviewer:` line on the dispatched reviewer (or coordinator self-check phrase when pace allows).
+
+## Anti-patterns
+
+- Dumping large diffs or whole files into the prompt
+- Treating Continue as the only review on bridge/crypto/auth changes
+- Expecting reliable file reads or tool use from the local model
+- Burning paid tokens re-explaining after Continue already answered a narrow question well enough
