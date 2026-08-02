@@ -4,6 +4,8 @@ Portable starter kit for Cursor-based repository standards.
 
 Copy selected **modules** into a target repo. repo-kit is the source of truth; targets commit copied files (no symlinks).
 
+Optional **extensions** (via `--ext`) install non-module tooling such as Continue CLI helpers.
+
 ## Layout
 
 ```text
@@ -15,6 +17,8 @@ repo-kit/
     security/
     cpp11/
     rust/
+  extensions/
+    continue/       # Continue rules/prompts + ai-*.sh (not a module)
   scripts/
     init.sh
     list-modules.sh
@@ -28,7 +32,7 @@ Each module has `files/` (ready to copy) and `manifest.sh` (name, description, d
 
 ## Usage
 
-List modules:
+List modules and extensions:
 
 ```bash
 ./scripts/list-modules.sh
@@ -42,16 +46,30 @@ Initialize a project (resolves dependencies, detects conflicts):
 ./scripts/init.sh /path/to/project --cpp11
 ./scripts/init.sh /path/to/project --rust --security
 ./scripts/init.sh /path/to/project --base --force
+./scripts/init.sh /path/to/project --ext continue
+./scripts/init.sh /path/to/project --typescript --ext continue
 ```
 
-Sync only Cursor assets (`.cursor/`) into an existing project:
+Sync only Cursor assets (`.cursor/`) into an existing project (extensions still install fully when `--ext` is passed):
 
 ```bash
 ./scripts/sync-cursor.sh /path/to/project --typescript --security
 ./scripts/sync-cursor.sh /path/to/project --react --force
+./scripts/sync-cursor.sh /path/to/project --ext continue
 ```
 
 Existing files are **skipped** unless `--force` is passed.
+
+## Extensions
+
+| Extension | Notes |
+|-----------|-------|
+| `continue` | Checks/prompts for `cn`, `python3`, `grep`, `gh`, `curl`, `rg`; copies `.continue/{rules,prompts}`; copies `ai-*.sh` to `.repo-kit/scripts/` (`ai-commit`, `ai-context`, `ai-dep`, `ai-prompter`, `ai-git-issue`); writes `.repo-kit/bashrc_repokit` and hooks `~/.bashrc` |
+
+```bash
+./scripts/init.sh /path/to/project --ext continue
+source ~/.bashrc   # activate PATH + aliases
+```
 
 ## Module lanes
 

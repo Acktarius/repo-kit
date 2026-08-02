@@ -77,3 +77,17 @@ Human-readable mirror of `modules/*/manifest.sh`.
   - `.cursor/rules/doc-and-readme.mdc`
   - `rustfmt.toml`
   - `docs/rust-guidelines.md`
+
+## Extensions
+
+Not modules — install with `--ext <name>` on `init.sh` / `sync-cursor.sh`.
+
+### continue
+
+- **Description:** Continue CLI (`cn`) project rules/prompts, `ai-*.sh` helpers, and bashrc PATH hook
+- **Provides:**
+  - `.continue/rules/`, `.continue/prompts/`
+  - `.repo-kit/scripts/ai-*.sh` (`ai-commit`, `ai-context`, `ai-dep`, `ai-prompter`, `ai-git-issue`)
+  - `.repo-kit/bashrc_repokit` (sourced from `~/.bashrc`)
+- **Host deps (prompted):** `cn`, `python3`, `grep`, `gh`, `curl`, `rg`
+- **`ai-git-issue`:** drafts GitHub issues from `.repo-kit/findings/*.md` via `cn -p`, creates them with `gh`

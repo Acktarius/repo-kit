@@ -1,0 +1,17 @@
+# repo-kit continue extension — sourced from ~/.bashrc
+# Generated for: @TARGET_DIR@
+
+export CONTINUE_CMD="${CONTINUE_CMD:-cn -p --silent}"
+
+_REPO_KIT_SCRIPTS="@SCRIPTS_DIR@"
+case ":${PATH}:" in
+  *":${_REPO_KIT_SCRIPTS}:"*) ;;
+  *) export PATH="${_REPO_KIT_SCRIPTS}:${PATH}" ;;
+esac
+unset _REPO_KIT_SCRIPTS
+
+alias ai-commit='@SCRIPTS_DIR@/ai-commit.sh'
+alias ai-context='@SCRIPTS_DIR@/ai-context.sh'
+alias ai-dep='@SCRIPTS_DIR@/ai-dep.sh'
+alias ai-prompter='@SCRIPTS_DIR@/ai-prompter.sh'
+alias ai-git-issue='@SCRIPTS_DIR@/ai-git-issue.sh'
