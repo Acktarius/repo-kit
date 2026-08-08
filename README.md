@@ -17,6 +17,7 @@ repo-kit/
     security/
     cpp11/
     rust/
+    python/
   extensions/
     continue/       # Continue + Cursor dispatch rules, AGENTS.md, ai-*.sh
     openspec/       # OpenSpec CLI + project init
@@ -47,6 +48,7 @@ Initialize a project (resolves dependencies, detects conflicts):
 ./scripts/init.sh /path/to/project --react --security
 ./scripts/init.sh /path/to/project --cpp11
 ./scripts/init.sh /path/to/project --rust --security
+./scripts/init.sh /path/to/project --python
 ./scripts/init.sh /path/to/project --base --force
 ./scripts/init.sh /path/to/project --ext continue
 ./scripts/init.sh /path/to/project --ext openspec
@@ -59,6 +61,7 @@ Sync only Cursor assets (`.cursor/`) into an existing project (extensions still 
 ```bash
 ./scripts/sync-cursor.sh /path/to/project --typescript --security
 ./scripts/sync-cursor.sh /path/to/project --react --force
+./scripts/sync-cursor.sh /path/to/project --python
 ./scripts/sync-cursor.sh /path/to/project --ext continue
 ./scripts/sync-cursor.sh /path/to/project --ext forge
 ```
@@ -105,6 +108,7 @@ Optional extensions pull in third-party tools with their own licenses:
 | `security` | `base` | — | Portable hardening plan, review, findings, triage, and CI workflow |
 | `cpp11` | `base` | `typescript`, `react`, `rust` | clang-format, CMake |
 | `rust` | `base` | `typescript`, `react`, `cpp11` | rustfmt + Cursor guidance |
+| `python` | `base` | — | Ruff, Pyright, pytest config + Cursor guidance |
 
 `--react` pulls in `typescript` and `base` automatically (including package-preferences).
 

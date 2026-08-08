@@ -1,0 +1,12 @@
+---
+description: Require impact analysis before modifying crypto, auth, wallet, or protocol code
+globs:
+  - "**/*.py"
+alwaysApply: true
+---
+
+# Sensitive code changes
+
+- Do not modify cryptographic, authentication, wallet, key-management, consensus,
+  serialization, or network-protocol code without first identifying compatibility,
+  threat-model, test-vector, and backward-compatibility implications.

@@ -26,6 +26,7 @@ Examples:
   ./scripts/init.sh /path/to/project --react --security
   ./scripts/init.sh /path/to/project --cpp11
   ./scripts/init.sh /path/to/project --rust --security
+  ./scripts/init.sh /path/to/project --python
   ./scripts/init.sh /path/to/project --base --force
   ./scripts/init.sh /path/to/project --ext continue
   ./scripts/init.sh /path/to/project --ext openspec
