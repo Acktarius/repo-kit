@@ -78,6 +78,15 @@ Human-readable mirror of `modules/*/manifest.sh`.
   - `rustfmt.toml`
   - `docs/rust-guidelines.md`
 
+## python
+
+- **Description:** Python professional engineering standards and tooling
+- **Depends:** `base`
+- **Conflicts:** —
+- **Provides:**
+  - `.cursor/rules/python-engineering.mdc`, `sensitive-code-changes.mdc`
+  - `pyproject.toml` (Ruff, Pyright, pytest defaults)
+
 ## Extensions
 
 Not modules — install with `--ext <name>` on `init.sh` / `sync-cursor.sh`.
