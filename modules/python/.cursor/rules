@@ -48,3 +48,4 @@
 - Do not add a dependency for a small utility without clear justification.
 - Pin and manage dependencies according to existing project tooling.
 - Never hardcode credentials, API keys, seed phrases, private keys, or production configuration.
+- Do not modify cryptographic, authentication, wallet, key-management, consensus, serialization, or network-protocol code without first identifying compatibility, threat-model, test-vector, and backward-compatibility implications.
