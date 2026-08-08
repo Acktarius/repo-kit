@@ -1,0 +1,50 @@
+# Python Professional Engineering Rules
+
+## Core behavior
+- Prioritize correctness, readability, maintainability, and security over cleverness or brevity.
+- Make the smallest change necessary to solve the requested problem.
+- Do not refactor unrelated code, rename public APIs, alter configuration, or add dependencies unless explicitly requested.
+- Before modifying code, inspect relevant existing modules, tests, interfaces, and project conventions.
+- Preserve backward compatibility unless a breaking change is explicitly approved.
+- Never invent APIs, library behavior, configuration values, environment variables, database schemas, or file paths. Verify them in the codebase or documentation first.
+
+## Python style
+- Target the Python version configured by the project; use modern syntax only when supported.
+- Follow PEP 8 and format code with Ruff format or Black; use an 88-character line length unless the repository specifies otherwise.
+- Use `snake_case` for functions, variables, and modules; `PascalCase` for classes; `UPPER_SNAKE_CASE` for constants.
+- Prefer clear, descriptive names over abbreviations or comments that explain unclear names.
+- Keep functions focused on one responsibility. Extract helpers when nesting, branching, or repeated logic reduces readability.
+- Prefer early returns to deeply nested conditional blocks.
+- Avoid clever one-liners, overly dense comprehensions, and premature optimization.
+- Use f-strings for interpolation.
+- Use `pathlib.Path` rather than `os.path` for new filesystem code.
+- Use `with` context managers for files, locks, connections, and other resources.
+- Never use mutable default parameters. Use `None` and initialize inside the function.
+- Avoid global mutable state.
+
+## Types and data models
+- Add type hints to all new or modified public functions and methods, including return types.
+- Use precise standard types such as `Sequence`, `Mapping`, `Iterable`, `Iterator`, `Callable`, and `Path` where appropriate.
+- Prefer `dataclass`, Pydantic models, or typed domain objects for structured data instead of untyped `dict[str, Any]`.
+- Do not use `Any` unless interoperability genuinely requires it; keep its scope minimal.
+- Keep optional values explicit with `T | None` and handle `None` deliberately.
+
+## Errors and logging
+- Catch only expected, specific exceptions; never use bare `except:` or silently swallow failures.
+- Raise meaningful domain-specific exceptions with useful context; preserve exception chaining with `raise ... from exc` when wrapping errors.
+- Validate external input at boundaries: HTTP requests, CLI arguments, files, environment variables, queues, and database data.
+- Do not log secrets, tokens, passwords, private keys, personal data, or complete sensitive payloads.
+- Use the project logger rather than `print()` outside short-lived CLI scripts.
+
+## Testing
+- For behavior changes and bug fixes, add or update focused tests.
+- Write tests around observable behavior and edge cases, not private implementation details.
+- Keep tests deterministic: no real network, clock, filesystem, or randomness dependencies unless explicitly intended.
+- Use fixtures and dependency injection rather than global mocking where practical.
+- Run the relevant formatter, linter, type checker, and test suite before considering work complete.
+
+## Dependencies and security
+- Prefer the Python standard library and existing project dependencies.
+- Do not add a dependency for a small utility without clear justification.
+- Pin and manage dependencies according to existing project tooling.
+- Never hardcode credentials, API keys, seed phrases, private keys, or production configuration.
