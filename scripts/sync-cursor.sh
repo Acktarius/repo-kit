@@ -26,6 +26,7 @@ Examples:
   ./scripts/sync-cursor.sh /path/to/project --typescript --security
   ./scripts/sync-cursor.sh /path/to/project --react --force
   ./scripts/sync-cursor.sh /path/to/project --cpp11
+  ./scripts/sync-cursor.sh /path/to/project --python
   ./scripts/sync-cursor.sh /path/to/project --ext continue
   ./scripts/sync-cursor.sh /path/to/project --ext forge
   ./scripts/sync-cursor.sh /path/to/project --base --ext continue --force
