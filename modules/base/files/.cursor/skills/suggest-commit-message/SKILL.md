@@ -60,36 +60,24 @@ Reply with **exactly** this structure (fill in content; omit empty sections):
 ```markdown
 <type>: <subject>
 
-short version:
+Summary
 - <what changed, outcome-focused, no file paths>
 - …
 
-long version:
+Files:
 - in `<path/to/file>`: <what changed in this file>
 - in `<path/to/file2>`: <what changed in this file>
 ```
 
-Then add a ready-to-paste block for the actual commit (commitlint-valid):
-
-```markdown
-## Ready to commit
-
-\`\`\`
-<type>: <subject>
-
-- <bullet from short version>
-- …
-\`\`\`
-```
-
-The **Ready to commit** block is header + blank line + short-version bullets only
-(no "short version"/"long version" labels). Keep body concise (3–6 bullets).
+This single block is ready to paste into `git commit` (header + blank line + Summary
+bullets only). The **Files** section is for review — omit it from the commit body
+unless the user asks to include it.
 
 ## Quality bar
 
 - Subject states **why/outcome**, not a file list
-- Short version: user-visible or architectural summary
-- Long version: one bullet per staged file (merge trivial files only when obvious)
+- Summary: user-visible or architectural summary (3–6 bullets)
+- Files: one bullet per staged file (merge trivial files only when obvious)
 - Do **not** invent changes not present in the diff
 - Do **not** run `git commit` unless the user explicitly asks
 
@@ -100,23 +88,13 @@ Staged: QR scan button on address fields in address-book and messages pages.
 ```markdown
 feat: add QR scan button to wallet address fields
 
-short version:
+Summary
 - add camera QR scan to address inputs on address book and messages compose
 - show scan button below 1024px (lg:hidden) with input padding for the icon
 - rename scan handlers to applyScannedDraft for consistency across pages
 
-long version:
+Files:
 - in `app/(wallet)/wallet/address-book/page.tsx`: wrap address input with AddressQrScanButton and applyScannedDraft
 - in `app/(wallet)/wallet/messages/page.tsx`: same scan UI on compose recipient field, wired to recipient state
 - in `app/(wallet)/wallet/send/page.tsx`: rename applyScannedSendDraft to applyScannedDraft
-
-## Ready to commit
-
-\`\`\`
-feat: add QR scan button to wallet address fields
-
-- add camera QR scan to address inputs on address book and messages compose
-- show scan button below 1024px with input padding for the icon
-- rename scan handlers to applyScannedDraft across send, messages, and address book
-\`\`\`
 ```
