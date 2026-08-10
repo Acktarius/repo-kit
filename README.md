@@ -26,6 +26,8 @@ repo-kit/
     init.sh
     list-modules.sh
     sync-cursor.sh
+    migrate.sh
+  VERSION
   catalog/
     modules.md
   README.md
@@ -67,6 +69,25 @@ Sync only Cursor assets (`.cursor/`) into an existing project (extensions still 
 ```
 
 Existing files are **skipped** unless `--force` is passed.
+
+## Versioning
+
+Kit release version is in [`VERSION`](VERSION) (currently **1.0.1**). Target projects record their installed layout version in `.repo-kit/version`.
+
+| Version | Layout |
+|---------|--------|
+| missing | Pre-versioning; treated as **1.0.0** (root `.chat/`) |
+| 1.0.0 | Root `.chat/` handoff store |
+| 1.0.1 | `.repo-kit/chat/` handoff store + `.repo-kit/version` |
+
+Migrate an existing project to the current kit version (moves `.chat/` → `.repo-kit/chat/`, bumps version, refreshes base `.cursor/` assets):
+
+```bash
+./scripts/migrate.sh /path/to/project
+./scripts/migrate.sh /path/to/project --force   # refresh .cursor/ when already up to date
+```
+
+Fresh installs via `init.sh` with `--base` get layout **1.0.1** automatically.
 
 ## Extensions
 

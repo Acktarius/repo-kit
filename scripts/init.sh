@@ -69,8 +69,8 @@ if [[ ${#SELECTED_MODULES[@]} -gt 0 ]]; then
   echo "resolved: ${RESOLVED_MODULES[*]}"
   echo
   CURSOR_ONLY=0
-  # install_modules copies module files/ (including base .chat seeds + chat-context
-  # skill) and ensures .chat/{sessions,decisions,archive} via mkdir -p.
+  # install_modules copies module files/ (including base .repo-kit/chat seeds +
+  # chat-context skill) and ensures .repo-kit/chat/{sessions,decisions,archive}.
   install_modules
 else
   echo "installing into ${TARGET_DIR}"

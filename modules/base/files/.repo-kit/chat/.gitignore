@@ -1,4 +1,4 @@
 # Live handoff — do not commit. archive/, decisions/, sessions/ stay tracked.
-archives/**
+archive/**
 decisions/**
 sessions/**

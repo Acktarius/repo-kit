@@ -208,17 +208,103 @@ copy_module_files() {
   done < <(find "${src_root}" -type f -print0 | sort -z)
 }
 
-# Ensure project-local .chat/ dirs exist (idempotent).
-# Seed files (.chat/current.json, current.md, *.gitkeep) come from base/files
+# Ensure project-local .repo-kit/chat/ dirs exist (idempotent).
+# Seed files (.repo-kit/chat/current.json, current.md) come from base/files
 # via _copy_file (skipped unless --force). mkdir covers empty dirs on re-run.
-ensure_chat_scaffold() {
-  local chat_root="${TARGET_DIR}/.chat"
+ensure_repo_kit_scaffold() {
+  local chat_root="${TARGET_DIR}/.repo-kit/chat"
   mkdir -p \
     "${chat_root}" \
     "${chat_root}/sessions" \
     "${chat_root}/decisions" \
     "${chat_root}/archive"
-  echo "chat scaffold: ${chat_root#"${TARGET_DIR}"/}/{sessions,decisions,archive}"
+  echo "repo-kit scaffold: ${chat_root#"${TARGET_DIR}"/}/{sessions,decisions,archive}"
+}
+
+# Read repo-kit release version from VERSION at kit root.
+read_kit_version() {
+  local version_file="${REPO_KIT_ROOT}/VERSION"
+  [[ -f "${version_file}" ]] || die "missing VERSION at ${version_file}"
+  tr -d '[:space:]' < "${version_file}"
+}
+
+# Read installed version from target; default 1.0.0 when missing (pre-versioning).
+read_installed_version() {
+  local target="$1"
+  local version_file="${target}/.repo-kit/version"
+  if [[ -f "${version_file}" ]]; then
+    tr -d '[:space:]' < "${version_file}"
+  else
+    echo "1.0.0"
+  fi
+}
+
+# Return 0 when $1 < $2 (semver via sort -V).
+version_lt() {
+  [[ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" && "$1" != "$2" ]]
+}
+
+# Return 0 when $1 >= $2.
+version_ge() {
+  ! version_lt "$1" "$2"
+}
+
+write_installed_version() {
+  local target="$1"
+  local version="$2"
+  mkdir -p "${target}/.repo-kit"
+  printf '%s\n' "${version}" > "${target}/.repo-kit/version"
+  echo "version: ${version} -> ${target}/.repo-kit/version"
+}
+
+# Move legacy .chat/ contents into .repo-kit/chat/ (1.0.0 -> 1.0.1).
+_migrate_chat_entry() {
+  local src="$1"
+  local dest="$2"
+  local child
+
+  if [[ -d "${src}" && -d "${dest}" ]]; then
+    shopt -s dotglob nullglob
+    for child in "${src}"/*; do
+      [[ -e "${child}" ]] || continue
+      _migrate_chat_entry "${child}" "${dest}/$(basename "${child}")"
+    done
+    shopt -u dotglob nullglob
+    rmdir "${src}" 2>/dev/null || die "legacy directory not empty after merge: ${src}"
+    return 0
+  fi
+
+  if [[ -e "${dest}" ]]; then
+    die "migration conflict: ${dest} already exists (legacy ${src})"
+  fi
+
+  mv "${src}" "${dest}"
+  echo "  moved     ${src#"${TARGET_DIR}"/} -> ${dest#"${TARGET_DIR}"/}"
+}
+
+migrate_chat_to_repo_kit() {
+  local target="$1"
+  local legacy="${target}/.chat"
+  local chat_root="${target}/.repo-kit/chat"
+  local entry
+
+  TARGET_DIR="${target}"
+  mkdir -p "${chat_root}" "${chat_root}/sessions" "${chat_root}/decisions" "${chat_root}/archive"
+
+  if [[ ! -d "${legacy}" ]]; then
+    echo "migrate chat: no legacy .chat/ at ${legacy}"
+    return 0
+  fi
+
+  shopt -s dotglob nullglob
+  for entry in "${legacy}"/*; do
+    [[ -e "${entry}" ]] || continue
+    _migrate_chat_entry "${entry}" "${chat_root}/$(basename "${entry}")"
+  done
+  shopt -u dotglob nullglob
+
+  rmdir "${legacy}" 2>/dev/null || die "legacy .chat/ not empty after move: ${legacy}"
+  echo "  removed   .chat/"
 }
 
 install_modules() {
@@ -233,9 +319,9 @@ install_modules() {
     copy_module_files "${name}"
   done
 
-  # .chat/ is project data, not a Cursor asset — skip during sync-cursor.
+  # .repo-kit/chat/ is project data, not a Cursor asset — skip during sync-cursor.
   if [[ "${CURSOR_ONLY}" -eq 0 ]] && array_contains "base" "${RESOLVED_MODULES[@]+"${RESOLVED_MODULES[@]}"}"; then
-    ensure_chat_scaffold
+    ensure_repo_kit_scaffold
   fi
 
   echo
