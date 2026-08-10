@@ -706,9 +706,31 @@ ensure_act() {
 
 ensure_docker_daemon() {
   ensure_cmd docker docker.io
-  if ! docker info >/dev/null 2>&1; then
-    die "docker is installed but the daemon is not reachable; start Docker or add your user to the 'docker' group, then re-run"
+
+  if docker info >/dev/null 2>&1; then
+    return 0
   fi
+
+  if ! id -nG "${USER}" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+    echo "docker is installed but ${USER} is not in the 'docker' group"
+    if ! prompt_yn "Add ${USER} to the 'docker' group?"; then
+      die "refused to add user to 'docker' group; aborting extension install"
+    fi
+    sudo usermod -aG docker "${USER}"
+    echo "  added ${USER} to 'docker' group"
+  fi
+
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Group membership applies to new sessions; sg verifies access without re-login.
+  if getent group docker >/dev/null 2>&1 && sg docker -c "docker info >/dev/null 2>&1" 2>/dev/null; then
+    echo "  docker reachable via 'docker' group (log out/in or: newgrp docker)"
+    return 0
+  fi
+
+  die "docker is installed but the daemon is not reachable; start Docker, then re-run"
 }
 
 install_act_ext() {
