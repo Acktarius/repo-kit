@@ -75,22 +75,23 @@ Existing files are **skipped** unless `--force` is passed.
 
 ## Versioning
 
-Kit release version is in [`VERSION`](VERSION) (currently **1.0.1**). Target projects record their installed layout version in `.repo-kit/version`.
+Kit release version is in [`VERSION`](VERSION) (currently **1.0.2**). Target projects record their installed layout version in `.repo-kit/version`.
 
 | Version | Layout |
 |---------|--------|
-| missing | Pre-versioning; treated as **1.0.0** (root `.chat/`) |
+| missing | Pre-versioning; treated as **<= 1.0.1** (1.0.0 when root `.chat/` exists, else 1.0.1) |
 | 1.0.0 | Root `.chat/` handoff store |
-| 1.0.1 | `.repo-kit/chat/` handoff store + `.repo-kit/version` |
+| 1.0.1 | `.repo-kit/chat/` handoff store; root `.findings/` for crypto review notes |
+| 1.0.2 | `.repo-kit/chat/` + gitignored `.repo-kit/findings/` + `.repo-kit/version` |
 
-Migrate an existing project to the current kit version (moves `.chat/` → `.repo-kit/chat/`, bumps version, refreshes base `.cursor/` assets):
+Migrate an existing project to the current kit version (moves `.chat/` → `.repo-kit/chat/`, `.findings/` → `.repo-kit/findings/`, bumps version, refreshes base `.cursor/` assets):
 
 ```bash
 ./scripts/migrate.sh /path/to/project
 ./scripts/migrate.sh /path/to/project --force   # refresh .cursor/ when already up to date
 ```
 
-Fresh installs via `init.sh` with `--base` get layout **1.0.1** automatically.
+Fresh installs via `init.sh` with `--base` get layout **1.0.2** automatically.
 
 ## Extensions
 

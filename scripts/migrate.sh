@@ -13,10 +13,14 @@ Usage:
   ./scripts/migrate.sh --help
 
 Upgrade a target project's repo-kit layout to the kit VERSION.
-Missing .repo-kit/version is treated as 1.0.0 (legacy root .chat/ layout).
+Missing .repo-kit/version is treated as <= 1.0.1 (1.0.0 when legacy .chat/ exists, else 1.0.1).
 
 Steps for 1.0.0 -> 1.0.1:
   - move .chat/ contents to .repo-kit/chat/ (preserves user data)
+
+Steps for <= 1.0.1 -> 1.0.2:
+  - move .findings/ contents to .repo-kit/findings/ (preserves user data)
+  - upgrade root .gitignore (.findings/ -> .repo-kit/findings/)
   - write .repo-kit/version
   - refresh base module .cursor/ assets (force overwrite)
 
@@ -88,6 +92,14 @@ else
     echo "step 1.0.1: relocate chat"
     migrate_chat_to_repo_kit "${TARGET_DIR}"
     INSTALLED_VERSION="1.0.1"
+    MIGRATED=1
+    echo
+  fi
+
+  if version_lt "${INSTALLED_VERSION}" "1.0.2"; then
+    echo "step 1.0.2: relocate findings"
+    migrate_findings_to_repo_kit "${TARGET_DIR}"
+    INSTALLED_VERSION="1.0.2"
     MIGRATED=1
     echo
   fi

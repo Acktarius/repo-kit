@@ -228,14 +228,19 @@ read_kit_version() {
   tr -d '[:space:]' < "${version_file}"
 }
 
-# Read installed version from target; default 1.0.0 when missing (pre-versioning).
+# Read installed version from target.
+# Missing .repo-kit/version is treated as <= 1.0.1: 1.0.0 when legacy .chat/ exists, else 1.0.1.
 read_installed_version() {
   local target="$1"
   local version_file="${target}/.repo-kit/version"
   if [[ -f "${version_file}" ]]; then
     tr -d '[:space:]' < "${version_file}"
-  else
+    return 0
+  fi
+  if [[ -d "${target}/.chat" ]]; then
     echo "1.0.0"
+  else
+    echo "1.0.1"
   fi
 }
 
@@ -305,6 +310,63 @@ migrate_chat_to_repo_kit() {
 
   rmdir "${legacy}" 2>/dev/null || die "legacy .chat/ not empty after move: ${legacy}"
   echo "  removed   .chat/"
+}
+
+# Upgrade root .gitignore from legacy .findings/ to .repo-kit/findings/.
+_migrate_gitignore_findings() {
+  local target="$1"
+  local gitignore="${target}/.gitignore"
+  local tmp
+  local had_new=0 had_old=0
+
+  if [[ ! -f "${gitignore}" ]]; then
+    printf '%s\n' '.repo-kit/findings/' > "${gitignore}"
+    echo "  added     .gitignore: .repo-kit/findings/"
+    return 0
+  fi
+
+  grep -qF '.repo-kit/findings/' "${gitignore}" && had_new=1
+  grep -qF '.findings/' "${gitignore}" && had_old=1
+
+  if [[ "${had_new}" -eq 0 ]]; then
+    printf '\n%s\n' '.repo-kit/findings/' >> "${gitignore}"
+    echo "  added     .gitignore: .repo-kit/findings/"
+  fi
+
+  if [[ "${had_old}" -eq 1 ]]; then
+    tmp="$(mktemp)"
+    grep -Fv '.findings/' "${gitignore}" > "${tmp}"
+    mv "${tmp}" "${gitignore}"
+    echo "  removed   .gitignore: .findings/"
+  fi
+}
+
+# Move legacy .findings/ contents into .repo-kit/findings/ (1.0.1 -> 1.0.2).
+migrate_findings_to_repo_kit() {
+  local target="$1"
+  local legacy="${target}/.findings"
+  local findings_root="${target}/.repo-kit/findings"
+  local entry
+
+  TARGET_DIR="${target}"
+  mkdir -p "${findings_root}"
+
+  _migrate_gitignore_findings "${target}"
+
+  if [[ ! -d "${legacy}" ]]; then
+    echo "migrate findings: no legacy .findings/ at ${legacy}"
+    return 0
+  fi
+
+  shopt -s dotglob nullglob
+  for entry in "${legacy}"/*; do
+    [[ -e "${entry}" ]] || continue
+    _migrate_chat_entry "${entry}" "${findings_root}/$(basename "${entry}")"
+  done
+  shopt -u dotglob nullglob
+
+  rmdir "${legacy}" 2>/dev/null || die "legacy .findings/ not empty after move: ${legacy}"
+  echo "  removed   .findings/"
 }
 
 install_modules() {
