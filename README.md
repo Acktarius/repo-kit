@@ -22,6 +22,7 @@ repo-kit/
     continue/       # Continue + Cursor dispatch rules, AGENTS.md, ai-*.sh
     openspec/       # OpenSpec CLI + project init
     forge/          # Forgekit (depends on openspec)
+    act/            # nektos/act + local workflow runner script
   scripts/
     init.sh
     list-modules.sh
@@ -55,6 +56,7 @@ Initialize a project (resolves dependencies, detects conflicts):
 ./scripts/init.sh /path/to/project --ext continue
 ./scripts/init.sh /path/to/project --ext openspec
 ./scripts/init.sh /path/to/project --ext forge
+./scripts/init.sh /path/to/project --ext act
 ./scripts/init.sh /path/to/project --typescript --ext continue
 ```
 
@@ -66,6 +68,7 @@ Sync only Cursor assets (`.cursor/`) into an existing project (extensions still 
 ./scripts/sync-cursor.sh /path/to/project --python
 ./scripts/sync-cursor.sh /path/to/project --ext continue
 ./scripts/sync-cursor.sh /path/to/project --ext forge
+./scripts/sync-cursor.sh /path/to/project --ext act
 ```
 
 Existing files are **skipped** unless `--force` is passed.
@@ -96,17 +99,19 @@ Fresh installs via `init.sh` with `--base` get layout **1.0.1** automatically.
 | `continue` | Checks/prompts for `cn`, `python3`, `grep`, `gh`, `curl`, `rg`; copies `.cursor/rules/{continue-sidekick,dispatch}.mdc` and `AGENTS.md`; copies `.continue/{rules,prompts}`; copies `ai-*.sh` to `.repo-kit/scripts/` (`ai-commit`, `ai-context`, `ai-dep`, `ai-prompter`, `ai-git-issue`); writes `.repo-kit/bashrc_repokit` and hooks `~/.bashrc` |
 | `openspec` | `npm i -g @fission-ai/openspec@latest`; `openspec init --tools cursor` in target if needed |
 | `forge` | Depends on `openspec` (always installed first). Then `npm i -g @izkac/forgekit@latest`, `forgekit install --skills forge --agents cursor --openspec --force`, and `forge init --cursor --openspec` in target if needed |
+| `act` | Checks/prompts for `docker` (daemon reachable) and `act`; copies `.cursor/commands/act-run-workflows.md`, `.cursor/skills/act-run-workflows/`, `act-run-workflows.sh` to `.repo-kit/scripts/`, and project `.actrc` (ubuntu-latest → medium runner image) |
 
 ```bash
 ./scripts/init.sh /path/to/project --ext continue
 ./scripts/init.sh /path/to/project --ext openspec
 ./scripts/init.sh /path/to/project --ext forge   # also installs openspec
+./scripts/init.sh /path/to/project --ext act
 source ~/.bashrc   # activate PATH + aliases (continue)
 ```
 
 `--ext forge` always resolves `openspec` first. Re-run project inits with `--force`.
 
-Forgekit: [izkac/forgekit](https://github.com/izkac/forgekit). OpenSpec: [@fission-ai/openspec](https://www.npmjs.com/package/@fission-ai/openspec).
+Forgekit: [izkac/forgekit](https://github.com/izkac/forgekit). OpenSpec: [@fission-ai/openspec](https://www.npmjs.com/package/@fission-ai/openspec). act: [nektos/act](https://github.com/nektos/act).
 
 ## License
 
@@ -118,6 +123,7 @@ Optional extensions pull in third-party tools with their own licenses:
 |------|---------|---------|
 | Forgekit | [`@izkac/forgekit`](https://www.npmjs.com/package/@izkac/forgekit) | [MIT](https://github.com/izkac/forgekit/blob/main/LICENSE) |
 | OpenSpec | [`@fission-ai/openspec`](https://www.npmjs.com/package/@fission-ai/openspec) | [MIT](https://github.com/Fission-AI/OpenSpec/blob/main/LICENSE) |
+| act | [nektos/act](https://github.com/nektos/act) | [MIT](https://github.com/nektos/act/blob/master/LICENSE) |
 
 ## Module lanes
 

@@ -20,7 +20,7 @@ SKIPPED_COUNT=0
 OVERWRITTEN_COUNT=0
 
 # Known extensions (non-module tooling). Expand as new --ext values land.
-KNOWN_EXTENSIONS=("continue" "openspec" "forge")
+KNOWN_EXTENSIONS=("continue" "openspec" "forge" "act")
 
 die() {
   echo "error: $*" >&2
@@ -609,6 +609,98 @@ install_forge_ext() {
   echo "  forge ready in ${TARGET_DIR}"
 }
 
+# Install nektos/act from GitHub releases (Linux x86_64 / arm64).
+_install_act_binary() {
+  local url arch
+  cmd_exists curl || die "curl is required to install act"
+
+  case "$(uname -m)" in
+    x86_64|amd64) url="https://github.com/nektos/act/releases/latest/download/act_Linux_x86_64.tar.gz" ;;
+    aarch64|arm64) url="https://github.com/nektos/act/releases/latest/download/act_Linux_arm64.tar.gz" ;;
+    *) die "unsupported architecture for act auto-install: $(uname -m)" ;;
+  esac
+
+  curl -sSfL "${url}" | sudo tar xz -C /usr/local/bin act
+}
+
+ensure_act() {
+  if cmd_exists act; then
+    return 0
+  fi
+
+  echo "missing required command: act"
+  if ! prompt_yn "Install act?"; then
+    die "refused to install 'act'; aborting extension install"
+  fi
+
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    die "cannot auto-install act on this OS; install from https://github.com/nektos/act/releases then re-run"
+  fi
+
+  _install_act_binary
+  cmd_exists act || die "installed act but it is still not on PATH"
+  echo "  installed act"
+}
+
+ensure_docker_daemon() {
+  ensure_cmd docker docker.io
+  if ! docker info >/dev/null 2>&1; then
+    die "docker is installed but the daemon is not reachable; start Docker or add your user to the 'docker' group, then re-run"
+  fi
+}
+
+install_act_ext() {
+  local ext_root="${EXTENSIONS_DIR}/act"
+  local scripts_src="${ext_root}/files/scripts"
+  local commands_src="${ext_root}/files/.cursor/commands"
+  local skills_src="${ext_root}/files/.cursor/skills"
+  local actrc_src="${ext_root}/files/.actrc"
+  local scripts_dest="${TARGET_DIR}/.repo-kit/scripts"
+  local src dest skill_dir skill_name
+
+  [[ -d "${ext_root}" ]] || die "extension 'act' missing under ${EXTENSIONS_DIR}"
+
+  echo "extension: act"
+  echo "  checking host dependencies..."
+
+  ensure_docker_daemon
+  ensure_act
+
+  echo "  copying .cursor/commands..."
+  shopt -s nullglob
+  for src in "${commands_src}"/*; do
+    [[ -f "${src}" ]] || continue
+    dest="${TARGET_DIR}/.cursor/commands/$(basename "${src}")"
+    _copy_file "${src}" "${dest}"
+  done
+
+  echo "  copying .cursor/skills..."
+  for skill_dir in "${skills_src}"/*; do
+    [[ -d "${skill_dir}" ]] || continue
+    skill_name="$(basename "${skill_dir}")"
+    mkdir -p "${TARGET_DIR}/.cursor/skills/${skill_name}"
+    for src in "${skill_dir}"/*; do
+      [[ -f "${src}" ]] || continue
+      dest="${TARGET_DIR}/.cursor/skills/${skill_name}/$(basename "${src}")"
+      _copy_file "${src}" "${dest}"
+    done
+  done
+
+  echo "  copying act-run-workflows.sh to .repo-kit/scripts/..."
+  mkdir -p "${scripts_dest}"
+  [[ -f "${scripts_src}/act-run-workflows.sh" ]] || die "act extension missing files/scripts/act-run-workflows.sh"
+  dest="${scripts_dest}/act-run-workflows.sh"
+  _copy_file "${scripts_src}/act-run-workflows.sh" "${dest}"
+  chmod +x "${dest}"
+
+  echo "  copying .actrc..."
+  [[ -f "${actrc_src}" ]] || die "act extension missing files/.actrc"
+  _copy_file "${actrc_src}" "${TARGET_DIR}/.actrc"
+  shopt -u nullglob
+
+  echo "  act ready in ${TARGET_DIR}"
+}
+
 install_extensions() {
   local name
   [[ ${#SELECTED_EXTENSIONS[@]} -gt 0 ]] || return 0
@@ -621,6 +713,7 @@ install_extensions() {
       continue) install_continue_ext ;;
       openspec) install_openspec_ext ;;
       forge) install_forge_ext ;;
+      act) install_act_ext ;;
       *) die "unsupported extension '${name}'" ;;
     esac
   done
