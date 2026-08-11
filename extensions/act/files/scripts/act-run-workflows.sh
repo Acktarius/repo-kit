@@ -7,31 +7,35 @@ SECRETS_RE='\$\{\{[[:space:]]*secrets\.'
 
 ROOT="$(pwd)"
 LIST=0
+ALL=0
 EVENT=""
 explicit=()
+workflow_names=()
 
 show_help() {
   cat <<'USAGE'
 Usage:
-  act-run-workflows.sh [--list] [--event EVENT] [--root PATH] [workflow-file ...]
+  act-run-workflows.sh [--list] [--all] [--event EVENT] [--root PATH] [--workflow NAME ...] [workflow-file ...]
 
 Discover and run secrets-free workflows under .github/workflows/ using act.
 
-Name patterns (when no files are given):
-  *npm-audit*   (e.g. npm-audit.yaml)
-  *ci-check*    (e.g. ci-check.yml)
+Default discovery (no arguments): filenames matching *npm-audit* or *ci-check*.
+Use --all to consider every workflow file; use --workflow or a path to force one.
 
 Workflows referencing ${{ secrets.* }} are skipped.
 
 Options:
   --list        Print eligible vs skipped workflows; do not run act
+  --all         With --list or default run: include all secrets-free workflows
+  --workflow NAME  Force .github/workflows/NAME (appends .yml/.yaml if needed)
   --event NAME  GitHub event to simulate (default: infer from workflow on:)
   --root PATH   Project root (default: current directory)
   --help        Show this help
 
 Examples:
-  act-run-workflows.sh --list
-  act-run-workflows.sh --event pull_request
+  act-run-workflows.sh --list --all
+  act-run-workflows.sh --workflow ci.yml
+  act-run-workflows.sh --event pull_request .github/workflows/ci.yml
   act-run-workflows.sh .github/workflows/ci-check.yml
 USAGE
 }
@@ -67,10 +71,19 @@ infer_event() {
   fi
 }
 
+docker_preflight_hint() {
+  if [[ -S /var/run/docker.sock ]] && ! docker info >/dev/null 2>&1; then
+    if ! groups | grep -qw docker; then
+      die "docker permission denied (user not in 'docker' group). Fix: sudo usermod -aG docker \$USER && newgrp docker   (or log out and back in)"
+    fi
+  fi
+  die "docker daemon not reachable; start Docker (sudo systemctl start docker) or install via: ./scripts/init.sh <target> --ext act"
+}
+
 preflight() {
   command -v docker >/dev/null 2>&1 || die "docker not found; install via: ./scripts/init.sh <target> --ext act"
   command -v act >/dev/null 2>&1 || die "act not found; install via: ./scripts/init.sh <target> --ext act"
-  docker info >/dev/null 2>&1 || die "docker daemon not reachable; start Docker or add your user to the 'docker' group"
+  docker info >/dev/null 2>&1 || docker_preflight_hint
 }
 
 resolve_workflow_path() {
@@ -88,11 +101,52 @@ resolve_workflow_path() {
   fi
 }
 
+resolve_workflow_name() {
+  local name="$1"
+  local dir="${ROOT}/.github/workflows"
+  local candidate
+
+  [[ -d "${dir}" ]] || die "no .github/workflows directory at ${dir}"
+
+  if [[ -f "${dir}/${name}" ]]; then
+    printf '%s\n' "${dir}/${name}"
+    return 0
+  fi
+  if [[ "${name}" != *.yml && "${name}" != *.yaml ]]; then
+    for candidate in "${name}.yml" "${name}.yaml"; do
+      if [[ -f "${dir}/${candidate}" ]]; then
+        printf '%s\n' "${dir}/${candidate}"
+        return 0
+      fi
+    done
+  fi
+  die "workflow not found under .github/workflows/: ${name}"
+}
+
+discover_all_candidates() {
+  local dir="${ROOT}/.github/workflows"
+  local f
+
+  [[ -d "${dir}" ]] || die "no .github/workflows directory at ${dir}"
+
+  shopt -s nullglob
+  for f in "${dir}"/*.{yml,yaml}; do
+    [[ -f "${f}" ]] || continue
+    printf '%s\n' "${f}"
+  done
+  shopt -u nullglob
+}
+
 discover_candidates() {
   local dir="${ROOT}/.github/workflows"
   local f base
 
   [[ -d "${dir}" ]] || die "no .github/workflows directory at ${dir}"
+
+  if [[ "${ALL}" -eq 1 ]]; then
+    discover_all_candidates
+    return 0
+  fi
 
   shopt -s nullglob
   for f in "${dir}"/*; do
@@ -133,11 +187,21 @@ list_workflows() {
     fi
   done < <(collect_workflows)
 
-  [[ "${found}" -eq 1 ]] || echo "(no matching workflows under .github/workflows/)"
+  if [[ "${found}" -eq 0 ]]; then
+    if [[ "${ALL}" -eq 1 ]]; then
+      echo "(no workflow files under .github/workflows/)"
+    else
+      echo "(no matching workflows — try --list --all or --workflow ci.yml)"
+    fi
+  fi
 }
 
 collect_workflows() {
-  local arg file
+  local arg file name
+
+  for name in "${workflow_names[@]}"; do
+    explicit+=("$(resolve_workflow_name "${name}")")
+  done
 
   if [[ ${#explicit[@]} -gt 0 ]]; then
     for arg in "${explicit[@]}"; do
@@ -170,7 +234,7 @@ run_workflows() {
   done < <(collect_workflows)
 
   if [[ "${ran}" -eq 0 ]]; then
-    die "no eligible workflows to run (try --list)"
+    die "no eligible workflows to run (try --list --all or --workflow ci.yml)"
   fi
 
   [[ "${failed}" -eq 0 ]] || exit 1
@@ -182,6 +246,10 @@ while [[ $# -gt 0 ]]; do
       LIST=1
       shift
       ;;
+    --all)
+      ALL=1
+      shift
+      ;;
     --event)
       [[ $# -gt 1 ]] || die "--event requires a value"
       EVENT="$2"
@@ -190,6 +258,11 @@ while [[ $# -gt 0 ]]; do
     --root)
       [[ $# -gt 1 ]] || die "--root requires a path"
       ROOT="$(cd "$2" && pwd)"
+      shift 2
+      ;;
+    --workflow)
+      [[ $# -gt 1 ]] || die "--workflow requires a name"
+      workflow_names+=("$2")
       shift 2
       ;;
     --help|-h)
@@ -206,7 +279,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-preflight
+if [[ "${LIST}" -ne 1 ]]; then
+  preflight
+fi
 
 if [[ "${LIST}" -eq 1 ]]; then
   list_workflows

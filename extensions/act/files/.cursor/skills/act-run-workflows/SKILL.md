@@ -16,27 +16,34 @@ Run selected workflows from `.github/workflows/` on the host via [nektos/act](ht
 Always use the project script:
 
 ```bash
-.repo-kit/scripts/act-run-workflows.sh [--list] [--event EVENT] [workflow-file ...]
+.repo-kit/scripts/act-run-workflows.sh [--list] [--all] [--event EVENT] [--workflow NAME] [workflow-file ...]
 ```
 
 Run from the repository root (or pass `--root PATH`).
 
 ## Eligible workflows
 
-Auto-discovery matches filenames containing:
+**Default discovery** (no arguments): filenames containing `npm-audit` or `ci-check`.
 
-- `npm-audit` (e.g. `npm-audit.yaml`)
-- `ci-check` (e.g. `ci-check.yml`)
+**Force one workflow:**
 
-Explicit file arguments are allowed but still secrets-filtered.
+```bash
+.repo-kit/scripts/act-run-workflows.sh --workflow ci.yml
+.repo-kit/scripts/act-run-workflows.sh .github/workflows/ci.yml
+```
+
+**List or run all secrets-free workflows:**
+
+```bash
+.repo-kit/scripts/act-run-workflows.sh --list --all
+.repo-kit/scripts/act-run-workflows.sh --all
+```
+
+Explicit paths and `--workflow` still skip any file that references `${{ secrets.* }}`.
 
 ## Secrets exclusion (mandatory)
 
 Skip any workflow that references `${{ secrets.* }}`.
-
-Examples that must **never** be run locally:
-
-- `security-check.yml` (uses `${{ secrets.GITHUB_TOKEN }}`)
 
 Do not pass real secrets to act. The script uses `--secret-file /dev/null` for eligible runs.
 
@@ -62,15 +69,17 @@ Override with `--event NAME` when needed.
 
 ## Agent workflow
 
-1. `--list` when the user has not named a specific workflow.
+1. `--list --all` when the user has not named a specific workflow.
 2. Run eligible workflows; summarize stdout/stderr and exit code.
-3. If `docker` or `act` is missing, or `docker info` fails, suggest:
+3. If `docker info` fails and the user is not in the `docker` group, tell them:
 
    ```bash
-   ./scripts/init.sh <target> --ext act
+   sudo usermod -aG docker $USER
+   newgrp docker   # or log out and back in
    ```
 
-4. Do not install Docker or act yourself unless the user explicitly asks.
+4. If `docker` or `act` is missing, suggest `./scripts/init.sh <target> --ext act`.
+5. Do not install Docker or act yourself unless the user explicitly asks.
 
 ## Output
 
