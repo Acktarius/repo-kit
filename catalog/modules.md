@@ -9,6 +9,8 @@ Human-readable mirror of `modules/*/manifest.sh`.
 - **Conflicts:** —
 - **Provides:**
   - `.cursor/rules/plan-mode-safety.mdc`
+  - `.cursor/rules/step-by-step.mdc`
+  - `docs/step-by-step-guidance.md`
   - `.cursor/commands/chat-context-refresh.md`
   - `.cursor/commands/suggest-commit-message.md`
   - `.cursor/commands/crypto-security-review.md`

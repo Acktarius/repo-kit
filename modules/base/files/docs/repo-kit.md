@@ -2,6 +2,8 @@
 
 This repository was initialized with **repo-kit**. Keep standards docs under `docs/` and Cursor assets under `.cursor/`.
 
+Step-by-step ops guidance: `.cursor/rules/step-by-step.mdc` and `docs/step-by-step-guidance.md`.
+
 Session handoff lives under `.repo-kit/chat/` (see `.cursor/skills/chat-context/`). Installed layout version is in `.repo-kit/version`.
 
 Crypto security review notes live under gitignored `.repo-kit/findings/` (see
