@@ -2,8 +2,20 @@
 
 ## Status
 These are plain Markdown instructions for explicitly requested review phases.
-Install with `--ext hermes` on `init.sh` / `sync-cursor.sh` (copies into
-`<target>/.repo-kit/hermes/review-rules/`).
+Install with `--ext hermes` on `init.sh` / `sync-cursor.sh`.
+
+Installed layout under the target repository:
+
+| Path | Role |
+|------|------|
+| `.repo-kit/hermes/review-rules/` | Installed review rules (read-only policy inputs) |
+| `.repo-kit/hermes/reports/` | Generated report artefacts (Hermes may write here) |
+
+Review rules are read-only policy inputs. Reports under
+`.repo-kit/hermes/reports/` are generated artefacts and may be written there
+by Hermes. Source-code modifications require a separate explicit approval and
+are not authorized by the report directory.
+
 Numbered filenames do not trigger execution.
 
 ## Rules and order
