@@ -509,10 +509,11 @@ resolve_extension_dependencies() {
   SELECTED_EXTENSIONS=("${resolved[@]}")
 }
 
-# Idempotently append/update a source line in ~/.bashrc for this target.
-hook_bashrc_repokit() {
+# Idempotently append/update a source line in ~/.bashrc after a marker
+# (default: one marker per continue target).
+hook_bashrc() {
   local bashrc_file="$1"
-  local marker="# repo-kit continue: ${TARGET_DIR}"
+  local marker="${2:-# repo-kit continue: ${TARGET_DIR}}"
   local source_line="source \"${bashrc_file}\""
   local home_bashrc="${HOME}/.bashrc"
   local tmp
@@ -528,14 +529,14 @@ hook_bashrc_repokit() {
       { print }
     ' "${home_bashrc}" >"${tmp}"
     mv "${tmp}" "${home_bashrc}"
-    echo "  updated ~/.bashrc hook for ${TARGET_DIR}"
+    echo "  updated ~/.bashrc hook: ${marker#\# }"
   else
     {
       echo ""
       echo "${marker}"
       echo "${source_line}"
     } >>"${home_bashrc}"
-    echo "  added ~/.bashrc hook for ${TARGET_DIR}"
+    echo "  added ~/.bashrc hook: ${marker#\# }"
   fi
 }
 
@@ -546,9 +547,9 @@ install_continue_ext() {
   local agents_src="${ext_root}/files/AGENTS.md"
   local rules_src="${ext_root}/.continue/rules"
   local prompts_src="${ext_root}/.continue/prompts"
-  local template="${ext_root}/bashrc_repokit"
+  local template="${ext_root}/.bashrc_continue"
   local scripts_dest="${TARGET_DIR}/.repo-kit/scripts"
-  local bashrc_dest="${TARGET_DIR}/.repo-kit/bashrc_repokit"
+  local bashrc_dest="${TARGET_DIR}/.repo-kit/.bashrc_continue"
   local src dest
 
   [[ -d "${ext_root}" ]] || die "extension 'continue' missing under ${EXTENSIONS_DIR}"
@@ -601,15 +602,15 @@ install_continue_ext() {
   done
   shopt -u nullglob
 
-  echo "  writing .repo-kit/bashrc_repokit..."
+  echo "  writing .repo-kit/.bashrc_continue..."
   mkdir -p "$(dirname "${bashrc_dest}")"
   sed \
     -e "s|@TARGET_DIR@|${TARGET_DIR}|g" \
     -e "s|@SCRIPTS_DIR@|${scripts_dest}|g" \
     "${template}" >"${bashrc_dest}"
-  echo "  wrote     .repo-kit/bashrc_repokit"
+  echo "  wrote     .repo-kit/.bashrc_continue"
 
-  hook_bashrc_repokit "${bashrc_dest}"
+  hook_bashrc "${bashrc_dest}"
 
   echo
   echo "  activate now:  source ~/.bashrc"
@@ -786,24 +787,33 @@ install_act_ext() {
 }
 
 # Copy Hermes phased review rules into target .repo-kit/hermes/review-rules/,
-# task triggers into .repo-kit/hermes/tasks/, and seed an empty
-# .repo-kit/hermes/reports/ directory.
+# task triggers into .repo-kit/hermes/tasks/, phase-command skills into
+# .repo-kit/hermes/skills/, the hermes-review.sh launcher, seed an empty
+# .repo-kit/hermes/reports/ directory, and hook ~/.bashrc to the kit's
+# .bashrc_hermes (one hook for all targets).
 install_hermes_ext() {
   local ext_root="${EXTENSIONS_DIR}/hermes"
   local rules_src="${ext_root}/rules"
   local tasks_src="${ext_root}/tasks"
+  local skills_src="${ext_root}/skills"
+  local launcher_src="${ext_root}/hermes-review.sh"
   local readme_src="${ext_root}/README.md"
   local reports_gitkeep_src="${ext_root}/reports/.gitkeep"
+  local bashrc_src="${ext_root}/.bashrc_hermes"
   local hermes_root="${TARGET_DIR}/.repo-kit/hermes"
   local dest_dir="${hermes_root}/review-rules"
   local tasks_dir="${hermes_root}/tasks"
+  local skills_dir="${hermes_root}/skills"
   local reports_dir="${hermes_root}/reports"
   local src dest
 
   [[ -d "${ext_root}" ]] || die "extension 'hermes' missing under ${EXTENSIONS_DIR}"
   [[ -d "${rules_src}" ]] || die "hermes extension missing rules/"
   [[ -d "${tasks_src}" ]] || die "hermes extension missing tasks/"
+  [[ -d "${skills_src}" ]] || die "hermes extension missing skills/"
+  [[ -f "${launcher_src}" ]] || die "hermes extension missing hermes-review.sh"
   [[ -f "${reports_gitkeep_src}" ]] || die "hermes extension missing reports/.gitkeep"
+  [[ -f "${bashrc_src}" ]] || die "hermes extension missing .bashrc_hermes"
 
   echo "extension: hermes"
   echo "  copying review rules to .repo-kit/hermes/review-rules/..."
@@ -834,10 +844,29 @@ install_hermes_ext() {
   shopt -u nullglob
   [[ "${found}" -eq 1 ]] || die "hermes extension has no tasks/*.md"
 
+  echo "  copying phase commands to .repo-kit/hermes/skills/..."
+  shopt -s nullglob
+  found=0
+  for src in "${skills_src}"/*/SKILL.md; do
+    found=1
+    _copy_file "${src}" "${skills_dir}/$(basename "$(dirname "${src}")")/SKILL.md"
+  done
+  shopt -u nullglob
+  [[ "${found}" -eq 1 ]] || die "hermes extension has no skills/*/SKILL.md"
+
+  echo "  copying launcher to .repo-kit/hermes/hermes-review.sh..."
+  _copy_file "${launcher_src}" "${hermes_root}/hermes-review.sh"
+  chmod +x "${hermes_root}/hermes-review.sh"
+
   echo "  seeding .repo-kit/hermes/reports/..."
   _copy_file "${reports_gitkeep_src}" "${reports_dir}/.gitkeep"
 
-  echo "  hermes ready in ${hermes_root}/{review-rules,tasks,reports}"
+  hook_bashrc "${bashrc_src}" "# repo-kit hermes"
+
+  echo "  hermes ready in ${hermes_root}/{review-rules,tasks,skills,reports}"
+  echo "  activate now:  source ~/.bashrc"
+  echo "  then, from the target repository:  hermes-review"
+  echo "  (without repo-kit:  .repo-kit/hermes/hermes-review.sh)"
 }
 
 install_extensions() {

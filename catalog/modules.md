@@ -102,7 +102,7 @@ Extension deps resolve like modules (`forge` → `openspec` first).
   - `AGENTS.md` (cheap-tool dispatch policy at target root)
   - `.continue/rules/`, `.continue/prompts/`
   - `.repo-kit/scripts/ai-*.sh` (`ai-commit`, `ai-context`, `ai-dep`, `ai-prompter`, `ai-git-issue`)
-  - `.repo-kit/bashrc_repokit` (sourced from `~/.bashrc`)
+  - `.repo-kit/.bashrc_continue` (sourced from `~/.bashrc`)
 - **Host deps (prompted):** `cn`, `python3`, `grep`, `gh`, `curl`, `rg`
 - **`ai-git-issue`:** drafts GitHub issues from `.repo-kit/findings/*.md` via `cn -p`, creates them with `gh`
 

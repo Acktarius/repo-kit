@@ -1,0 +1,22 @@
+# repo-kit hermes extension — sourced from ~/.bashrc
+# Defines shortcuts only; nothing from a target repository runs at shell start.
+
+# Run the current repository's .repo-kit/hermes/hermes-review.sh.
+hermes-review() {
+  local root launcher
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "hermes-review: run from inside the target Git repository" >&2
+    return 1
+  }
+  launcher="${root}/.repo-kit/hermes/hermes-review.sh"
+  [[ -x "${launcher}" ]] || {
+    echo "hermes-review: missing ${launcher}; install with: ./scripts/init.sh ${root} --ext hermes" >&2
+    return 1
+  }
+  "${launcher}" "$@"
+}
+
+# List Hermes sandbox containers (running and stopped).
+hermes-sandboxes() {
+  docker ps -a --filter ancestor=nousresearch/hermes-sandbox:desktop "$@"
+}

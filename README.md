@@ -97,7 +97,7 @@ Fresh installs via `init.sh` with `--base` get layout **1.0.2** automatically.
 
 | Extension | Notes |
 |-----------|-------|
-| `continue` | Checks/prompts for `cn`, `python3`, `grep`, `gh`, `curl`, `rg`; copies `.cursor/rules/{continue-sidekick,dispatch}.mdc` and `AGENTS.md`; copies `.continue/{rules,prompts}`; copies `ai-*.sh` to `.repo-kit/scripts/` (`ai-commit`, `ai-context`, `ai-dep`, `ai-prompter`, `ai-git-issue`); writes `.repo-kit/bashrc_repokit` and hooks `~/.bashrc` |
+| `continue` | Checks/prompts for `cn`, `python3`, `grep`, `gh`, `curl`, `rg`; copies `.cursor/rules/{continue-sidekick,dispatch}.mdc` and `AGENTS.md`; copies `.continue/{rules,prompts}`; copies `ai-*.sh` to `.repo-kit/scripts/` (`ai-commit`, `ai-context`, `ai-dep`, `ai-prompter`, `ai-git-issue`); writes `.repo-kit/.bashrc_continue` and hooks `~/.bashrc` |
 | `openspec` | `npm i -g @fission-ai/openspec@latest`; `openspec init --tools cursor` in target if needed |
 | `forge` | Depends on `openspec` (always installed first). Then `npm i -g @izkac/forgekit@latest`, `forgekit install --skills forge --agents cursor --openspec --force`, and `forge init --cursor --openspec` in target if needed |
 | `act` | Checks/prompts for `docker` (daemon reachable) and `act`; copies `.cursor/commands/act-run-workflows.md`, `.cursor/skills/act-run-workflows/`, `act-run-workflows.sh` to `.repo-kit/scripts/`, and project `.actrc` (ubuntu-latest → medium runner image) |

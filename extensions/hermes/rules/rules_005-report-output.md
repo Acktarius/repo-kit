@@ -38,10 +38,10 @@ Examples:
 - `phase-030-scan-plan.md`
 
 Never overwrite an existing phase report. If the intended filename
-already exists, create a new timestamped filename:
+already exists, create a new filename with a UTC timestamp:
 
 ```text
-phase-NNN-<phase-name>-YYYYMMDD-HHMMSS.md
+phase-NNN-<phase-name>-YYYYMMDD-HHMMSSZ.md
 ```
 
 ## Required report contents
