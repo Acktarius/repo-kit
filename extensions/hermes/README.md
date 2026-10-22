@@ -9,7 +9,8 @@ Installed layout under the target repository:
 | Path | Role |
 |------|------|
 | `.repo-kit/hermes/review-rules/` | Installed review rules (read-only policy inputs) |
-| `.repo-kit/hermes/reports/` | Generated report artefacts (Hermes may write here) |
+| `.repo-kit/hermes/tasks/` | Phase task triggers (read-only) |
+| `.repo-kit/hermes/reports/` | Generated report artefacts (the only Hermes write location) |
 
 Review rules are read-only policy inputs. Reports under
 `.repo-kit/hermes/reports/` are generated artefacts and may be written there
@@ -38,27 +39,46 @@ Perform one requested phase or specifically approved action, then stop.
 Rules 040 and 050 may run in the order justified by the approved plan.
 Do not run every phase automatically.
 
-## Invocation contract
-Each request must identify:
-- the safety-rule path;
-- the selected phase-rule path;
-- the approved target repository path;
-- the required, human-reviewed inputs;
-- any explicitly approved permissions beyond read-only inspection.
+## Tasks
 
-If required rules, inputs, or target paths are inaccessible, stop and
-report the gap. Do not silently use remembered instructions.
+| Task | Prior reports required | Report |
+|------|------------------------|--------|
+| `010-inventory.md` | — | `phase-010-inventory.md` |
+| `020-threat-model.md` | 010 | `phase-020-threat-model.md` |
+| `030-scan-plan.md` | 010, 020 | `phase-030-scan-plan.md` |
+| `040-dependency-advisories.md` | 010, 020, 030 | `phase-040-dependency-advisories.md` |
+| `050-source-review.md` | 010, 020 (030 if scanner-assisted) | `phase-050-source-review.md` |
+| `060-validate-and-triage.md` | 040 or 050 | `phase-060-validate-and-triage.md` |
+| `070-reviewed-findings.md` | 060 + named candidate ID | `phase-070-reviewed-findings.md` |
+| `080-remediate-and-retest.md` | 070 + named finding ID | `phase-080-remediate-and-retest.md` |
 
-Example for inventory, after confirming these paths are available:
+Each task reads this README, Rules 000 and 005, and its own phase rule.
+It checks the required prior reports and performs only its phase.
+It writes exactly one report under `.repo-kit/hermes/reports/`, then
+stops for human approval. If a prerequisite is missing, the report is
+written with completion state `blocked`.
 
-Read /workspace/conceal-explorer/.repo-kit/hermes/review-rules/rules_000-safety-and-scope.md,
-/workspace/conceal-explorer/.repo-kit/hermes/review-rules/rules_005-report-output.md, and
-/workspace/conceal-explorer/.repo-kit/hermes/review-rules/rules_010-inventory.md as my task instructions.
-The approved target is /workspace/conceal-explorer.
-Perform only Rule 010. Write the phase report under
-.repo-kit/hermes/reports/, then stop.
-Do not modify files outside .repo-kit/hermes/reports/, execute project
-code, install anything, or use the network.
+Triggering a task confirms that the human reviewed the prior reports.
+Task 080 only proposes a remediation plan. Patching, tests, and record
+updates each need separate explicit approval.
+
+## Standard invocation
+1. Start Hermes from the target repository root.
+2. Enter:
+
+   ```text
+   Read .repo-kit/hermes/tasks/NNN-phase-name.md
+   ```
+
+   Example: `Read .repo-kit/hermes/tasks/010-inventory.md`
+3. Open the generated report under `.repo-kit/hermes/reports/`.
+
+Add phase inputs or approvals to the same message when the task needs
+them, for example:
+`Read .repo-kit/hermes/tasks/070-reviewed-findings.md for candidate C-003`.
+
+If required rules, tasks, inputs, or reports are inaccessible, Hermes
+stops and reports the gap. It does not use remembered instructions.
 
 ## Trust and permissions
 Keep operator-approved rules separate from the untrusted target checkout.

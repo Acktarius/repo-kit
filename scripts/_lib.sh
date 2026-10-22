@@ -785,20 +785,24 @@ install_act_ext() {
   echo "  act ready in ${TARGET_DIR}"
 }
 
-# Copy Hermes phased review rules into target .repo-kit/hermes/review-rules/
-# and seed an empty .repo-kit/hermes/reports/ directory.
+# Copy Hermes phased review rules into target .repo-kit/hermes/review-rules/,
+# task triggers into .repo-kit/hermes/tasks/, and seed an empty
+# .repo-kit/hermes/reports/ directory.
 install_hermes_ext() {
   local ext_root="${EXTENSIONS_DIR}/hermes"
   local rules_src="${ext_root}/rules"
+  local tasks_src="${ext_root}/tasks"
   local readme_src="${ext_root}/README.md"
   local reports_gitkeep_src="${ext_root}/reports/.gitkeep"
   local hermes_root="${TARGET_DIR}/.repo-kit/hermes"
   local dest_dir="${hermes_root}/review-rules"
+  local tasks_dir="${hermes_root}/tasks"
   local reports_dir="${hermes_root}/reports"
   local src dest
 
   [[ -d "${ext_root}" ]] || die "extension 'hermes' missing under ${EXTENSIONS_DIR}"
   [[ -d "${rules_src}" ]] || die "hermes extension missing rules/"
+  [[ -d "${tasks_src}" ]] || die "hermes extension missing tasks/"
   [[ -f "${reports_gitkeep_src}" ]] || die "hermes extension missing reports/.gitkeep"
 
   echo "extension: hermes"
@@ -819,10 +823,21 @@ install_hermes_ext() {
     _copy_file "${readme_src}" "${dest_dir}/README.md"
   fi
 
+  echo "  copying tasks to .repo-kit/hermes/tasks/..."
+  shopt -s nullglob
+  found=0
+  for src in "${tasks_src}"/*.md; do
+    [[ -f "${src}" ]] || continue
+    found=1
+    _copy_file "${src}" "${tasks_dir}/$(basename "${src}")"
+  done
+  shopt -u nullglob
+  [[ "${found}" -eq 1 ]] || die "hermes extension has no tasks/*.md"
+
   echo "  seeding .repo-kit/hermes/reports/..."
   _copy_file "${reports_gitkeep_src}" "${reports_dir}/.gitkeep"
 
-  echo "  hermes ready in ${hermes_root}/{review-rules,reports}"
+  echo "  hermes ready in ${hermes_root}/{review-rules,tasks,reports}"
 }
 
 install_extensions() {
