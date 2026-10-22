@@ -785,19 +785,19 @@ install_act_ext() {
   echo "  act ready in ${TARGET_DIR}"
 }
 
-# Copy Hermes phased review rules into target review-rules/.
+# Copy Hermes phased review rules into target .repo-kit/hermes/review-rules/.
 install_hermes_ext() {
   local ext_root="${EXTENSIONS_DIR}/hermes"
   local rules_src="${ext_root}/rules"
   local readme_src="${ext_root}/README.md"
-  local dest_dir="${TARGET_DIR}/review-rules"
+  local dest_dir="${TARGET_DIR}/.repo-kit/hermes/review-rules"
   local src dest
 
   [[ -d "${ext_root}" ]] || die "extension 'hermes' missing under ${EXTENSIONS_DIR}"
   [[ -d "${rules_src}" ]] || die "hermes extension missing rules/"
 
   echo "extension: hermes"
-  echo "  copying review rules to review-rules/..."
+  echo "  copying review rules to .repo-kit/hermes/review-rules/..."
 
   shopt -s nullglob
   local found=0
@@ -814,7 +814,7 @@ install_hermes_ext() {
     _copy_file "${readme_src}" "${dest_dir}/README.md"
   fi
 
-  echo "  hermes ready in ${TARGET_DIR}/review-rules"
+  echo "  hermes ready in ${TARGET_DIR}/.repo-kit/hermes/review-rules"
 }
 
 install_extensions() {

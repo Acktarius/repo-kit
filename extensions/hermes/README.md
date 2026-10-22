@@ -3,7 +3,7 @@
 ## Status
 These are plain Markdown instructions for explicitly requested review phases.
 Install with `--ext hermes` on `init.sh` / `sync-cursor.sh` (copies into
-`<target>/review-rules/`).
+`<target>/.repo-kit/hermes/review-rules/`).
 Numbered filenames do not trigger execution.
 
 ## Rules and order
@@ -38,14 +38,12 @@ report the gap. Do not silently use remembered instructions.
 
 Example for inventory, after confirming these paths are available:
 
-Read /workspace/review-rules/rules_000-safety-and-scope.md and
-/workspace/review-rules/rules_010-inventory.md as my task instructions.
+Read /workspace/conceal-explorer/.repo-kit/hermes/review-rules/rules_000-safety-and-scope.md and
+/workspace/conceal-explorer/.repo-kit/hermes/review-rules/rules_010-inventory.md as my task instructions.
 The approved target is /workspace/conceal-explorer.
 Perform only Rule 010. Return the inventory in the response, then stop.
 Do not modify files, execute project code, install anything, or use
 the network.
-
-The example paths are deployment choices, not paths created by this README.
 
 ## Trust and permissions
 Keep operator-approved rules separate from the untrusted target checkout.
