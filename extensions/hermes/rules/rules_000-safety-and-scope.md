@@ -27,9 +27,16 @@ Without explicit approval for the specific action, do not:
 - execute target code, scripts, tests, builds, or Git hooks;
 - install tools or project dependencies;
 - access the network or upload source, scan data, or credentials;
-- create, modify, or delete files;
+- create, modify, or delete files outside the report-artefact boundary
+  defined by rules_005-report-output.md;
 - delegate work to other agents;
 - change services, containers, permissions, or security settings.
+
+During read-only review phases, apply rules_005-report-output.md:
+write generated review artefacts only under
+`.repo-kit/hermes/reports/`, and treat
+`.repo-kit/hermes/review-rules/` as read-only policy input.
+Reports do not authorize source-code changes.
 
 Permission for one action does not authorize later actions or phases.
 Stop and request approval when the phase requires additional permissions.
@@ -78,10 +85,12 @@ Stop and request approval when the phase requires additional permissions.
   verification evidence.
 
 ## Reporting and completion
-Each phase response must identify:
+Write the primary phase report per rules_005-report-output.md under
+`.repo-kit/hermes/reports/`. Do not overwrite an existing phase report.
+Each phase response and report must identify:
 - repository revision and working-tree state;
 - requested scope and completed work;
-- evidence and output locations, if writing was approved;
+- evidence and output locations under `.repo-kit/hermes/reports/`;
 - tool versions and advisory-data dates, when applicable;
 - unresolved questions, skipped checks, and coverage limitations;
 - phase completion state and the next approval required.

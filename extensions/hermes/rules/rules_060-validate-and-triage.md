@@ -2,6 +2,7 @@
 
 ## Prerequisites
 - Apply rules_000-safety-and-scope.md throughout this phase.
+- Apply rules_005-report-output.md for report artefact writes.
 - Require an approved target, review scope, and candidate evidence
   from Rule 040 or Rule 050.
 - Read existing reviewed findings and accepted risks when present.
@@ -16,8 +17,12 @@ Do not:
 - execute target code, exploits, tests, builds, or scripts;
 - probe deployed services or validate discovered credentials;
 - install tools or access the network;
-- modify files, findings, accepted risks, or security settings;
+- modify findings, accepted risks, or security settings;
+- modify files outside `.repo-kit/hermes/reports/` per Rule 005;
 - delegate work.
+Write the phase report to
+`.repo-kit/hermes/reports/phase-060-validate-and-triage.md`
+(or a timestamped variant if that file already exists).
 Any additional validation action requires specific approval.
 Describe proposed tests without executing them.
 
@@ -122,4 +127,5 @@ Use these sections:
 
 A candidate remains unresolved when required evidence is missing.
 Report completed triage separately from completed security coverage.
-Stop and wait for approval before proposing canonical finding records.
+Stop after writing the phase report and wait for approval before
+proposing canonical finding records.

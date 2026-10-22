@@ -2,9 +2,10 @@
 
 ## Prerequisites
 - Apply rules_000-safety-and-scope.md throughout this phase.
+- Apply rules_005-report-output.md for report artefact writes.
 - Require the approved inventory, threat model, and scan plan.
 - Require explicit approval for each scanner execution, network lookup,
-  database refresh, installation, or output-writing action.
+  database refresh, installation, or non-report output-writing action.
 - Confirm the full target commit hash and working-tree state.
 - If the target differs from the approved baseline, report the difference
   and stop for approval.
@@ -18,6 +19,11 @@
 - Keep credentials and source uploads out of commands and reports unless
   an approved tool requires secure handling through an approved mechanism.
 - Do not modify dependency files, reviewed findings, or accepted risks.
+- Write the phase report to
+  `.repo-kit/hermes/reports/phase-040-dependency-advisories.md`
+  (or a timestamped variant if that file already exists).
+  Do not write outside `.repo-kit/hermes/reports/` without separate
+  approval.
 
 ## 1. Establish component identity
 For each component under review, record:
@@ -117,4 +123,5 @@ Use these sections:
 
 A scan with no matches is not proof that dependencies are safe.
 If required checks are incomplete, say so explicitly.
-Stop after reporting; do not upgrade dependencies or advance phases.
+Stop after writing the phase report; do not upgrade dependencies or
+advance phases.

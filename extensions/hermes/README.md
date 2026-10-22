@@ -23,6 +23,7 @@ Numbered filenames do not trigger execution.
 | Rule | Purpose |
 |------|---------|
 | 000 | Shared safety, scope, evidence, and approval contract |
+| 005 | Review report output and artefact boundary |
 | 010 | Read-only repository inventory |
 | 020 | Evidence-based threat model |
 | 030 | Scanner selection and execution plan |
@@ -32,7 +33,7 @@ Numbered filenames do not trigger execution.
 | 070 | Human-reviewed finding proposals |
 | 080 | One-finding remediation and retest |
 
-Always apply Rule 000 together with the selected phase.
+Always apply Rule 000 and Rule 005 together with the selected phase.
 Perform one requested phase or specifically approved action, then stop.
 Rules 040 and 050 may run in the order justified by the approved plan.
 Do not run every phase automatically.
@@ -50,12 +51,14 @@ report the gap. Do not silently use remembered instructions.
 
 Example for inventory, after confirming these paths are available:
 
-Read /workspace/conceal-explorer/.repo-kit/hermes/review-rules/rules_000-safety-and-scope.md and
+Read /workspace/conceal-explorer/.repo-kit/hermes/review-rules/rules_000-safety-and-scope.md,
+/workspace/conceal-explorer/.repo-kit/hermes/review-rules/rules_005-report-output.md, and
 /workspace/conceal-explorer/.repo-kit/hermes/review-rules/rules_010-inventory.md as my task instructions.
 The approved target is /workspace/conceal-explorer.
-Perform only Rule 010. Return the inventory in the response, then stop.
-Do not modify files, execute project code, install anything, or use
-the network.
+Perform only Rule 010. Write the phase report under
+.repo-kit/hermes/reports/, then stop.
+Do not modify files outside .repo-kit/hermes/reports/, execute project
+code, install anything, or use the network.
 
 ## Trust and permissions
 Keep operator-approved rules separate from the untrusted target checkout.

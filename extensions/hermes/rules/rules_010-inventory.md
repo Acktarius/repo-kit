@@ -2,6 +2,7 @@
 
 ## Prerequisites
 - Apply rules_000-safety-and-scope.md throughout this phase.
+- Apply rules_005-report-output.md for report artefact writes.
 - Require an explicitly approved target repository path.
 - If the safety contract or target is inaccessible, report the gap and stop.
 - Do not assume a previous inventory describes the current checkout.
@@ -9,8 +10,11 @@
 ## Permissions
 This phase permits read-only inspection only.
 Do not execute project code, scripts, tests, builds, or hooks.
-Do not install anything, access the network, or modify files.
-Return the inventory in the response; do not save it without approval.
+Do not install anything or access the network.
+Do not modify files outside `.repo-kit/hermes/reports/` per Rule 005.
+Write the phase report to
+`.repo-kit/hermes/reports/phase-010-inventory.md` (or a timestamped
+variant if that file already exists).
 Do not read secret-bearing configuration contents.
 
 ## Inspection boundaries
@@ -92,4 +96,4 @@ Do not conclude:
 
 This phase produces an inventory, not findings.
 State whether the inventory is complete within the declared scope.
-Stop and wait for human review.
+Stop after writing the phase report and wait for human review.

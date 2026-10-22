@@ -2,6 +2,7 @@
 
 ## Prerequisites
 - Apply rules_000-safety-and-scope.md throughout this phase.
+- Apply rules_005-report-output.md for report artefact writes.
 - Require a human-approved candidate from Rule 060.
 - Process one explicitly selected candidate at a time.
 - Require the current findings schema and existing findings store,
@@ -11,11 +12,17 @@
 - Stop if material evidence has changed or prerequisites are missing.
 
 ## Permissions
-The default action is to propose a record in the response.
-Do not create or modify files, allocate an ID in a persistent store,
-accept risks, apply fixes, or change existing records automatically.
-Saving requires approval of the exact destination and proposed content.
-Approval to generate a proposal is not approval to save it.
+The default action is to propose a record in the response and write
+the phase report under `.repo-kit/hermes/reports/` per Rule 005.
+Do not allocate an ID in a persistent store, accept risks, apply
+fixes, or change existing records automatically.
+Do not create or modify files outside `.repo-kit/hermes/reports/`
+without approval of the exact destination and proposed content.
+Write the phase report to
+`.repo-kit/hermes/reports/phase-070-reviewed-findings.md`
+(or a timestamped variant if that file already exists).
+Approval to generate a proposal is not approval to save canonical
+finding records.
 
 ## Eligibility
 - Only validated, human-approved candidates may become new proposals.
@@ -98,4 +105,5 @@ Do not silently replace machine validation with an assertion.
 An approved write must preserve unrelated records.
 Do not create commits, push changes, or publish findings without
 separate approval.
-Stop after proposing or completing the specifically approved action.
+Stop after writing the phase report and proposing or completing the
+specifically approved action.

@@ -2,6 +2,7 @@
 
 ## Prerequisites
 - Apply rules_000-safety-and-scope.md throughout this phase.
+- Apply rules_005-report-output.md for report artefact writes.
 - Require one explicitly selected, human-approved open finding.
 - Read the reviewed finding, supporting evidence, relevant accepted risks,
   and approved remediation scope.
@@ -119,4 +120,9 @@ For the currently approved action, report:
 6. Proposed record change, if justified
 7. Completion state and next approval required
 
-Stop after the specifically approved action.
+Write the phase report to
+`.repo-kit/hermes/reports/phase-080-remediate-and-retest.md`
+(or a timestamped variant if that file already exists).
+Source edits still require the separate remediation approvals above;
+the report itself is not approval to change source code.
+Stop after writing the phase report for the specifically approved action.

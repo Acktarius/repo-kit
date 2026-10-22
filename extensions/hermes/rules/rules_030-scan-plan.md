@@ -2,6 +2,7 @@
 
 ## Prerequisites
 - Apply rules_000-safety-and-scope.md throughout this phase.
+- Apply rules_005-report-output.md for report artefact writes.
 - Require an approved target path, reviewed inventory from Rule 010,
   and reviewed threat model from Rule 020.
 - Confirm the full commit hash and working-tree state.
@@ -12,12 +13,15 @@
 This phase produces a plan, not a scan.
 - Do not install, update, download, authenticate, or run scanners.
 - Do not execute target code, scripts, builds, or dependency installers.
-- Do not access the network, modify files, or delegate work.
+- Do not access the network or delegate work.
+- Do not modify files outside `.repo-kit/hermes/reports/` per Rule 005.
 - Read-only inspection may locate existing tool executables and inspect
   relevant configuration.
 - Propose version/help checks as explicit actions for approval; do not
   assume arbitrary executables are safe to invoke.
-- Return the plan in the response. Saving it requires separate approval.
+- Write the phase report to
+  `.repo-kit/hermes/reports/phase-030-scan-plan.md` (or a timestamped
+  variant if that file already exists).
 
 ## Select checks from repository evidence
 Consider only checks relevant to the approved inventory and threat model:
@@ -108,4 +112,5 @@ Clearly label commands as proposals, not executed actions.
 If a command cannot yet be verified, do not present it as ready to run.
 Ask approval for one concrete next action.
 Approval of one action does not authorize the whole plan.
-Stop without installing tools or running scans.
+Stop after writing the phase report without installing tools or
+running scans.
