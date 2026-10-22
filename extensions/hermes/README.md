@@ -2,9 +2,9 @@
 
 ## Status
 These are plain Markdown instructions for explicitly requested review phases.
-They are not an automatically installed or registered repo-kit extension.
+Install with `--ext hermes` on `init.sh` / `sync-cursor.sh` (copies into
+`<target>/review-rules/`).
 Numbered filenames do not trigger execution.
-No installer integration is implemented by this directory.
 
 ## Rules and order
 
@@ -84,10 +84,9 @@ After interruption, confirm the current baseline and approved inputs
 before resuming. Do not infer permission from an unfinished prior action.
 
 ## Current limitations
-This directory provides instructions only.
+This extension installs instruction files only.
 It does not yet provide:
-- automatic rule loading;
-- installer or module registration;
+- automatic rule loading into the agent;
 - scanner installation or execution wrappers;
 - durable checkpoint automation;
 - automated findings-schema validation.

@@ -20,7 +20,7 @@ SKIPPED_COUNT=0
 OVERWRITTEN_COUNT=0
 
 # Known extensions (non-module tooling). Expand as new --ext values land.
-KNOWN_EXTENSIONS=("continue" "openspec" "forge" "act")
+KNOWN_EXTENSIONS=("continue" "openspec" "forge" "act" "hermes")
 
 die() {
   echo "error: $*" >&2
@@ -785,6 +785,38 @@ install_act_ext() {
   echo "  act ready in ${TARGET_DIR}"
 }
 
+# Copy Hermes phased review rules into target review-rules/.
+install_hermes_ext() {
+  local ext_root="${EXTENSIONS_DIR}/hermes"
+  local rules_src="${ext_root}/rules"
+  local readme_src="${ext_root}/README.md"
+  local dest_dir="${TARGET_DIR}/review-rules"
+  local src dest
+
+  [[ -d "${ext_root}" ]] || die "extension 'hermes' missing under ${EXTENSIONS_DIR}"
+  [[ -d "${rules_src}" ]] || die "hermes extension missing rules/"
+
+  echo "extension: hermes"
+  echo "  copying review rules to review-rules/..."
+
+  shopt -s nullglob
+  local found=0
+  for src in "${rules_src}"/*.md; do
+    [[ -f "${src}" ]] || continue
+    found=1
+    dest="${dest_dir}/$(basename "${src}")"
+    _copy_file "${src}" "${dest}"
+  done
+  shopt -u nullglob
+  [[ "${found}" -eq 1 ]] || die "hermes extension has no rules/*.md"
+
+  if [[ -f "${readme_src}" ]]; then
+    _copy_file "${readme_src}" "${dest_dir}/README.md"
+  fi
+
+  echo "  hermes ready in ${TARGET_DIR}/review-rules"
+}
+
 install_extensions() {
   local name
   [[ ${#SELECTED_EXTENSIONS[@]} -gt 0 ]] || return 0
@@ -798,6 +830,7 @@ install_extensions() {
       openspec) install_openspec_ext ;;
       forge) install_forge_ext ;;
       act) install_act_ext ;;
+      hermes) install_hermes_ext ;;
       *) die "unsupported extension '${name}'" ;;
     esac
   done
