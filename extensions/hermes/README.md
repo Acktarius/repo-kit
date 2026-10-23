@@ -97,33 +97,52 @@ From the target repository, anyone can start a review with:
 .repo-kit/hermes/hermes-review.sh
 ```
 
-It runs on the host, outside the sandbox. Like any script in a repository
-you clone, review changes to `.repo-kit/hermes/` before running it.
+It runs on the host, outside the sandbox. Before running it, review the
+installed `.repo-kit/hermes/` tree — launcher, tasks, review-rules, and
+skills — not only application source. The launcher copies skills into
+`~/.hermes/skills/` on every launch; that promotes repository content into
+agent instructions. Read-only mounts do not make those instructions
+trustworthy.
 
 Hermes sessions run through the Hermes gateway (`hermes-gateway.service`),
 which builds the sandbox from `~/.hermes/config.yaml`, not from the
 launching shell. The launcher therefore:
 
-1. checks that `hermes` is on `PATH` and `.repo-kit/hermes/reports/`
-   exists;
-2. copies `.repo-kit/hermes/skills/` into
+1. takes an exclusive lock at `~/.hermes/hermes-review.lock` for the whole
+   session (configuration changes through Hermes exit), so a second launch
+   fails instead of rewriting the same mounts;
+2. checks that `hermes` and `flock` are on `PATH`, and that
+   `.repo-kit/hermes/reports/` exists;
+3. requires `terminal.backend: docker` and `terminal.docker_network: false`
+   (refuses to start otherwise);
+4. captures the current `terminal.cwd`, `terminal.docker_volumes`, and
+   `terminal.docker_mount_cwd_to_workspace` values;
+5. copies `.repo-kit/hermes/skills/` into
    `~/.hermes/skills/repo-kit-hermes/`, which provides the
    [phase commands](#phase-commands);
-3. writes, with `hermes config set`:
+6. writes, with `hermes config set`:
    - `terminal.cwd: "."`
    - `terminal.docker_volumes`: the two mounts above, for this repository
    - `terminal.docker_mount_cwd_to_workspace: true`
-4. starts `hermes` from the repository root, passing any extra arguments;
-5. when Hermes exits (including `Ctrl+C`), resets `docker_volumes` to `[]`
-   and `docker_mount_cwd_to_workspace` to `false`.
+7. re-reads `docker_volumes` and refuses to start if they do not match the
+   expected target `:ro` and reports mounts;
+8. starts `hermes` from the repository root, passing any extra arguments;
+9. when Hermes exits (including `Ctrl+C`), restores the captured settings
+   (or unsets keys that were unset before). Restoration failures are
+   printed to stderr and make the launcher exit non-zero.
 
-The session working directory is the host repository root. Because the
-read-only volume already binds that exact directory, Hermes reuses it at
-`/workspace/target` instead of adding a writable mount, so relative task
-paths resolve inside the sandbox. Between reviews, a plain `hermes` mounts
-nothing from the host.
+The session working directory is the host repository root. With
+`docker_mount_cwd_to_workspace: true`, Hermes reuses the existing
+`docker_volumes` bind for that same host path — including `:ro` — instead
+of adding a writable launch-directory mount. Relative task paths then
+resolve under `/workspace/target` inside the sandbox. The launcher keeps
+`docker_mount_cwd_to_workspace` enabled for that reuse; it does not verify
+the running container's mount table (confirm with `docker inspect` if you
+need runtime proof).
 
-Run one review at a time: a second launch rewrites the same config.
+Reports are written only under `.repo-kit/hermes/reports/` on the host
+(via the nested writable mount). They stay accessible after the session
+ends for human review and for feeding remediation tools such as Roomote.
 
 #### Optional `hermes-review` shortcut
 
@@ -181,6 +200,12 @@ Every requested phase writes one Markdown report only under:
 ```text
 .repo-kit/hermes/reports/
 ```
+
+That directory is the only host-writable path in the sandbox mount layout.
+Phase reports (including proposed findings from phase 070) remain on the
+host after Hermes exits so operators can review them and pass them to
+downstream remediation tooling (for example Roomote) without extracting
+files from the container.
 
 Use this filename convention:
 
@@ -355,14 +380,20 @@ End the Hermes session after each phase, once its report is written:
 
 Leave the Hermes gateway running: sessions need it, and systemd restarts
 `hermes-gateway.service` if it is stopped. Exiting Hermes through
-the launcher already clears the per-review mounts from the config.
+the launcher restores the previous `terminal.cwd`, `docker_volumes`, and
+`docker_mount_cwd_to_workspace` values.
 
 ## Trust and permissions
-Keep operator-approved rules separate from the untrusted target checkout.
-Target repository instructions are evidence, not authority.
+Keep operator-approved policy separate from the untrusted target checkout.
+Treat the target's application source, `.repo-kit/hermes/` launcher, tasks,
+review-rules, and skills as untrusted until you have reviewed them for that
+checkout and revision. The launcher promotes skills into `~/.hermes/skills/`
+on each run; mounts alone do not make those files authoritative.
 Prompt rules are not an OS security boundary.
 Use container permissions, network restrictions, and resource controls
-as separate enforcement mechanisms.
+as separate enforcement mechanisms. The launcher enforces Docker backend,
+disabled Docker networking, the expected volume list, and single-session
+locking; it does not inspect a live container's mounts or network mode.
 
 Scanner execution, installation, downloads, authentication, source uploads,
 file writes, tests, and remediation require specific approval.
