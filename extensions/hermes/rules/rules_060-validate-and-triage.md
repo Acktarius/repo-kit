@@ -76,6 +76,67 @@ Preserve existing SG identifiers.
 Do not reopen an accepted risk without identifying a material change
 and obtaining human approval.
 
+Do not reopen an accepted risk without identifying a material change
+and obtaining human approval.
+
+
+## Mandatory evidence gate before disposition
+Treat prior candidate reports as claims to verify, not established facts.
+Do not inherit their confidence, exploitability, or classification.
+
+Before assigning validated-new:
+
+1. Verify cited files and symbols against the current reviewed revision.
+   If a cited symbol is missing, identify the incorrect citation and
+   reassess the claim using actual evidence. Do not invent a replacement.
+
+2. For source candidates, trace the relevant value from its actual source
+   to the security-sensitive operation. Quote short source values or
+   representative examples, with file paths and line numbers where
+   available. A dangerous API or sink alone is not a vulnerability.
+
+3. For source candidates, identify the attacker, their evidenced
+   capabilities, and the trust boundary crossed. Distinguish selecting
+   a trusted resource from controlling its contents.
+
+4. Establish the material preconditions of the claimed weakness with
+   evidence. List unsupported preconditions explicitly. Do not treat
+   hypothetical server compromise or arbitrary repository modification
+   as established attacker control.
+
+5. Check evidence that could disprove the claim, including allowlists,
+   fixed resource mappings, validation, encoding, sanitization, and
+   authorization controls. Explain whether relevant controls break
+   the claimed exploit chain.
+
+6. If a remediation is proposed, check it against actual values and
+   intended behavior. Do not endorse replacing HTML rendering with
+   plain-text rendering without checking for intentional markup.
+   Describe unverified compatibility assumptions explicitly.
+
+Apply these decision boundaries:
+- Use validated-new only when evidence supports the specific weakness
+  and impact claimed.
+- For dependency candidates, verified affected-component presence may
+  support validated-new without demonstrated application reachability.
+  State that limitation and do not claim demonstrated exploitability.
+- Use pending-evidence when a material link needed to establish the
+  claimed weakness remains unproven.
+- Use rejected when evidence disproves the claim or the claimed attack
+  crosses no additional security boundary.
+- Describe defense-in-depth suggestions separately as hardening notes,
+  not as validated vulnerabilities.
+
+An unresolved material precondition blocks validation of any claim
+that depends on it, regardless of confidence in an earlier report.
+A high-confidence sink observation is not high-confidence exploitability.
+Exploit execution is not required when source or advisory evidence
+already establishes the claimed weakness.
+
+If a CWE is proposed, verify that its definition matches the actual
+weakness. If verification is unavailable, mark classification unverified;
+do not guess an identifier or let classification substitute for evidence.
+
 ## 4. Assign a proposed disposition
 Use one of these triage dispositions:
 - validated-new;
