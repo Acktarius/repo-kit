@@ -1,0 +1,10 @@
+{
+  "$comment": "Operator-maintained targets.json. Maps registry keys to exact active_run_json paths. Hermes/runner must not modify this file. Duplicate JSON keys are rejected by the runner parser. Never derive filesystem paths by concatenating a target id.",
+  "schema_version": 1,
+  "policy_prefix": "/opt/data/hermes-review",
+  "targets": {
+    "repoX": {
+      "active_run_json": "/opt/data/review-runs/repoX/2026-10-30-inventory-01/run.json"
+    }
+  }
+}

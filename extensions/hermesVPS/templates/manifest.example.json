@@ -1,0 +1,52 @@
+{
+  "$comment": "Operator-maintained manifest.json. Not a second config source: identity fields must agree with run.json. Hermes/runner must not update this file automatically. Absent file OR artifacts:[] is a valid empty start for phase 010.",
+  "schema_version": 1,
+  "run_id": "2026-10-30-inventory-01",
+  "created_at_utc": "2026-10-30T23:00:00Z",
+  "source": {
+    "identity": "github.example/org/example-repo",
+    "path": "/opt/data/repositories/example-repo",
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "worktree_clean_at_start": true
+  },
+  "policy": {
+    "prefix": "/opt/data/hermes-review",
+    "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
+    "toolkit_dirty_at_install": true
+  },
+  "security_contracts": {
+    "findings_schema": "security-assets/findings.schema.json",
+    "status_enums": ["open", "fixed", "accepted-risk", "duplicate", "rejected"],
+    "severity_enums": ["low", "medium", "high", "critical"],
+    "finding_id_pattern": "^SG-[0-9]{3,}$",
+    "note": "Phase 010 does not generate findings. Additional templates may be packaged in later stages."
+  },
+  "artifacts": [],
+  "next_phase_gate": {
+    "requires_explicit_human_request": true,
+    "auto_advance": false,
+    "roomote_review_optional": true,
+    "human_acceptance_required_before_dependent_phase": true,
+    "note_after_010": "After phase-010-hermes-vN is produced, record it here; optionally record Roomote review; record human acceptance of exact ids; then issue a separate explicit request for phase 020."
+  },
+  "$comment_after_010_example_entries": [
+    {
+      "id": "phase-010-hermes-v1",
+      "kind": "hermes_phase_report",
+      "phase": "010",
+      "version": 1,
+      "path": "reports/phase-010-hermes-v1.md",
+      "completion_state": "complete"
+    },
+    {
+      "id": "phase-010-human-v1",
+      "kind": "human_acceptance",
+      "phase": "010",
+      "version": 1,
+      "path": "approvals/phase-010-human-v1.md",
+      "accepted_artifacts": ["phase-010-hermes-v1"],
+      "roomote_review": "skipped",
+      "note": "Human-authored. Model-generated acceptance is not authorization."
+    }
+  ]
+}

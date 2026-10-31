@@ -1,0 +1,55 @@
+{
+  "$comment": "Operator-prepared run.json for hermesVPS. Authoritative configuration. Hermes and hermes-vps-review must not modify this file. Parse with Python json.load + semantic validation (not json.tool alone). Never eval or source as shell.",
+  "schema_version": 1,
+  "run_id": "2026-10-30-inventory-01",
+  "policy_prefix": "/opt/data/hermes-review",
+  "source": {
+    "path": "/opt/data/repositories/example-repo",
+    "identity": "github.example/org/example-repo",
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "require_clean_worktree": true
+  },
+  "output": {
+    "run_root": "/opt/data/review-runs/example-repo/2026-10-30-inventory-01"
+  },
+  "phase_request": {
+    "phase": "010",
+    "phase_name": "inventory",
+    "report_version": 1,
+    "requested_by": "human-operator",
+    "requested_at_utc": "2026-10-30T23:00:00Z"
+  },
+  "prerequisites": {
+    "$comment": "Empty for phase 010. Later phases list exact artifact ids. No newest-match semantics.",
+    "artifacts": []
+  },
+  "artifact_naming": {
+    "hermes_report_pattern": "phase-{NNN}-hermes-v{N}.md",
+    "roomote_review_pattern": "phase-{NNN}-roomote-v{N}.md",
+    "human_acceptance_pattern": "phase-{NNN}-human-v{N}.md",
+    "never_overwrite": true
+  },
+  "boundaries": {
+    "claims_os_readonly_source": false,
+    "allowed_write_roots": [
+      "/opt/data/review-runs/example-repo/2026-10-30-inventory-01"
+    ],
+    "forbidden_without_separate_approval": [
+      "modify_source",
+      "modify_policy",
+      "modify_run_json",
+      "modify_manifest_json",
+      "network",
+      "install_packages",
+      "execute_target_scripts",
+      "run_scanners",
+      "create_pull_request",
+      "update_findings_store"
+    ]
+  },
+  "toolkit": {
+    "extension": "hermesVPS",
+    "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
+    "toolkit_dirty": true
+  }
+}
