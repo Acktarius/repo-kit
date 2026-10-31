@@ -80,7 +80,9 @@ for rel in \
   security-assets/README.md \
   PROVENANCE.md \
   BOOTSTRAP.md \
-  bin/hermes-vps-review; do
+  bin/hermes-vps-review \
+  bin/init-hermes-review \
+  lib/hermes_vps_common.py; do
   if [[ -e "${EXT}/${rel}" ]]; then
     ok "payload has ${rel}"
   else

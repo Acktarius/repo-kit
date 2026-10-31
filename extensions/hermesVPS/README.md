@@ -6,6 +6,8 @@ Phase **010 inventory** vertical slice with:
 
 - rules/tasks/templates;
 - validation runner (`bin/hermes-vps-review`);
+- review initializer (`bin/init-hermes-review`);
+- shared validation library (`lib/hermes_vps_common.py`);
 - operator target registry (`targets.json`);
 - thin skill adapter `skills/hermes-vps-010/` for `/hermes-vps-010 <target-id>`;
 - security schema copy and fixture tests.
@@ -15,6 +17,47 @@ unchanged.
 
 **Not implemented yet:** installer/packaging automation, phases 020–080,
 Roomote/GitHub/MCP automation, verified portal skill discovery.
+
+## Initialize a review (preferred operator setup)
+
+After the policy tree is installed under `/opt/data/hermes-review`:
+
+```bash
+init-hermes-review https://github.com/org/repo.git
+# optional:
+#   --target-id ID
+#   --run-id ID
+#   --activate-new-run          # required to replace an existing active run
+#   --policy-prefix /opt/data/hermes-review
+```
+
+If `+x` was lost in transfer:
+
+```bash
+python3 /opt/data/hermes-review/bin/init-hermes-review \
+  https://github.com/org/repo.git
+```
+
+The initializer:
+
+- accepts **HTTPS GitHub** URLs only (no embedded credentials, query, or fragment);
+- derives the target id from the repository name (override with `--target-id`);
+- uses `/opt/data/repositories/<target-id>` and
+  `/opt/data/review-runs/<target-id>/<run-id>/`;
+- clones only when the source path is absent (no pull/checkout/reset/clean;
+  no submodules, installs, builds, or repo scripts);
+- writes `run.json` + empty `reports/`, runs the same validation as
+  `hermes-vps-review`, and **only then** atomically updates `targets.json`;
+- on validation failure: leaves any new run paths in place, does **not**
+  create or modify `targets.json`, does not delete pre-existing content, and
+  does not claim full rollback;
+- uses a lock file beside the registry so **cooperating** initializer
+  processes serialize registry updates (the lock is not a security boundary
+  against non-cooperating writers);
+- prints skill/bootstrap invocation hints but does **not** register skills or
+  start analysis.
+
+GitHub auth uses existing configured access only.
 
 ## Normal operator UX
 

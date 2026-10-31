@@ -1,0 +1,592 @@
+#!/usr/bin/env python3
+"""Initialize a hermesVPS phase-010 review run from a GitHub HTTPS URL.
+
+Ordering: prepare run root + reports/ + run.json → shared validate_run →
+only then atomically update targets.json under lock. Validation failure does
+not create or modify targets.json.
+
+Does not execute analysis, register skills, pull existing clones, install
+packages, initialize submodules, or run repository scripts.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import datetime as dt
+import fcntl
+import os
+import re
+import subprocess
+import sys
+import urllib.parse
+from typing import Any, Iterator
+
+_EXT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _EXT_ROOT not in sys.path:
+    sys.path.insert(0, _EXT_ROOT)
+
+from lib.hermes_vps_common import (  # noqa: E402
+    ValidationError,
+    die,
+    expect_schema_version_1,
+    expect_str,
+    expect_type,
+    git,
+    load_json,
+    realpath_abs,
+    require_cmd,
+    validate_identifier,
+    validate_run,
+    validate_worktree_root,
+    write_json_atomic,
+)
+
+DEFAULT_POLICY_PREFIX = "/opt/data/hermes-review"
+
+# owner/repo path segments after optional trailing ".git" is stripped.
+_GH_OWNER_REPO = re.compile(
+    r"^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)/"
+    r"([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)$"
+)
+
+
+class Once(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        cur = getattr(namespace, self.dest, None)
+        if cur is not None:
+            parser.error(f"{option_string} may only be specified once")
+        setattr(namespace, self.dest, values)
+
+
+class InitState:
+    """Tracks what this invocation created or changed for failure reports."""
+
+    def __init__(self) -> None:
+        self.created: list[str] = []
+        self.changed: list[str] = []
+
+    def note_created(self, path: str) -> None:
+        self.created.append(path)
+
+    def note_changed(self, path: str) -> None:
+        self.changed.append(path)
+
+    def report(self) -> str:
+        lines = ["This invocation's filesystem effects so far:"]
+        if not self.created and not self.changed:
+            lines.append("  (none)")
+        for p in self.created:
+            lines.append(f"  created: {p}")
+        for p in self.changed:
+            lines.append(f"  changed: {p}")
+        lines.append(
+            "Pre-existing content was not deleted. This is not a full rollback; "
+            "newly created paths above may remain. targets.json is only written "
+            "after successful validation."
+        )
+        return "\n".join(lines)
+
+
+def parse_github_https_url(raw: str) -> tuple[str, str, str, str]:
+    """Return (owner, repo, clone_url, identity).
+
+    identity is github.com/<owner>/<repo> (no .git).
+    clone_url is https://github.com/<owner>/<repo>.git
+    """
+    if "\x00" in raw or any(c in raw for c in ("`", "$", ";", "|", "&", "\n", "\r")):
+        raise ValidationError(
+            "repository URL contains unsafe shell-metacharacter-like input"
+        )
+    try:
+        parts = urllib.parse.urlsplit(raw.strip())
+    except ValueError as exc:
+        raise ValidationError(f"invalid repository URL: {exc}") from exc
+    if parts.scheme.lower() != "https":
+        raise ValidationError("v1 accepts HTTPS GitHub repository URLs only")
+    if parts.username is not None or parts.password is not None:
+        raise ValidationError("repository URL must not embed credentials")
+    if parts.query or parts.fragment:
+        raise ValidationError("repository URL must not include query or fragment")
+    host = (parts.hostname or "").lower()
+    if host != "github.com":
+        raise ValidationError("v1 accepts github.com HTTPS repository URLs only")
+    if parts.port is not None and parts.port != 443:
+        raise ValidationError("repository URL must not use a non-default port")
+    path = parts.path.lstrip("/")
+    if path.endswith("/"):
+        path = path[:-1]
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    m = _GH_OWNER_REPO.match(path)
+    if not m:
+        raise ValidationError(
+            "repository URL path must be /<owner>/<repo> or /<owner>/<repo>.git "
+            f"with valid GitHub-like names (got path {parts.path!r})"
+        )
+    owner, repo = m.group(1), m.group(2)
+    if ".." in owner or ".." in repo or owner in (".", "..") or repo in (".", ".."):
+        raise ValidationError("invalid owner or repository name")
+    identity = f"github.com/{owner}/{repo}"
+    clone_url = f"https://github.com/{owner}/{repo}.git"
+    return owner, repo, clone_url, identity
+
+
+def normalize_github_remote(url: str) -> str | None:
+    """Normalize a git remote URL to github.com/owner/repo identity, or None."""
+    u = url.strip()
+    path: str | None = None
+    if u.startswith("git@github.com:"):
+        path = u[len("git@github.com:") :].strip()
+    else:
+        try:
+            parts = urllib.parse.urlsplit(u)
+        except ValueError:
+            return None
+        if (parts.hostname or "").lower() != "github.com":
+            return None
+        path = parts.path.lstrip("/")
+    if path is None:
+        return None
+    path = path.rstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    m = re.match(
+        r"^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)/"
+        r"([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)$",
+        path,
+    )
+    if not m:
+        return None
+    return f"github.com/{m.group(1)}/{m.group(2)}"
+
+
+def default_run_id() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S-010")
+
+
+def data_root_from_policy(policy_prefix: str) -> str:
+    """Parent of policy prefix is the data root (/opt/data when policy is /opt/data/hermes-review)."""
+    parent = os.path.dirname(policy_prefix.rstrip(os.sep))
+    if not parent or parent == policy_prefix:
+        raise ValidationError(
+            f"cannot derive data root from policy_prefix {policy_prefix!r}"
+        )
+    return parent
+
+
+@contextlib.contextmanager
+def registry_lock(lock_path: str) -> Iterator[None]:
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    fd = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        finally:
+            fd.close()
+
+
+def ensure_clone(
+    source_path: str,
+    clone_url: str,
+    identity: str,
+    state: InitState,
+) -> None:
+    if os.path.lexists(source_path):
+        if not os.path.isdir(source_path):
+            raise ValidationError(
+                f"source path exists but is not a directory: {source_path}"
+            )
+        validate_worktree_root(source_path)
+        porcelain = git(["status", "--porcelain"], cwd=source_path)
+        if porcelain:
+            raise ValidationError(
+                f"existing source worktree is dirty; refusing to proceed: {source_path}"
+            )
+        try:
+            remote = git(["remote", "get-url", "origin"], cwd=source_path)
+        except ValidationError as exc:
+            raise ValidationError(
+                f"existing source has no usable origin remote to verify identity: {exc}"
+            ) from exc
+        got = normalize_github_remote(remote)
+        if got != identity:
+            raise ValidationError(
+                "existing source repository identity mismatch: "
+                f"expected {identity!r}, origin normalizes to {got!r} "
+                f"(raw origin {remote!r})"
+            )
+        return
+
+    parent = os.path.dirname(source_path)
+    if not os.path.isdir(parent):
+        os.makedirs(parent, mode=0o755)
+        state.note_created(parent)
+
+    # Argv-only clone; never shell. No recurse-submodules.
+    try:
+        proc = subprocess.run(
+            ["git", "clone", "--", clone_url, source_path],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise ValidationError(f"failed to execute git clone: {exc}") from exc
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        auth_hint = ""
+        low = err.lower()
+        if any(
+            s in low
+            for s in (
+                "authentication",
+                "permission denied",
+                "could not read username",
+                "403",
+                "401",
+                "fatal: could not read from remote",
+            )
+        ):
+            auth_hint = (
+                " Authentication appears required; use existing configured "
+                "GitHub access only (this tool does not prompt for or store credentials)."
+            )
+        raise ValidationError(f"git clone failed: {err}.{auth_hint}")
+    state.note_created(source_path)
+    validate_worktree_root(source_path)
+
+
+def load_or_init_registry(registry_path: str, policy_prefix: str) -> dict[str, Any]:
+    if not os.path.isfile(registry_path):
+        return {
+            "schema_version": 1,
+            "policy_prefix": policy_prefix,
+            "targets": {},
+        }
+    reg = load_json(registry_path)
+    expect_type(reg, dict, "targets.json root")
+    expect_schema_version_1(reg.get("schema_version"), "targets.json schema_version")
+    policy_raw = expect_str(reg.get("policy_prefix"), "targets.json policy_prefix")
+    existing_prefix = realpath_abs(policy_raw, "targets.json policy_prefix")
+    want = realpath_abs(policy_prefix, "policy_prefix")
+    if existing_prefix != want:
+        raise ValidationError(
+            "targets.json policy_prefix mismatch: "
+            f"file={existing_prefix!r} initializer={want!r}"
+        )
+    expect_type(reg.get("targets"), dict, "targets.json targets")
+    return reg
+
+
+def existing_target_identity(
+    registry: dict[str, Any], target_id: str
+) -> str | None:
+    """Best-effort identity from active run.json source.identity, if readable."""
+    targets = registry.get("targets") or {}
+    if target_id not in targets:
+        return None
+    entry = expect_type(targets[target_id], dict, f"targets[{target_id!r}]")
+    run_json_raw = expect_str(
+        entry.get("active_run_json"), f"targets[{target_id!r}].active_run_json"
+    )
+    if not os.path.isfile(run_json_raw):
+        return None
+    try:
+        data = load_json(run_json_raw)
+        source = expect_type(data.get("source"), dict, "source")
+        return expect_str(source.get("identity"), "source.identity")
+    except ValidationError:
+        return None
+
+
+def build_run_json(
+    *,
+    run_id: str,
+    policy_prefix: str,
+    source_path: str,
+    identity: str,
+    commit: str,
+    run_root: str,
+    toolkit_revision: str,
+) -> dict[str, Any]:
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "schema_version": 1,
+        "run_id": run_id,
+        "policy_prefix": policy_prefix,
+        "source": {
+            "path": source_path,
+            "identity": identity,
+            "commit": commit,
+            "require_clean_worktree": True,
+        },
+        "output": {"run_root": run_root},
+        "phase_request": {
+            "phase": "010",
+            "phase_name": "inventory",
+            "report_version": 1,
+            "requested_by": "init-hermes-review",
+            "requested_at_utc": now,
+        },
+        "prerequisites": {"artifacts": []},
+        "artifact_naming": {
+            "hermes_report_pattern": "phase-{NNN}-hermes-v{N}.md",
+            "roomote_review_pattern": "phase-{NNN}-roomote-v{N}.md",
+            "human_acceptance_pattern": "phase-{NNN}-human-v{N}.md",
+            "never_overwrite": True,
+        },
+        "boundaries": {
+            "claims_os_readonly_source": False,
+            "allowed_write_roots": [run_root],
+            "forbidden_without_separate_approval": [
+                "modify_source",
+                "modify_policy",
+                "modify_run_json",
+                "modify_manifest_json",
+                "network",
+                "install_packages",
+                "execute_target_scripts",
+                "run_scanners",
+                "create_pull_request",
+                "update_findings_store",
+            ],
+        },
+        "toolkit": {
+            "extension": "hermesVPS",
+            "toolkit_revision": toolkit_revision,
+            "toolkit_dirty": False,
+        },
+    }
+
+
+def toolkit_revision(policy_prefix: str) -> str:
+    """Record a revision hint; prefer git HEAD of policy tree if available."""
+    try:
+        return git(["rev-parse", "HEAD"], cwd=policy_prefix).lower()
+    except ValidationError:
+        return "unknown"
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=(
+            "Initialize a hermesVPS phase-010 review for a GitHub HTTPS repository URL. "
+            "Validates afterward; does not execute analysis."
+        )
+    )
+    p.add_argument(
+        "repository_url",
+        help="HTTPS GitHub repository URL (e.g. https://github.com/org/repo.git)",
+    )
+    p.add_argument(
+        "--target-id",
+        default=None,
+        action=Once,
+        help="Override target id (default: repository name)",
+    )
+    p.add_argument(
+        "--run-id",
+        default=None,
+        action=Once,
+        help="Explicit run id (default: UTC YYYYMMDD-HHMMSS-010)",
+    )
+    p.add_argument(
+        "--activate-new-run",
+        action="store_true",
+        help="Required to replace an existing target's active_run_json",
+    )
+    p.add_argument(
+        "--policy-prefix",
+        default=None,
+        action=Once,
+        help=f"Policy prefix (default: {DEFAULT_POLICY_PREFIX})",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    if sys.version_info < (3, 8):
+        die("Python 3.8+ required")
+    require_cmd("git")
+
+    args = parse_args(argv)
+    state = InitState()
+
+    try:
+        owner, repo, clone_url, identity = parse_github_https_url(args.repository_url)
+        target_id = args.target_id if args.target_id is not None else repo
+        target_id = validate_identifier(target_id, "--target-id" if args.target_id else "target-id")
+
+        run_id = args.run_id if args.run_id is not None else default_run_id()
+        run_id = validate_identifier(run_id, "--run-id" if args.run_id else "run-id")
+
+        policy_prefix_raw = (
+            DEFAULT_POLICY_PREFIX
+            if args.policy_prefix is None
+            else expect_str(args.policy_prefix, "--policy-prefix")
+        )
+        if not os.path.isabs(policy_prefix_raw):
+            raise ValidationError("--policy-prefix must be an absolute path")
+        if ".." in policy_prefix_raw.split(os.sep):
+            raise ValidationError("--policy-prefix must not contain '..' segments")
+        policy_prefix = realpath_abs(policy_prefix_raw, "--policy-prefix")
+        if not os.path.isdir(policy_prefix):
+            raise ValidationError(
+                f"policy_prefix is not a directory (install/upload hermesVPS first): "
+                f"{policy_prefix}"
+            )
+
+        data_root = data_root_from_policy(policy_prefix)
+        # Standard layout paths (target-id used only as a directory name under fixed parents).
+        source_path = os.path.join(data_root, "repositories", target_id)
+        run_root = os.path.join(data_root, "review-runs", target_id, run_id)
+        run_json_path = os.path.join(run_root, "run.json")
+        reports_dir = os.path.join(run_root, "reports")
+        registry_path = os.path.join(policy_prefix, "targets.json")
+        lock_path = os.path.join(policy_prefix, ".init-hermes-review.lock")
+
+        if os.path.lexists(run_root):
+            raise ValidationError(
+                f"run directory already exists (refusing to overwrite): {run_root}"
+            )
+
+        # Early registry read: catch owner/target-id collisions before clone/verify.
+        if os.path.isfile(registry_path):
+            preview = load_or_init_registry(registry_path, policy_prefix)
+            if target_id in preview["targets"]:
+                prior_identity = existing_target_identity(preview, target_id)
+                if prior_identity is not None and prior_identity != identity:
+                    raise ValidationError(
+                        f"target id {target_id!r} already maps to a different repository "
+                        f"identity {prior_identity!r}; refusing collision with {identity!r}. "
+                        "Choose a distinct --target-id."
+                    )
+
+        ensure_clone(source_path, clone_url, identity, state)
+        source_path = os.path.realpath(source_path)
+        head = git(["rev-parse", "HEAD"], cwd=source_path).lower()
+
+        # Refuse missing --activate-new-run before creating a new run tree.
+        if os.path.isfile(registry_path):
+            preview = load_or_init_registry(registry_path, policy_prefix)
+            if target_id in preview["targets"]:
+                entry = expect_type(
+                    preview["targets"][target_id], dict, f"targets[{target_id!r}]"
+                )
+                prior_active = expect_str(
+                    entry.get("active_run_json"),
+                    f"targets[{target_id!r}].active_run_json",
+                )
+                if os.path.realpath(prior_active) != os.path.realpath(run_json_path):
+                    if not args.activate_new_run:
+                        raise ValidationError(
+                            f"target {target_id!r} already has active_run_json="
+                            f"{prior_active!r}; pass --activate-new-run to point it at "
+                            f"the new run {run_json_path!r}"
+                        )
+
+        # 1) Prepare new run (never touches targets.json here).
+        os.makedirs(run_root, mode=0o755)
+        state.note_created(run_root)
+        os.makedirs(reports_dir, mode=0o755)
+        state.note_created(reports_dir)
+
+        run_data = build_run_json(
+            run_id=run_id,
+            policy_prefix=policy_prefix,
+            source_path=source_path,
+            identity=identity,
+            commit=head,
+            run_root=run_root,
+            toolkit_revision=toolkit_revision(policy_prefix),
+        )
+        write_json_atomic(run_json_path, run_data)
+        state.note_created(run_json_path)
+
+        # 2) Shared validation must succeed before any registry activation.
+        ctx = validate_run(run_data, 1, expected_policy_prefix=policy_prefix)
+
+        # 3) Only then update targets.json under lock (cooperating processes only).
+        with registry_lock(lock_path):
+            registry = load_or_init_registry(registry_path, policy_prefix)
+            targets = registry["targets"]
+            assert isinstance(targets, dict)
+
+            if target_id in targets:
+                prior_identity = existing_target_identity(registry, target_id)
+                if prior_identity is not None and prior_identity != identity:
+                    raise ValidationError(
+                        f"target id {target_id!r} already maps to a different repository "
+                        f"identity {prior_identity!r}; refusing collision with {identity!r}. "
+                        "Choose a distinct --target-id."
+                    )
+                entry = expect_type(targets[target_id], dict, f"targets[{target_id!r}]")
+                prior_active = expect_str(
+                    entry.get("active_run_json"),
+                    f"targets[{target_id!r}].active_run_json",
+                )
+                if os.path.realpath(prior_active) != os.path.realpath(run_json_path):
+                    if not args.activate_new_run:
+                        raise ValidationError(
+                            f"target {target_id!r} already has active_run_json="
+                            f"{prior_active!r}; pass --activate-new-run to point it at "
+                            f"the new run {run_json_path!r}"
+                        )
+
+            targets[target_id] = {"active_run_json": run_json_path}
+            registry["targets"] = targets
+            registry["policy_prefix"] = policy_prefix
+            registry_existed = os.path.isfile(registry_path)
+            write_json_atomic(registry_path, registry)
+            if registry_existed:
+                state.note_changed(registry_path)
+            else:
+                state.note_created(registry_path)
+
+    except ValidationError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        print(state.report(), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"error: filesystem operation failed: {exc}", file=sys.stderr)
+        print(state.report(), file=sys.stderr)
+        return 2
+
+    skill_line = f"/hermes-vps-010 {target_id}"
+    fallback = (
+        f"Read {policy_prefix}/BOOTSTRAP.md and execute only phase 010 for target "
+        f"{target_id} using {registry_path}; stop if validation fails."
+    )
+    print("======== init-hermes-review success (no analysis started) ========")
+    print(f"TARGET ID: {target_id}")
+    print(f"SOURCE PATH: {ctx['source_path']}")
+    print(f"SOURCE IDENTITY: {identity}")
+    print(f"SOURCE COMMIT: {ctx['source_commit']}")
+    print(f"RUN ID: {run_id}")
+    print(f"RUN ROOT: {ctx['run_root']}")
+    print(f"RUN JSON: {run_json_path}")
+    print(f"REPORTS DIR: {ctx['reports_dir']}")
+    print(f"SELECTED REPORT: {ctx['report_path']}")
+    print(f"REGISTRY: {registry_path}")
+    print(f"REGISTERED-SKILL INVOCATION (if skill is registered): {skill_line}")
+    print(
+        "NOTE: This tool does not register skills and does not claim the skill is registered."
+    )
+    print(f"BOOTSTRAP FALLBACK: {fallback}")
+    print("NEXT: validate-only runner already succeeded; do not start analysis until requested.")
+    print("======== end ========")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

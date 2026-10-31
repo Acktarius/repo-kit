@@ -35,6 +35,8 @@ repo-kit tree (upload/install packaging comes later).
 | `README.md`, `BOOTSTRAP.md`, `templates/*` | hermesVPS contracts (Stage 2+) |
 | `rules/*`, `tasks/*` | Agent-neutral VPS phase instructions |
 | `bin/hermes-vps-review` | Local validation + prompt printer |
+| `bin/init-hermes-review` | Phase-010 review initializer (clone/register/validate) |
+| `lib/hermes_vps_common.py` | Shared validation helpers for runner + initializer |
 
 ## Adapted instructions (not exact copies)
 

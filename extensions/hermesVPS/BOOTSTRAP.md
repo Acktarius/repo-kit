@@ -18,10 +18,12 @@ Default documented deployment binding (not universal):
 | Policy prefix | `/opt/data/hermes-review` |
 | This bootstrap | `/opt/data/hermes-review/BOOTSTRAP.md` |
 | Target registry | `/opt/data/hermes-review/targets.json` |
+| Initializer | `/opt/data/hermes-review/bin/init-hermes-review` |
 | Runner | `/opt/data/hermes-review/bin/hermes-vps-review` |
+| Shared library | `/opt/data/hermes-review/lib/hermes_vps_common.py` |
 | Rules / tasks | under the policy prefix |
-| Source repository | from the selected `run.json` only |
-| Run root | from the selected `run.json` only |
+| Source repository | `/opt/data/repositories/<target-id>` (from `run.json`) |
+| Run root | `/opt/data/review-runs/<target-id>/<run-id>/` (from `run.json`) |
 
 If the install prefix differs, the operator must use that prefix consistently
 in registry, `run.json`, and any registered skill copy. Non-default prefixes
@@ -38,6 +40,19 @@ The three trees (policy, source, run output) must be distinct.
 - **`manifest.json`:** operator-maintained artefact/acceptance index. Optional
   at empty phase-010 start. Hermes must **not** update it automatically
   (procedural; not OS-enforced).
+
+## Preferred setup before phase 010
+
+Operators should normally create the run with:
+
+```text
+/opt/data/hermes-review/bin/init-hermes-review https://github.com/org/repo.git
+```
+
+(or `python3 …/bin/init-hermes-review …` if the execute bit was lost). That
+creates the source checkout (if needed), run root, empty `reports/`, `run.json`,
+and registry entry, then validates. It does **not** start analysis and does
+**not** register skills.
 
 ## Short command (when skill is registered)
 
@@ -98,7 +113,10 @@ or a full repo-kit checkout.
 
 ## Stop conditions
 
-Validation failure; missing `reports/` directory; `reports/` or selected
+Initializer failure (invalid GitHub HTTPS URL; target-id owner collision;
+missing `--activate-new-run` when replacing an active run; existing run
+directory; dirty or mismatched existing source; clone/auth failure);
+validation failure; missing `reports/` directory; `reports/` or selected
 output escaping the run root (including symlinks into source/policy/elsewhere);
 report collision (including dangling output symlinks); source path that is not
 the non-bare worktree root; dirty tree or SHA mismatch; `schema_version` not
