@@ -22,11 +22,16 @@ import sys
 import urllib.parse
 from typing import Any, Iterator
 
+# Prevent __pycache__ writes under the policy tree when importing lib/.
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
 _EXT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _EXT_ROOT not in sys.path:
     sys.path.insert(0, _EXT_ROOT)
 
 from lib.hermes_vps_common import (  # noqa: E402
+    FULL_SHA,
     ValidationError,
     die,
     expect_schema_version_1,
@@ -41,6 +46,9 @@ from lib.hermes_vps_common import (  # noqa: E402
     validate_worktree_root,
     write_json_atomic,
 )
+
+# Documented when no verified install provenance is available.
+TOOLKIT_REVISION_UNKNOWN = "unknown"
 
 DEFAULT_POLICY_PREFIX = "/opt/data/hermes-review"
 
@@ -318,6 +326,7 @@ def build_run_json(
     commit: str,
     run_root: str,
     toolkit_revision: str,
+    toolkit_dirty: bool,
 ) -> dict[str, Any]:
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
@@ -364,17 +373,66 @@ def build_run_json(
         "toolkit": {
             "extension": "hermesVPS",
             "toolkit_revision": toolkit_revision,
-            "toolkit_dirty": False,
+            "toolkit_dirty": toolkit_dirty,
         },
     }
 
 
-def toolkit_revision(policy_prefix: str) -> str:
-    """Record a revision hint; prefer git HEAD of policy tree if available."""
+def resolve_toolkit_provenance(policy_prefix: str) -> tuple[str, bool]:
+    """Resolve toolkit_revision and toolkit_dirty for run.json.
+
+    Order:
+    1. Optional operator/installer file ``toolkit-provenance.json`` under the
+       policy prefix (explicit verified source only — never invented here).
+    2. Else, only if the policy prefix itself is a non-bare Git worktree root
+       (``show-toplevel`` equals the policy path): use HEAD + porcelain dirty.
+       Ancestor repositories (typical copied upload under an unrelated checkout)
+       are ignored.
+    3. Else ``("unknown", True)`` — revision unknown; dirty=true so we never
+       claim a verified clean install. Compatible with boolean toolkit_dirty.
+    """
+    explicit = os.path.join(policy_prefix, "toolkit-provenance.json")
+    if os.path.isfile(explicit):
+        data = load_json(explicit)
+        expect_type(data, dict, "toolkit-provenance.json root")
+        if "schema_version" in data:
+            expect_schema_version_1(
+                data.get("schema_version"), "toolkit-provenance.json schema_version"
+            )
+        rev = expect_str(data.get("toolkit_revision"), "toolkit_revision").strip()
+        if rev.lower() == TOOLKIT_REVISION_UNKNOWN:
+            raise ValidationError(
+                "toolkit-provenance.json toolkit_revision must not be the sentinel "
+                f"{TOOLKIT_REVISION_UNKNOWN!r}; omit the file to record unknown"
+            )
+        dirty = data.get("toolkit_dirty")
+        if type(dirty) is not bool:
+            raise ValidationError(
+                "toolkit-provenance.json toolkit_dirty must be a boolean"
+            )
+        return rev, dirty
+
+    policy_r = os.path.realpath(policy_prefix)
     try:
-        return git(["rev-parse", "HEAD"], cwd=policy_prefix).lower()
+        inside = git(["rev-parse", "--is-inside-work-tree"], cwd=policy_prefix)
     except ValidationError:
-        return "unknown"
+        return TOOLKIT_REVISION_UNKNOWN, True
+    if inside != "true":
+        return TOOLKIT_REVISION_UNKNOWN, True
+    try:
+        toplevel = os.path.realpath(
+            git(["rev-parse", "--show-toplevel"], cwd=policy_prefix)
+        )
+    except ValidationError:
+        return TOOLKIT_REVISION_UNKNOWN, True
+    if toplevel != policy_r:
+        # Policy sits inside some other repository — do not inherit that SHA.
+        return TOOLKIT_REVISION_UNKNOWN, True
+    rev = git(["rev-parse", "HEAD"], cwd=policy_prefix).lower()
+    if not FULL_SHA.match(rev):
+        return TOOLKIT_REVISION_UNKNOWN, True
+    porcelain = git(["status", "--porcelain"], cwd=policy_prefix)
+    return rev, bool(porcelain.strip())
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -501,6 +559,7 @@ def main(argv: list[str]) -> int:
         os.makedirs(reports_dir, mode=0o755)
         state.note_created(reports_dir)
 
+        toolkit_rev, toolkit_dirty = resolve_toolkit_provenance(policy_prefix)
         run_data = build_run_json(
             run_id=run_id,
             policy_prefix=policy_prefix,
@@ -508,7 +567,8 @@ def main(argv: list[str]) -> int:
             identity=identity,
             commit=head,
             run_root=run_root,
-            toolkit_revision=toolkit_revision(policy_prefix),
+            toolkit_revision=toolkit_rev,
+            toolkit_dirty=toolkit_dirty,
         )
         write_json_atomic(run_json_path, run_data)
         state.note_created(run_json_path)

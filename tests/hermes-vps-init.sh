@@ -67,6 +67,8 @@ DATA="${TMP}/opt/data"
 POLICY="${DATA}/hermes-review"
 mkdir -p "${POLICY}"
 cp -a "${EXT}/." "${POLICY}/"
+find "${POLICY}" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "${POLICY}" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
 seed_source() {
   local dest="$1" owner="$2" repo="$3"
@@ -115,6 +117,16 @@ if [[ -f "${RUN_JSON}" && -d "${REPORTS}" ]] \
 else
   bad "success artifacts/output incomplete: $(cat "${OUT}"; echo '---'; cat "${TMP}/e")"
 fi
+
+# Copied policy without Git metadata → unknown revision, dirty true
+python3 - "${RUN_JSON}" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+tk = data["toolkit"]
+assert tk["toolkit_revision"] == "unknown", tk
+assert tk["toolkit_dirty"] is True, tk
+PY
+ok "copied policy without Git metadata records unknown/dirty toolkit"
 
 # Unrelated target preserved + registry schema
 python3 - "${POLICY}/targets.json" "${REPO}" <<'PY'
@@ -352,6 +364,102 @@ if "${INIT}" "${URL}" \
   bad "duplicate registry keys should fail"
 else
   grep -qi 'duplicate' "${TMP}/e" && ok "duplicate registry keys rejected" || bad "dup reg msg: $(cat "${TMP}/e")"
+fi
+
+# Policy under an unrelated ancestor Git repo must not inherit that SHA
+ANC="${TMP}/ancestor-git"
+mkdir -p "${ANC}/opt/data"
+git -C "${ANC}" init -q
+git -C "${ANC}" config user.email "anc@example.invalid"
+git -C "${ANC}" config user.name "anc"
+echo marker >"${ANC}/marker.txt"
+git -C "${ANC}" add marker.txt
+git -C "${ANC}" commit -q -m "ancestor"
+ANC_SHA="$(git -C "${ANC}" rev-parse HEAD)"
+POLICY_A="${ANC}/opt/data/hermes-review"
+mkdir -p "${POLICY_A}"
+cp -a "${EXT}/." "${POLICY_A}/"
+find "${POLICY_A}" -type d -name '__pycache__' -prune -exec rm -rf {} +
+REPO_A="anc-repo"
+URL_A="https://github.com/FixtureOrg/${REPO_A}.git"
+SRC_A="${ANC}/opt/data/repositories/${REPO_A}"
+seed_source "${SRC_A}" "FixtureOrg" "${REPO_A}"
+if "${INIT}" "${URL_A}" \
+  --policy-prefix "${POLICY_A}" \
+  --run-id "anc-010" \
+  >"${TMP}/anc.out" 2>"${TMP}/anc.err"; then
+  python3 - "${ANC}/opt/data/review-runs/${REPO_A}/anc-010/run.json" "${ANC_SHA}" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+anc = sys.argv[2].lower()
+tk = data["toolkit"]
+assert tk["toolkit_revision"] == "unknown", tk
+assert tk["toolkit_dirty"] is True, tk
+assert tk["toolkit_revision"] != anc
+PY
+  ok "policy inside unrelated Git repo does not inherit ancestor revision"
+else
+  bad "ancestor-git init failed: $(cat "${TMP}/anc.err")"
+fi
+
+# Dirty toolkit when policy prefix is itself a Git worktree root
+POL_GIT="${TMP}/policy-as-worktree"
+mkdir -p "${POL_GIT}"
+cp -a "${EXT}/." "${POL_GIT}/"
+find "${POL_GIT}" -type d -name '__pycache__' -prune -exec rm -rf {} +
+git -C "${POL_GIT}" init -q
+git -C "${POL_GIT}" config user.email "pol@example.invalid"
+git -C "${POL_GIT}" config user.name "pol"
+git -C "${POL_GIT}" add -A
+git -C "${POL_GIT}" commit -q -m "policy toolkit"
+POL_SHA="$(git -C "${POL_GIT}" rev-parse HEAD)"
+# nested data root: parent of policy-as-worktree
+DATA_PG="$(dirname "${POL_GIT}")"
+# seed source under sibling repositories/
+REPO_PG="polgit-repo"
+URL_PG="https://github.com/FixtureOrg/${REPO_PG}.git"
+SRC_PG="${DATA_PG}/repositories/${REPO_PG}"
+seed_source "${SRC_PG}" "FixtureOrg" "${REPO_PG}"
+# dirty the policy worktree
+echo dirty-toolkit >>"${POL_GIT}/README.md"
+if "${INIT}" "${URL_PG}" \
+  --policy-prefix "${POL_GIT}" \
+  --run-id "polgit-dirty-010" \
+  >"${TMP}/pg.out" 2>"${TMP}/pg.err"; then
+  python3 - "${DATA_PG}/review-runs/${REPO_PG}/polgit-dirty-010/run.json" "${POL_SHA}" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+want = sys.argv[2].lower()
+tk = data["toolkit"]
+assert tk["toolkit_revision"] == want, tk
+assert tk["toolkit_dirty"] is True, tk
+PY
+  ok "dirty policy worktree root records HEAD with toolkit_dirty true"
+else
+  bad "dirty policy-worktree init failed: $(cat "${TMP}/pg.err")"
+fi
+git -C "${POL_GIT}" checkout -q -- README.md
+# Drop initializer-created untracked registry/lock so porcelain is clean again
+rm -f "${POL_GIT}/targets.json" "${POL_GIT}/.init-hermes-review.lock"
+if [[ -n "$(git -C "${POL_GIT}" status --porcelain)" ]]; then
+  bad "policy worktree still dirty before clean provenance check: $(git -C "${POL_GIT}" status --porcelain)"
+else
+  if "${INIT}" "${URL_PG}" \
+    --policy-prefix "${POL_GIT}" \
+    --run-id "polgit-clean-010" \
+    >"${TMP}/pg2.out" 2>"${TMP}/pg2.err"; then
+    python3 - "${DATA_PG}/review-runs/${REPO_PG}/polgit-clean-010/run.json" "${POL_SHA}" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+want = sys.argv[2].lower()
+tk = data["toolkit"]
+assert tk["toolkit_revision"] == want, tk
+assert tk["toolkit_dirty"] is False, tk
+PY
+    ok "clean policy worktree root records HEAD with toolkit_dirty false"
+  else
+    bad "clean policy-worktree init failed: $(cat "${TMP}/pg2.err")"
+  fi
 fi
 
 # extensions/hermes untouched

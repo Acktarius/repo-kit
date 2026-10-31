@@ -98,6 +98,9 @@ mkdir -p "${POLICY}" "${SRC}" "${RUN}/reports"
 
 # Copy policy payload into temp policy prefix (simulate upload)
 cp -a "${EXT}/." "${POLICY}/"
+# Uploaded/copied trees must not carry developer __pycache__ into fixtures
+find "${POLICY}" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "${POLICY}" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
 # Init synthetic clean repo
 git -C "${SRC}" init -q
@@ -190,6 +193,26 @@ if [[ "${before}" == "${after}" ]]; then
   ok "runner validation made no persistent fixture file changes"
 else
   bad "fixture files changed after runner validation"
+fi
+
+# No bytecode writes under policy during normal runner invocation
+# (entry point disables bytecode; do not rely on ambient PYTHONDONTWRITEBYTECODE)
+policy_fp() {
+  find "${POLICY}" -type f -print0 | sort -z | xargs -0 sha256sum
+}
+find "${POLICY}" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "${POLICY}" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+POL_BEFORE="$(policy_fp)"
+if env -u PYTHONDONTWRITEBYTECODE "${RUNNER}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
+  if [[ -z "$(find "${POLICY}" -type d -name '__pycache__' -print)" ]] \
+    && [[ -z "$(find "${POLICY}" -type f \( -name '*.pyc' -o -name '*.pyo' \) -print)" ]] \
+    && [[ "${POL_BEFORE}" == "$(policy_fp)" ]]; then
+    ok "runner writes no bytecode under policy without ambient PYTHONDONTWRITEBYTECODE"
+  else
+    bad "bytecode or policy file changes after runner: $(find "${POLICY}" -name '__pycache__' -o -name '*.pyc' | head)"
+  fi
+else
+  bad "bytecode-check runner invocation failed: $(cat "${TMP}/e")"
 fi
 
 # malformed JSON

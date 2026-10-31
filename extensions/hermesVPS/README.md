@@ -59,6 +59,25 @@ The initializer:
 
 GitHub auth uses existing configured access only.
 
+### Toolkit provenance in generated `run.json`
+
+`init-hermes-review` records `toolkit.toolkit_revision` and
+`toolkit.toolkit_dirty` as follows (no invented deploy revision):
+
+1. If `<policy-prefix>/toolkit-provenance.json` exists, use its
+   `toolkit_revision` (string) and `toolkit_dirty` (boolean). Optional
+   `schema_version: 1`. Operators/installers may write this file; the
+   initializer does not.
+2. Else if the policy prefix **is itself** a non-bare Git worktree root,
+   use that tree’s `HEAD` and porcelain dirty state.
+3. Else use `toolkit_revision: "unknown"` and `toolkit_dirty: true`
+   (unknown cleanliness is never claimed clean). Ancestor Git repositories
+   that merely contain a copied policy tree are ignored.
+
+Both `hermes-vps-review` and `init-hermes-review` set
+`sys.dont_write_bytecode` before importing `lib/`, so normal validation does
+not create `__pycache__` under the policy tree.
+
 ## Normal operator UX
 
 When the hermesVPS skill is **registered** in the agent skill directory used
