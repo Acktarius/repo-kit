@@ -20,12 +20,25 @@ If any required file is missing or unreadable, report the missing path and
 ## 2. Target
 
 The approved target is **only** `source.path` from the operator `run.json`
-for this run. Confirm `source.commit` still matches `git rev-parse HEAD` and
-that the worktree is clean **immediately before writing** the report
-(preflight checks can race with later filesystem changes).
+for this run. That path must be the actual non-bare Git worktree root
+(`git rev-parse --is-inside-work-tree` → `true`, and
+`git rev-parse --show-toplevel` equals `source.path` after resolution).
+Linked worktrees (`.git` file) are allowed; bare repositories and nested
+paths that are not the worktree root are not.
+
+Confirm **immediately before writing** the report:
+
+- `source.commit` still matches `git rev-parse HEAD`;
+- the worktree is clean;
+- `reports/` and the selected output path still remain inside the approved
+  run-root reports directory (not source/policy);
+- the selected output still does not exist (including dangling symlinks).
+
+Preflight checks can race with later filesystem changes.
 
 Do not inspect paths outside the approved source tree.
 Do not follow symlinks that escape the approved source root.
+Do not checkout, reset, clean, or otherwise modify the source.
 
 ## 3. Prior reports
 

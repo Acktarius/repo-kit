@@ -33,11 +33,21 @@ Three trees must remain distinct (from `run.json`):
 
 ## Reports directory
 
-Before writing, confirm `<run_root>/reports/` exists.
-If it does not exist, **do not create it** unless the human separately
-approved creating that exact directory. Prefer stopping with completion state
-`blocked` naming the missing path. (Local runner validation also refuses to
-create directories.)
+`<run_root>/reports/` must already exist as a real directory strictly inside
+the resolved run root before `hermes-vps-review` will print a phase prompt.
+A missing `reports/` directory is a validation failure (actionable: the
+operator must create that exact directory). Symlinks that resolve outside the
+run root, or into the source or policy trees, are rejected.
+
+Before writing, reconfirm that `reports/` and the selected report path still
+remain inside the approved run-root reports directory and that the selected
+output still does not exist (including dangling symlinks). Preflight
+validation cannot prevent later concurrent filesystem changes.
+
+If `reports/` is missing at write time, **do not create it** unless the human
+separately approved creating that exact directory. Prefer stopping with
+completion state `blocked` naming the missing path. The runner never creates
+or repairs directories.
 
 ## Phase report naming
 

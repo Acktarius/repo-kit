@@ -56,8 +56,11 @@ before use. A non-default prefix does **not** work automatically.
    exactly (they point at `tasks/010-inventory.md` and the rules). Rules and
    tasks remain the source of truth; do not substitute remembered methodology.
 
-4. Before writing the report, recheck clean worktree and HEAD SHA
-   (preflight can race with later filesystem changes).
+4. Immediately before writing the report, recheck: clean worktree, HEAD SHA,
+   that `reports/` and the selected output path still remain inside the
+   approved run-root reports directory (not source/policy), and that the
+   selected output still does not exist (including dangling symlinks).
+   Preflight validation cannot prevent later concurrent filesystem changes.
 
 5. Write only the approved report path from the prompt. Then **stop**.
 

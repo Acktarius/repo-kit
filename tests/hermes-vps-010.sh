@@ -376,6 +376,160 @@ else
   grep -qi 'absolute' "${TMP}/e" && ok "relative --run-json rejected" || bad "relative path message unclear"
 fi
 
+# --- external-review validation gaps ---
+
+# schema_version boolean true (JSON true → Python True == 1 without exact-type check)
+python3 - "${RUN_JSON}" "${TMP}/schema-true.json" <<'PY'
+import json, sys
+src, dst = sys.argv[1:3]
+with open(src, encoding="utf-8") as fh:
+    data = json.load(fh)
+data["schema_version"] = True
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(data, fh)
+PY
+if "${RUNNER}" --run-json "${TMP}/schema-true.json" >/dev/null 2>"${TMP}/e"; then
+  bad "schema_version true should fail"
+else
+  grep -q 'schema_version' "${TMP}/e" && ok "schema_version true rejected" || bad "schema true msg: $(cat "${TMP}/e")"
+fi
+
+# schema_version numeric 1.0
+python3 - "${RUN_JSON}" "${TMP}/schema-float.json" <<'PY'
+import json, sys
+src, dst = sys.argv[1:3]
+with open(src, encoding="utf-8") as fh:
+    data = json.load(fh)
+data["schema_version"] = 1.0
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(data, fh)
+PY
+if "${RUNNER}" --run-json "${TMP}/schema-float.json" >/dev/null 2>"${TMP}/e"; then
+  bad "schema_version 1.0 should fail"
+else
+  grep -q 'schema_version' "${TMP}/e" && ok "schema_version 1.0 rejected" || bad "schema float msg: $(cat "${TMP}/e")"
+fi
+
+# missing reports/
+RUN_MISS="${TMP}/review-runs/example-repo/run-missing-reports"
+mkdir -p "${RUN_MISS}"
+write_run "${TMP}/missing-reports.json" "${POLICY}" "${SRC}" "${RUN_MISS}" "${SHA}"
+if "${RUNNER}" --run-json "${TMP}/missing-reports.json" >/dev/null 2>"${TMP}/e"; then
+  bad "missing reports/ should fail (must not print success prompt)"
+else
+  if grep -qi 'reports directory missing' "${TMP}/e" \
+    && ! grep -Fq 'Execute ONLY phase 010' "${TMP}/e"; then
+    ok "missing reports/ rejected with actionable error"
+  else
+    bad "missing reports/ message unclear: $(cat "${TMP}/e")"
+  fi
+fi
+
+# valid prepared reports/ (explicit; success path already uses RUN/reports)
+RUN_OK="${TMP}/review-runs/example-repo/run-prepared-reports"
+mkdir -p "${RUN_OK}/reports"
+write_run "${TMP}/prepared-reports.json" "${POLICY}" "${SRC}" "${RUN_OK}" "${SHA}"
+if "${RUNNER}" --run-json "${TMP}/prepared-reports.json" >/dev/null 2>"${TMP}/e"; then
+  ok "valid prepared reports/ accepted"
+else
+  bad "prepared reports/ failed: $(cat "${TMP}/e")"
+fi
+
+# reports/ symlink to the source
+RUN_RS="${TMP}/review-runs/example-repo/run-reports-src"
+mkdir -p "${RUN_RS}"
+ln -s "${SRC}" "${RUN_RS}/reports"
+write_run "${TMP}/reports-src.json" "${POLICY}" "${SRC}" "${RUN_RS}" "${SHA}"
+if "${RUNNER}" --run-json "${TMP}/reports-src.json" >/dev/null 2>"${TMP}/e"; then
+  bad "reports/ symlink to source should fail"
+else
+  grep -Eqi 'strictly inside the run root|into the source' "${TMP}/e" \
+    && ok "reports/ symlink to source rejected" \
+    || bad "reports→source msg: $(cat "${TMP}/e")"
+fi
+
+# reports/ symlink to the policy
+RUN_RP="${TMP}/review-runs/example-repo/run-reports-pol"
+mkdir -p "${RUN_RP}"
+ln -s "${POLICY}" "${RUN_RP}/reports"
+write_run "${TMP}/reports-pol.json" "${POLICY}" "${SRC}" "${RUN_RP}" "${SHA}"
+if "${RUNNER}" --run-json "${TMP}/reports-pol.json" >/dev/null 2>"${TMP}/e"; then
+  bad "reports/ symlink to policy should fail"
+else
+  grep -Eqi 'strictly inside the run root|into the policy' "${TMP}/e" \
+    && ok "reports/ symlink to policy rejected" \
+    || bad "reports→policy msg: $(cat "${TMP}/e")"
+fi
+
+# reports/ symlink to unrelated directory outside the run root
+OUTSIDE="${TMP}/unrelated-outside"
+mkdir -p "${OUTSIDE}"
+RUN_RO="${TMP}/review-runs/example-repo/run-reports-out"
+mkdir -p "${RUN_RO}"
+ln -s "${OUTSIDE}" "${RUN_RO}/reports"
+write_run "${TMP}/reports-out.json" "${POLICY}" "${SRC}" "${RUN_RO}" "${SHA}"
+if "${RUNNER}" --run-json "${TMP}/reports-out.json" >/dev/null 2>"${TMP}/e"; then
+  bad "reports/ symlink outside run root should fail"
+else
+  grep -qi 'strictly inside the run root' "${TMP}/e" \
+    && ok "reports/ symlink outside run root rejected" \
+    || bad "reports→outside msg: $(cat "${TMP}/e")"
+fi
+
+# dangling selected-report symlink
+RUN_DS="${TMP}/review-runs/example-repo/run-dangling-report"
+mkdir -p "${RUN_DS}/reports"
+ln -s "${RUN_DS}/reports/does-not-exist-target.md" \
+  "${RUN_DS}/reports/phase-010-hermes-v1.md"
+write_run "${TMP}/dangling-report.json" "${POLICY}" "${SRC}" "${RUN_DS}" "${SHA}"
+if "${RUNNER}" --run-json "${TMP}/dangling-report.json" >/dev/null 2>"${TMP}/e"; then
+  bad "dangling selected-report symlink should fail"
+else
+  grep -qi 'collision' "${TMP}/e" \
+    && ok "dangling selected-report symlink rejected" \
+    || bad "dangling report msg: $(cat "${TMP}/e")"
+fi
+
+# nested source path rather than worktree root
+mkdir -p "${SRC}/nested-dir"
+echo nested >"${SRC}/nested-dir/file.txt"
+# keep parent worktree clean: the nested file is untracked → would dirty parent;
+# for nested-path test we point source.path at nested-dir (which is not a root).
+write_run "${TMP}/nested-src.json" "${POLICY}" "${SRC}/nested-dir" "${RUN_OK}" "${SHA}"
+if "${RUNNER}" --run-json "${TMP}/nested-src.json" >/dev/null 2>"${TMP}/e"; then
+  bad "nested source path should fail"
+else
+  grep -Eqi 'worktree root|not a usable Git worktree|non-bare' "${TMP}/e" \
+    && ok "nested source path rejected" \
+    || bad "nested source msg: $(cat "${TMP}/e")"
+fi
+rm -rf "${SRC}/nested-dir"
+
+# bare repository
+BARE="${TMP}/repositories/example-bare.git"
+git clone --bare -q "${SRC}" "${BARE}"
+write_run "${TMP}/bare-src.json" "${POLICY}" "${BARE}" "${RUN_OK}" "${SHA}"
+if "${RUNNER}" --run-json "${TMP}/bare-src.json" >/dev/null 2>"${TMP}/e"; then
+  bad "bare repository should fail"
+else
+  grep -Eqi 'non-bare|worktree' "${TMP}/e" \
+    && ok "bare repository rejected" \
+    || bad "bare repo msg: $(cat "${TMP}/e")"
+fi
+
+# legitimate linked worktree (.git file)
+LINKED="${TMP}/repositories/example-linked"
+git -C "${SRC}" worktree add -q "${LINKED}" HEAD
+LINKED_SHA="$(git -C "${LINKED}" rev-parse HEAD)"
+RUN_LW="${TMP}/review-runs/example-repo/run-linked"
+mkdir -p "${RUN_LW}/reports"
+write_run "${TMP}/linked-wt.json" "${POLICY}" "${LINKED}" "${RUN_LW}" "${LINKED_SHA}"
+if "${RUNNER}" --run-json "${TMP}/linked-wt.json" >/dev/null 2>"${TMP}/e"; then
+  ok "legitimate linked worktree accepted"
+else
+  bad "linked worktree failed: $(cat "${TMP}/e")"
+fi
+
 echo
 echo "==== representative prompt excerpt ===="
 echo "${REPR_SNIPPET}"

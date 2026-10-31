@@ -98,6 +98,10 @@ or a full repo-kit checkout.
 
 ## Stop conditions
 
-Validation failure; dirty tree or SHA mismatch; report collision; unknown or
-invalid target id; registry/run policy-prefix mismatch; wrong phase in the
-selected run; inaccessible policy/task/registry/run files.
+Validation failure; missing `reports/` directory; `reports/` or selected
+output escaping the run root (including symlinks into source/policy/elsewhere);
+report collision (including dangling output symlinks); source path that is not
+the non-bare worktree root; dirty tree or SHA mismatch; `schema_version` not
+exact integer `1`; unknown or invalid target id; registry/run policy-prefix
+mismatch; wrong phase in the selected run; inaccessible
+policy/task/registry/run files.

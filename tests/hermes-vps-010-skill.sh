@@ -364,6 +364,42 @@ else
   bad "spaces path failed: $(cat "${TMP}/e")"
 fi
 
+# targets.json schema_version true
+python3 - "${REG}" "${TMP}/reg-schema-true.json" <<'PY'
+import json, sys
+src, dst = sys.argv[1:3]
+with open(src, encoding="utf-8") as fh:
+    data = json.load(fh)
+data["schema_version"] = True
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(data, fh)
+PY
+if "${RUNNER}" --registry "${TMP}/reg-schema-true.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
+  bad "targets.json schema_version true should fail"
+else
+  grep -q 'schema_version' "${TMP}/e" \
+    && ok "targets.json schema_version true rejected" \
+    || bad "reg schema true msg: $(cat "${TMP}/e")"
+fi
+
+# targets.json schema_version 1.0
+python3 - "${REG}" "${TMP}/reg-schema-float.json" <<'PY'
+import json, sys
+src, dst = sys.argv[1:3]
+with open(src, encoding="utf-8") as fh:
+    data = json.load(fh)
+data["schema_version"] = 1.0
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(data, fh)
+PY
+if "${RUNNER}" --registry "${TMP}/reg-schema-float.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
+  bad "targets.json schema_version 1.0 should fail"
+else
+  grep -q 'schema_version' "${TMP}/e" \
+    && ok "targets.json schema_version 1.0 rejected" \
+    || bad "reg schema float msg: $(cat "${TMP}/e")"
+fi
+
 echo
 echo "==== successful short-command resolution example (excerpt) ===="
 grep -E '^(POLICY PREFIX|SOURCE COMMIT|RUN ID|PHASE|SELECTED REPORT|INSTRUCTIONS|  - Execute ONLY|  - Then STOP)' "${OUT}" | head -n 20
