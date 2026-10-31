@@ -39,7 +39,8 @@ Without explicit approval for the specific action, do not:
 - access the network or upload source, scan data, or credentials;
 - create, modify, or delete files outside the report-artefact boundary in
   Rule 005;
-- modify `run.json`, `manifest.json`, policy files, or security stores;
+- modify `run.json`, policy files, or security stores;
+- hand-edit `manifest.json` (maintained exclusively by `hermes-vps-artifacts`);
 - delegate work to other agents;
 - change services, containers, permissions, or security settings;
 - create pull requests or contact Roomote/GitHub APIs.
@@ -84,5 +85,6 @@ versioned report. Each phase response and report must identify:
 - phase completion state and the next human approval required.
 
 Stop after the requested phase. Do not advance automatically.
-Do not update `manifest.json` (operator-maintained). You may describe the
-artifact details the operator needs to record.
+Do not hand-edit `manifest.json`. After writing the report, call
+`hermes-vps-artifacts register` — that helper is the sole writer of the
+artifact index. Structural and hash checks do not prove factual correctness.

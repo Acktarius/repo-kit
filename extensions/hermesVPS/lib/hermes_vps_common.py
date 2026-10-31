@@ -1,11 +1,12 @@
 """Shared hermesVPS validation helpers (stdlib only).
 
-Used by bin/hermes-vps-review and bin/init-hermes-review so validation rules
-stay in one place.
+Used by bin/hermes-vps-review, bin/init-hermes-review, and
+bin/hermes-vps-artifacts so validation rules stay in one place.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,6 +29,7 @@ REQUIRED_POLICY_REL = [
     "security-assets/findings.schema.json",
     "security-assets/README.md",
 ]
+# Legacy fallback used when the phases module is unavailable (should not occur in normal use).
 
 
 class ValidationError(Exception):
@@ -96,6 +98,18 @@ def write_json_atomic(path: str, data: Any) -> None:
         except OSError:
             pass
         raise
+
+
+def sha256_file(path: str) -> str:
+    """Return lowercase hex SHA-256 of the file at path."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def expect_type(value: Any, typ: type | tuple[type, ...], label: str) -> Any:
@@ -217,7 +231,6 @@ def validate_worktree_root(source_path: str) -> str:
 
 def validate_run(
     data: Any,
-    report_version: int,
     *,
     expected_policy_prefix: str | None = None,
 ) -> dict[str, Any]:
@@ -257,37 +270,43 @@ def validate_run(
     phase = expect_str(phase_request.get("phase"), "phase_request.phase")
     if not PHASE_RE.match(phase):
         raise ValidationError("phase_request.phase must be a 3-digit string")
-    if phase != "010":
-        raise ValidationError(
-            f"selected run is not phase 010 (got {phase}); "
-            "hermes-vps-010 / runner v1 reject other phases"
-        )
-    phase_name = expect_str(phase_request.get("phase_name"), "phase_request.phase_name")
-    if phase_name != "inventory":
-        raise ValidationError("phase_request.phase_name must be 'inventory' for phase 010")
+    # NOTE: phase value is treated as legacy/informational metadata.
+    # The CLI --phase flag is authoritative for which phase is being executed.
+    # No equality gate here; validate_run accepts any valid 3-digit phase string.
+    phase_name = phase_request.get("phase_name") or ""
 
     if "report_version" in phase_request:
-        rv = phase_request["report_version"]
-        if not isinstance(rv, int) or isinstance(rv, bool) or rv < 1:
-            raise ValidationError("phase_request.report_version must be a positive integer")
-        report_version = rv
+        print(
+            "deprecation warning: phase_request.report_version in run.json is no longer "
+            "used; version is selected automatically by hermes-vps-artifacts register; "
+            "remove phase_request.report_version from run.json",
+            file=sys.stderr,
+        )
 
     prereq = expect_type(data.get("prerequisites"), dict, "prerequisites")
     artifacts = prereq.get("artifacts")
     expect_type(artifacts, list, "prerequisites.artifacts")
-    if artifacts:
-        raise ValidationError(
-            "phase 010 requires prerequisites.artifacts to be an empty list "
-            "(exact versioned prerequisites apply to later phases)"
-        )
 
-    missing = []
-    abs_policy_files = {}
-    for rel in REQUIRED_POLICY_REL:
-        p = os.path.join(policy_prefix, rel)
-        abs_policy_files[rel] = p
-        if not os.path.isfile(p):
-            missing.append(p)
+    toolkit = data.get("toolkit") or {}
+    toolkit_revision: str
+    if isinstance(toolkit, dict):
+        tr = toolkit.get("toolkit_revision")
+        toolkit_revision = tr if isinstance(tr, str) and tr.strip() else "unknown"
+    else:
+        toolkit_revision = "unknown"
+
+    # Check policy files for the phase in run.json (informational phase value).
+    # The runner additionally calls validate_phase_policy_files() for the CLI phase.
+    try:
+        from lib.hermes_vps_phases import abs_policy_files_for_phase, PHASE_TABLE  # noqa: PLC0415
+        if phase in PHASE_TABLE:
+            abs_policy_files = abs_policy_files_for_phase(policy_prefix, phase)
+        else:
+            abs_policy_files = {rel: os.path.join(policy_prefix, rel) for rel in REQUIRED_POLICY_REL}
+    except ImportError:
+        abs_policy_files = {rel: os.path.join(policy_prefix, rel) for rel in REQUIRED_POLICY_REL}
+
+    missing = [p for p in abs_policy_files.values() if not os.path.isfile(p)]
     if missing:
         raise ValidationError(
             "missing required policy/task/template files:\n  " + "\n  ".join(missing)
@@ -354,72 +373,24 @@ def validate_run(
             f"(reports={reports_dir!r})"
         )
 
-    report_name = f"phase-{phase}-hermes-v{report_version}.md"
-    report_path_join = os.path.join(reports_dir_join, report_name)
-    if os.path.lexists(report_path_join):
-        raise ValidationError(
-            f"report collision: selected output already exists: {report_path_join}"
-        )
-    try:
-        report_path = os.path.realpath(report_path_join)
-    except OSError as exc:
-        raise ValidationError(f"cannot resolve selected report path: {exc}") from exc
-    if os.path.dirname(report_path) != reports_dir or not is_within(
-        report_path, reports_dir
-    ):
-        raise ValidationError(
-            "resolved selected report must remain inside the approved reports "
-            f"directory (report={report_path!r}, reports={reports_dir!r})"
-        )
-    if is_within(report_path, source_path):
-        raise ValidationError(
-            "resolved selected report must not resolve into the source checkout"
-        )
-    if is_within(report_path, policy_prefix):
-        raise ValidationError(
-            "resolved selected report must not resolve into the policy prefix"
-        )
-
     manifest_path = os.path.join(run_root, "manifest.json")
-    manifest_note = "absent (valid empty starting state for phase 010)"
+    manifest_note = "absent (valid empty starting state)"
     if os.path.isfile(manifest_path):
         manifest = load_json(manifest_path)
         expect_type(manifest, dict, "manifest.json root")
-        m_run = validate_identifier(
-            expect_str(manifest.get("run_id"), "manifest.run_id"), "manifest.run_id"
-        )
-        if m_run != run_id:
-            raise ValidationError(
-                f"manifest/run identity mismatch: run_id {run_id!r} vs manifest {m_run!r}"
-            )
-        m_source = expect_type(manifest.get("source"), dict, "manifest.source")
-        for key, expected in (
-            ("identity", source_identity),
-            ("path", source_path_raw),
-            ("commit", source_commit),
-        ):
-            got = expect_str(m_source.get(key), f"manifest.source.{key}")
-            if key == "commit":
-                got = got.lower()
-            if key == "path":
-                if realpath_abs(got, "manifest.source.path") != source_path:
-                    raise ValidationError(
-                        "manifest/run identity mismatch: source.path does not resolve equally"
-                    )
-            elif got != expected:
-                raise ValidationError(
-                    f"manifest/run identity mismatch: source.{key}: "
-                    f"run.json={expected!r} manifest={got!r}"
-                )
-        m_policy = expect_type(manifest.get("policy"), dict, "manifest.policy")
-        m_prefix = expect_str(m_policy.get("prefix"), "manifest.policy.prefix")
-        if realpath_abs(m_prefix, "manifest.policy.prefix") != policy_prefix:
-            raise ValidationError(
-                "manifest/run identity mismatch: policy.prefix does not resolve equally"
-            )
+        # Build a partial ctx for the identity check (full ctx not yet assembled).
+        _partial_ctx = {
+            "run_id": run_id,
+            "source_identity": source_identity,
+            "source_path_raw": source_path_raw,
+            "source_path": source_path,
+            "source_commit": source_commit,
+            "policy_prefix": policy_prefix,
+        }
+        validate_manifest_identity(manifest, _partial_ctx)
         arts = manifest.get("artifacts", [])
         expect_type(arts, list, "manifest.artifacts")
-        manifest_note = f"present with {len(arts)} artifact entr(y/ies); operator-maintained"
+        manifest_note = f"present with {len(arts)} artifact entr(y/ies); auto-maintained by hermes-vps-artifacts"
 
     boundaries = data.get("boundaries")
     if boundaries is not None:
@@ -454,16 +425,99 @@ def validate_run(
         "source_commit": source_commit,
         "run_root": run_root,
         "run_root_raw": run_root_raw,
+        # run.json-recorded phase/phase_name: legacy/informational; CLI --phase is authoritative.
+        "run_json_phase": phase,
+        "run_json_phase_name": phase_name,
+        # Keep "phase" for backward compatibility with callers that read ctx["phase"]
         "phase": phase,
         "phase_name": phase_name,
-        "report_version": report_version,
-        "report_path": report_path,
-        "report_name": report_name,
         "reports_dir": reports_dir,
+        "toolkit_revision": toolkit_revision,
         "manifest_path": manifest_path,
         "manifest_note": manifest_note,
         "abs_policy_files": abs_policy_files,
     }
+
+
+def validate_manifest_identity(manifest: dict[str, Any], ctx: dict[str, Any]) -> None:
+    """Raise ValidationError if manifest identity fields conflict with run context."""
+    m_run = validate_identifier(
+        expect_str(manifest.get("run_id"), "manifest.run_id"), "manifest.run_id"
+    )
+    if m_run != ctx["run_id"]:
+        raise ValidationError(
+            f"manifest/run identity mismatch: run_id {ctx['run_id']!r} vs manifest {m_run!r}"
+        )
+    m_source = expect_type(manifest.get("source"), dict, "manifest.source")
+    for key, expected in (
+        ("identity", ctx["source_identity"]),
+        ("path", ctx["source_path_raw"]),
+        ("commit", ctx["source_commit"]),
+    ):
+        got = expect_str(m_source.get(key), f"manifest.source.{key}")
+        if key == "commit":
+            got = got.lower()
+        if key == "path":
+            if realpath_abs(got, "manifest.source.path") != ctx["source_path"]:
+                raise ValidationError(
+                    "manifest/run identity mismatch: source.path does not resolve equally"
+                )
+        elif got != expected:
+            raise ValidationError(
+                f"manifest/run identity mismatch: source.{key}: "
+                f"run.json={expected!r} manifest={got!r}"
+            )
+    m_policy = expect_type(manifest.get("policy"), dict, "manifest.policy")
+    m_prefix = expect_str(m_policy.get("prefix"), "manifest.policy.prefix")
+    if realpath_abs(m_prefix, "manifest.policy.prefix") != ctx["policy_prefix"]:
+        raise ValidationError(
+            "manifest/run identity mismatch: policy.prefix does not resolve equally"
+        )
+
+
+def resolve_selected_prereqs(
+    manifest: dict[str, Any],
+    run_root: str,
+    prereq_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Resolve and verify a list of prerequisite artifact IDs from the index.
+
+    Verifies that each artifact is present, complete, and its report file exists
+    with matching SHA-256.  Returns the list of artifact entries in order.
+
+    Raises ValidationError for any unresolvable or hash-mismatched prerequisite.
+    """
+    index: dict[str, dict[str, Any]] = {
+        a["id"]: a for a in manifest.get("artifacts", []) if isinstance(a, dict)
+    }
+    results: list[dict[str, Any]] = []
+    for pid in prereq_ids:
+        entry = index.get(pid)
+        if entry is None:
+            raise ValidationError(
+                f"prerequisite artifact {pid!r} not found in manifest"
+            )
+        if entry.get("completion_status") not in ("complete", "incomplete"):
+            raise ValidationError(
+                f"prerequisite artifact {pid!r} has unusable completion_status "
+                f"{entry.get('completion_status')!r}"
+            )
+        rel_path = entry.get("path", "")
+        abs_path = os.path.join(run_root, rel_path)
+        if not os.path.isfile(abs_path):
+            raise ValidationError(
+                f"prerequisite artifact {pid!r} file not found: {abs_path}"
+            )
+        recorded_sha = entry.get("sha256", "")
+        if recorded_sha:
+            actual_sha = sha256_file(abs_path)
+            if actual_sha != recorded_sha:
+                raise ValidationError(
+                    f"prerequisite artifact {pid!r} SHA-256 mismatch: "
+                    f"recorded={recorded_sha} actual={actual_sha}"
+                )
+        results.append(entry)
+    return results
 
 
 def resolve_registry(registry_path: str, target_id: str) -> tuple[str, str]:

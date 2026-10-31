@@ -2,211 +2,397 @@
 
 ## Status
 
-Phase **010 inventory** vertical slice with:
+All eight phases (010–080) implemented with:
 
-- rules/tasks/templates;
+- rules/tasks/templates for each phase;
 - validation runner (`bin/hermes-vps-review`);
 - review initializer (`bin/init-hermes-review`);
 - shared validation library (`lib/hermes_vps_common.py`);
+- phase table and prerequisite descriptors (`lib/hermes_vps_phases.py`);
+- artifact helper (`bin/hermes-vps-artifacts`) — sole writer of `manifest.json`;
 - operator target registry (`targets.json`);
-- thin skill adapter `skills/hermes-vps-010/` for `/hermes-vps-010 <target-id>`;
+- thin skill adapters `skills/hermes-vps-010` through `skills/hermes-vps-remediate`;
 - security schema copy and fixture tests.
 
 This extension does **not** replace `extensions/hermes/`. Local Hermes remains
 unchanged.
 
-**Not implemented yet:** installer/packaging automation, phases 020–080,
-Roomote/GitHub/MCP automation, verified portal skill discovery.
+**Not implemented:** installer/packaging automation, verified portal skill
+discovery, Roomote/GitHub/MCP automation.
 
-## Initialize a review (preferred operator setup)
+---
 
-After the policy tree is installed under `/opt/data/hermes-review`:
+## A. Initialize a review
 
 ```bash
 init-hermes-review https://github.com/org/repo.git
-# optional:
+# optional flags:
 #   --target-id ID
 #   --run-id ID
 #   --activate-new-run          # required to replace an existing active run
 #   --policy-prefix /opt/data/hermes-review
 ```
 
-If `+x` was lost in transfer:
+The initializer clones the repo, writes `run.json` + empty `reports/`, validates,
+and atomically updates `targets.json`.  It does not start analysis.
+
+---
+
+## B. Phase-by-phase operator guide
+
+### CLI compatibility note
+
+**`--phase NNN` is now required** on `hermes-vps-review`.  Callers that previously
+omitted `--phase` (implying phase 010) must now pass `--phase 010` explicitly.
+`run.json phase_request.phase` is legacy/informational metadata; the CLI flag is
+authoritative.
+
+### Phase 010 — Inventory
 
 ```bash
-python3 /opt/data/hermes-review/bin/init-hermes-review \
-  https://github.com/org/repo.git
-```
-
-The initializer:
-
-- accepts **HTTPS GitHub** URLs only (no embedded credentials, query, or fragment);
-- derives the target id from the repository name (override with `--target-id`);
-- uses `/opt/data/repositories/<target-id>` and
-  `/opt/data/review-runs/<target-id>/<run-id>/`;
-- clones only when the source path is absent (no pull/checkout/reset/clean;
-  no submodules, installs, builds, or repo scripts);
-- writes `run.json` + empty `reports/`, runs the same validation as
-  `hermes-vps-review`, and **only then** atomically updates `targets.json`;
-- on validation failure: leaves any new run paths in place, does **not**
-  create or modify `targets.json`, does not delete pre-existing content, and
-  does not claim full rollback;
-- uses a lock file beside the registry so **cooperating** initializer
-  processes serialize registry updates (the lock is not a security boundary
-  against non-cooperating writers);
-- prints skill/bootstrap invocation hints but does **not** register skills or
-  start analysis.
-
-GitHub auth uses existing configured access only.
-
-### Toolkit provenance in generated `run.json`
-
-`init-hermes-review` records `toolkit.toolkit_revision` and
-`toolkit.toolkit_dirty` as follows (no invented deploy revision):
-
-1. If `<policy-prefix>/toolkit-provenance.json` exists, use its
-   `toolkit_revision` (string) and `toolkit_dirty` (boolean). Optional
-   `schema_version: 1`. Operators/installers may write this file; the
-   initializer does not.
-2. Else if the policy prefix **is itself** a non-bare Git worktree root,
-   use that tree’s `HEAD` and porcelain dirty state.
-3. Else use `toolkit_revision: "unknown"` and `toolkit_dirty: true`
-   (unknown cleanliness is never claimed clean). Ancestor Git repositories
-   that merely contain a copied policy tree are ignored.
-
-Both `hermes-vps-review` and `init-hermes-review` set
-`sys.dont_write_bytecode` before importing `lib/`, so normal validation does
-not create `__pycache__` under the policy tree.
-
-## Normal operator UX
-
-When the hermesVPS skill is **registered** in the agent skill directory used
-by the running Hermes session:
-
-```text
 /hermes-vps-010 repoX
 ```
 
-The skill resolves `repoX` through operator-maintained `targets.json`, runs
-the validation/print runner, then follows the generated phase-010 task
-instructions. The verbose runner output is an **internal execution contract**
-and diagnostic fallback — not what the operator should paste every time.
-
-### One-line upload fallback (not a slash command)
-
-Until skill discovery is verified for a deployment, use this copy-ready line:
-
-```text
-Read /opt/data/hermes-review/BOOTSTRAP.md and execute only phase 010 for target repoX using /opt/data/hermes-review/targets.json; stop if validation fails.
+Or via runner directly:
+```bash
+hermes-vps-review --phase 010 --registry /opt/data/hermes-review/targets.json --target-id repoX
 ```
 
-`BOOTSTRAP.md` routes that request through the **same** registry + runner
-validation as the skill. Uploading the runtime directory does **not** register
-skills.
+Agent writes report → calls `hermes-vps-artifacts register --phase 010 --source-report <path>`.
+Operator reviews consultation prompt → separate explicit request before phase 020.
 
-## Default prefix vs configurable install
-
-Documentation and the shipped skill body use the deployment binding:
-
-```text
-/opt/data/hermes-review
-```
-
-That is **not** a universal path. Future install/registration must render or
-otherwise set the chosen prefix in the registered skill. Non-default prefixes
-do **not** work automatically. No undocumented environment variables or agent
-config keys are defined for prefix override. The policy root is **not**
-inferred from the skill’s install directory.
-
-## Target registry
-
-Operator-maintained file at `<policy_prefix>/targets.json`
-(see `templates/targets.example.json`):
-
-```json
-{
-  "schema_version": 1,
-  "policy_prefix": "/opt/data/hermes-review",
-  "targets": {
-    "repoX": {
-      "active_run_json": "/opt/data/review-runs/repoX/<run-id>/run.json"
-    }
-  }
-}
-```
-
-- Maps a registry key to an **exact** `active_run_json` path.
-- Does not scan for newest runs or infer from cwd.
-- Target ids: ASCII `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, plus reject `.`,
-  `..`, and any id containing `..` (so `a..b` is invalid).
-- Ids are keys only — never concatenated into filesystem paths.
-- Duplicate JSON object keys (including duplicate target ids) are **rejected**
-  by the runner parser (no silent last-wins).
-- Registry `policy_prefix` must agree with the selected run’s `policy_prefix`
-  after normalization.
-- Selected run must request phase **010**; other phases are rejected.
-
-## Runner v1 (validate + print only)
-
-Mutually exclusive modes:
+### Phases 020–050 (linear sequence)
 
 ```bash
-# Mode A
-bin/hermes-vps-review --run-json /absolute/path/to/run.json
-
-# Mode B (short-command / fallback path)
-bin/hermes-vps-review \
-  --registry /opt/data/hermes-review/targets.json \
-  --target-id repoX
+/hermes-vps-020 repoX   # threat model (prereqs: 010)
+/hermes-vps-030 repoX   # scanner plan (prereqs: 010, 020)
+/hermes-vps-040 repoX   # dependency advisories + vuln intel (prereqs: 010, 020, 030)
+/hermes-vps-050 repoX   # source review — one priority per invocation (prereqs: 010, 020)
 ```
 
-Optional: `--report-version N` (default 1, or from `run.json` when set).
-The skill must not invent or auto-increment versions.
+Phases 040 and 050 may run in either order, or both, depending on the
+approved scan plan.
 
-Rejects: mixed modes; `--registry` without `--target-id` (and vice versa);
-repeated single-value flags; unexpected positionals; validation failures.
+### Phase 040 — Vulnerability intelligence
 
-**Does not:** create directories/reports, update configs, launch Hermes,
-mutate git, contact GitHub/Roomote/MCP, or authorize the next phase.
+Phase 040 requires a structured `vuln-intel-record.json` payload. Hermes
+invokes `bin/hermes-vps-collect-intel` automatically — no manual JSON assembly.
 
-Dependencies: **Python 3** and **Git**. No package installs.
+Collection modes (pass in trigger message):
+- **Live** (explicit network authorization required): `--mode live`
+- **Not authorized** (honest record, no network): `--mode not-authorized`
+- **Offline/import** (re-use prior evidence): `--mode imported --import-evidence PATH`
 
-## Skill registration (documentation only)
+All endpoint URLs are defined in `lib/hermes_vps_intel.py INTEL_SOURCES`. Do not
+duplicate them in rules, tasks, or skills.
 
-Separate from the self-contained policy payload:
+**Privacy notice:** In live mode, package names and versions are sent to OSV and NVD.
+Use `--mode imported` or `--mode not-authorized` when dependency disclosure is restricted.
 
-1. Operator reviews `skills/hermes-vps-010/SKILL.md`.
-2. Operator copies it into the **verified** Hermes skills root for that
-   deployment under a distinct namespace (for example
-   `…/skills/repo-kit-hermes-vps/hermes-vps-010/`), **not** over local
-   `/hermes-010` / `repo-kit-hermes`.
-3. Operator confirms the skill’s embedded prefix matches the install prefix.
-4. Portal discovery/hot reload is **unverified** — confirm per deployment.
+```bash
+# Live collection (when network is authorized in trigger):
+hermes-vps-collect-intel \
+  --run-json /abs/run.json \
+  --output /abs/reports/vuln-intel.json \
+  --mode live \
+  --packages-json /abs/packages.json
 
-This repository does **not** write to live `~/.hermes` or modify Hermes
-services as part of hermesVPS.
+# Then register with payload:
+hermes-vps-artifacts register \
+  --run-json /abs/run.json --phase 040 \
+  --source-report /abs/report.md \
+  --payload-json /abs/reports/vuln-intel.json
+```
 
-## `run.json` versus `manifest.json`
+The payload records per-provider freshness. `generate-findings` reads it to
+evaluate intelligence readiness. Default freshness threshold: **24 hours**.
+
+To refresh stale intel before `generate-findings`:
+```bash
+# Re-collect
+hermes-vps-collect-intel --run-json /abs/run.json --output /abs/reports/vuln-intel-v2.json --mode live --packages-json /abs/packages.json
+# Revise the 040 artifact:
+hermes-vps-artifacts revise \
+  --run-json /abs/run.json \
+  --source-report /abs/updated-040-report.md \
+  --supersedes phase-040-hermes-v1 \
+  --reviewer-identity "operator" \
+  --payload-json /abs/reports/vuln-intel-v2.json
+# Then re-generate:
+hermes-vps-artifacts generate-findings --run-json /abs/run.json
+```
+
+Phase 050 for a second priority:
+```bash
+/hermes-vps-050 repoX authentication-flows
+```
+
+### Phase 060 — Validate and triage
+
+```bash
+/hermes-vps-060 repoX
+```
+
+Requires at least one of 040 or 050.  When both are selected and valid, both
+are read as input.  Phase 060 produces:
+- A Markdown report
+- A JSON triage payload (`triage-payload.schema.json`) with stable `candidate_id` values
+
+Both are registered together:
+```bash
+hermes-vps-artifacts register \
+  --run-json /abs/run.json --phase 060 \
+  --source-report /abs/report.md \
+  --payload-json /abs/triage-payload.json
+```
+
+### Phase 070 — Reviewed findings (one candidate per invocation)
+
+```bash
+/hermes-vps-070 repoX C-001   # first candidate
+/hermes-vps-070 repoX C-002   # second candidate — separate invocation
+```
+
+Revising C-001 does not replace C-002's assessment:
+```bash
+hermes-vps-artifacts revise \
+  --run-json /abs/run.json \
+  --source-report /abs/revised-report.md \
+  --supersedes phase-070-hermes-v1 \
+  --reviewer-identity "reviewer-name"
+# ^ updates C-001's selected artifact; C-002 selection unchanged
+```
+
+Each registration uses `--subject-id <candidate_id>`.  Cross-subject
+supersession is rejected.
+
+Phase 070 produces per-candidate:
+- A Markdown report
+- A JSON finding-record payload (`finding-record.schema.json`)
+
+```bash
+hermes-vps-artifacts register \
+  --run-json /abs/run.json --phase 070 \
+  --subject-id C-001 \
+  --source-report /abs/report.md \
+  --payload-json /abs/finding-record.json
+```
+
+### Generate findings export (after all 070 phases complete)
+
+```bash
+/hermes-vps-remediate repoX
+# or directly:
+hermes-vps-artifacts generate-findings --run-json /abs/run.json
+```
+
+The export includes a multi-field `readiness` object with separate fields for
+intel freshness, assessment completeness, and 080 provenance. A stale-intel
+warning does not discard valid findings.
+
+```bash
+# Strict freshness gate (exit 2 if stale; export still written and registered):
+hermes-vps-artifacts generate-findings --run-json /abs/run.json --require-fresh-intel
+# Override threshold:
+hermes-vps-artifacts generate-findings --run-json /abs/run.json --freshness-hours 48
+# Exit codes: 0=success, 1=error, 2=policy check failed (--require-fresh-intel)
+```
+
+If any candidates from the triage inventory have no current 070 assessment,
+the export is labeled **PARTIAL**. A partial export is **not** a complete
+remediation handoff.
+
+Enriching with optional 080 plans: run phase 080 for each finding before
+calling `generate-findings`; the helper automatically incorporates available
+080 plans.
+
+```bash
+# With 080 plans for SG-001 registered:
+hermes-vps-artifacts generate-findings --run-json /abs/run.json
+# → findings-v1.json includes remediation_plan_artifact: "phase-080-hermes-v1"
+# → finding status remains "open" (plan ≠ fix)
+# → readiness.provenance_080 reports mismatched_intel if 040 changed since 080 plan
+```
+
+### Phase 080 — Remediation plan (one finding per invocation, gate 1 only)
+
+```bash
+/hermes-vps-080 repoX SG-001   # plan for first finding
+/hermes-vps-080 repoX SG-002   # separate invocation for second finding
+```
+
+Gate 1 only. Produces a remediation plan **and a provenance payload**.
+Phase 080 now requires `--payload-json` at registration.
+The payload records the exact phase-040 and phase-070 artifact IDs/hashes
+used — resolved at plan creation time, stored immutably.
+
+```bash
+hermes-vps-artifacts register \
+  --run-json /abs/run.json --phase 080 \
+  --subject-id SG-001 \
+  --source-report /abs/report.md \
+  --payload-json /abs/plan-080-SG-001.json
+```
+
+Gates 2–5 require separate authorization. Does not change finding status.
+
+---
+
+## C. Stale downstream selections
+
+When a phase-050 or phase-040 report is revised and re-registered, the
+phase-060 and all downstream artifacts may reference the old prerequisite.
+
+`hermes-vps-artifacts selected` prints the current selections with SHA-256
+verification.  `generate-findings` detects stale assessments and labels the
+export partial.
+
+```bash
+hermes-vps-artifacts selected --run-json /abs/run.json
+```
+
+---
+
+## D. `run.json` versus `manifest.json`
 
 | File | Owner | Role |
 |------|-------|------|
-| `run.json` | Operator; immutable during the run | Authoritative identity, commit, output, phase, prerequisites |
-| `manifest.json` | Operator-maintained | Produced artefacts / acceptance; must agree on overlapping identity |
+| `run.json` | Operator; stable during the run | Identity, commit, output root, phase (legacy metadata) |
+| `manifest.json` | `hermes-vps-artifacts` only | Artifact index; never hand-edit |
 
-Hermes writes only the phase report. Neither Hermes nor the runner updates
-the manifest automatically.
+`hermes-vps-review` is validate-only and never writes any file.
 
-## Phase 010 gate
+### `manifest.json` selection fields
 
-1. Report produced  
-2. Optional Roomote review  
-3. Human acceptance of exact artefact versions  
-4. Separate explicit request required before phase 020  
+| Field | Used for | Authoritative for |
+|-------|----------|-------------------|
+| `selected_by_phase` | Phases 010–060, findings | Single-instance phases |
+| `selected_by_subject["070"][candidate_id]` | Phase 070 | Repeated 070 assessments |
+| `selected_by_subject["080"][finding_id]` | Phase 080 | Repeated 080 plans |
 
-## What upload mode does not require
+---
+
+## E. Artifact helper (`hermes-vps-artifacts`)
+
+Sole writer of `manifest.json`.
+
+```bash
+# Register a report (single-instance phases)
+hermes-vps-artifacts register \
+  --run-json PATH --phase 010 \
+  --source-report PATH
+
+# Register with structured payload (phases 060, 070)
+hermes-vps-artifacts register \
+  --run-json PATH --phase 060 \
+  --source-report PATH --payload-json PATH
+
+# Register repeated phase with subject identity (phases 070, 080)
+hermes-vps-artifacts register \
+  --run-json PATH --phase 070 \
+  --subject-id C-001 \
+  --source-report PATH --payload-json PATH
+
+# Accept second opinion (does not change selection)
+hermes-vps-artifacts accept \
+  --run-json PATH --artifact-id phase-010-hermes-v1 \
+  --reviewer-identity "name"
+
+# Import revised report (updates subject-scoped selection; rejects cross-subject supersession)
+hermes-vps-artifacts revise \
+  --run-json PATH --source-report PATH \
+  --supersedes phase-070-hermes-v1 \
+  --reviewer-identity "name"
+
+# Print/verify current selections
+hermes-vps-artifacts selected --run-json PATH [--phase 070]
+
+# Generate consolidated findings export
+hermes-vps-artifacts generate-findings --run-json PATH
+
+# Validate a findings export file (read-only)
+hermes-vps-artifacts validate-findings \
+  --run-json PATH --findings-file PATH
+```
+
+---
+
+## F. Runner
+
+```bash
+# Mode A: direct run.json
+hermes-vps-review --phase NNN --run-json PATH
+
+# Mode B: registry lookup
+hermes-vps-review --phase NNN \
+  --registry PATH --target-id ID
+
+# Repeated phases (070, 080): provide trigger input
+hermes-vps-review --phase 070 --run-json PATH --trigger-input C-001
+hermes-vps-review --phase 080 --run-json PATH --trigger-input SG-001
+```
+
+**`--phase` is required.** The runner prints the operator prompt and exits;
+it never writes any file.
+
+---
+
+## G. Findings schemas
+
+| Schema | Location | Purpose |
+|--------|----------|---------|
+| Canonical findings | `security-assets/findings.schema.json` | Validates target repo's `security/findings-reviewed.json` |
+| Vuln-intel record | `templates/vuln-intel-record.schema.json` | Phase-040 evidence payload |
+| Triage payload | `templates/triage-payload.schema.json` | Phase-060 candidate inventory |
+| Finding record | `templates/finding-record.schema.json` | Phase-070 per-candidate payload |
+| Phase-080 plan | `templates/phase-080-plan.schema.json` | Phase-080 provenance payload |
+| Findings export | `templates/findings-export.schema.json` | Consolidated remediation handoff |
+
+Intelligence endpoints: all URLs in `lib/hermes_vps_intel.py INTEL_SOURCES`.
+Freshness default: 24 hours (`DEFAULT_FRESHNESS_HOURS`).
+
+`assessment_disposition` (confirmed/suspected/dismissed/needs-investigation) is
+distinct from canonical `status` (open/fixed/accepted-risk/duplicate/rejected).
+Migration to the target repository's findings store requires separate
+validation and authorization.
+
+---
+
+## H. Intelligence collection and refresh
+
+`bin/hermes-vps-collect-intel` produces `vuln-intel-record.json`.
+It is invoked by Hermes as part of phase 040 — not manually by the operator.
+
+**When collection occurs:** Phase 040 task invokes the helper with mode
+determined by the trigger message.
+
+**External services receiving metadata (live mode):**
+- OSV (`api.osv.dev`): package names, ecosystems, versions
+- NVD (`services.nvd.nist.gov`): CVE IDs for enrichment
+- CISA KEV (`www.cisa.gov`): full feed fetch; local matching only
+
+**How to refresh stale evidence:** Revise the phase-040 artifact with a new
+`vuln-intel-record.json`. `generate-findings` detects 080 plans that used the
+old 040 snapshot and reports them in `readiness.provenance_080.mismatched_intel`.
+
+**How to import offline evidence:**
+```bash
+hermes-vps-collect-intel --run-json PATH --output PATH \
+  --mode imported --import-evidence /path/to/prior-record.json
+```
+Importing does not refresh evidence age; original `retrieved_at_utc` is preserved.
+
+**Coverage limitations** appear in `readiness.intel.coverage.limitations` in the
+export and in the phase-040 report's Coverage Limitations section.
+
+---
+
+## I. What upload mode does not require
 
 `hermes` CLI, `gh`, Docker, sudo, systemd, GitHub/MCP bridges, shared
 Roomote filesystem, or automatic skill discovery.
+
+---
 
 ## Provenance
 

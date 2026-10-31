@@ -19,16 +19,12 @@ Do not:
 - execute project code, scripts, tests, builds, hooks, or scanners;
 - install anything or access the network;
 - modify files outside the approved report path per Rule 005;
-- update `run.json` or `manifest.json`;
+- update `run.json` or hand-edit `manifest.json` (use `hermes-vps-artifacts register` after writing);
 - invent findings, CVEs, or severity ratings.
 
-Write the phase report to:
-
-```text
-<run_root>/reports/phase-010-hermes-vN.md
-```
-
-(version `N` as selected in the human request / validated prompt; never
+Write the phase report to any new filename under `<run_root>/reports/`, then
+call `hermes-vps-artifacts register` to assign the final versioned name and
+update the artifact index.  Version is selected automatically (never
 overwrite).
 
 ## Inspection boundaries
@@ -119,14 +115,14 @@ Presence of `security-assets/findings.schema.json` does not change that.
 
 ## Phase 010 gate (documentation)
 
-After a complete report:
+After the report is written and registered:
 
-1. Operator may optionally hand off to Roomote (manual template).  
-2. Human acceptance must name exact artefact versions (e.g.
-   `phase-010-hermes-v1`, and Roomote review id if any).  
-3. If Roomote review was skipped, acceptance must say so.  
-4. A separate explicit human request is required before phase 020.  
+1. `hermes-vps-artifacts register` prints the consultation prompt — use it
+   to hand off to a second-opinion reviewer if desired (optional).
+2. A separate explicit human request is required before phase 020.
+3. Normal progression does not require a separate acceptance file or ACCEPT
+   subcommand invocation.
 
 Do not implement or start phase 020 in this stage.
 
-Stop after writing the phase report and wait for human review.
+Stop after registration. Do not advance automatically.

@@ -574,7 +574,7 @@ def main(argv: list[str]) -> int:
         state.note_created(run_json_path)
 
         # 2) Shared validation must succeed before any registry activation.
-        ctx = validate_run(run_data, 1, expected_policy_prefix=policy_prefix)
+        ctx = validate_run(run_data, expected_policy_prefix=policy_prefix)
 
         # 3) Only then update targets.json under lock (cooperating processes only).
         with registry_lock(lock_path):
@@ -636,7 +636,7 @@ def main(argv: list[str]) -> int:
     print(f"RUN ROOT: {ctx['run_root']}")
     print(f"RUN JSON: {run_json_path}")
     print(f"REPORTS DIR: {ctx['reports_dir']}")
-    print(f"SELECTED REPORT: {ctx['report_path']}")
+    print(f"ARTIFACT REGISTRATION: hermes-vps-artifacts register --run-json {run_json_path} --phase 010 --source-report <absolute-path-to-report>")
     print(f"REGISTRY: {registry_path}")
     print(f"REGISTERED-SKILL INVOCATION (if skill is registered): {skill_line}")
     print(

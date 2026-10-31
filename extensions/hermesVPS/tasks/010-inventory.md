@@ -50,7 +50,7 @@ Do not load or invent prior phase reports.
 Perform only Rule 010. Read-only inspection only.
 Do not execute project code, install anything, use the network, run scanners,
 builds, or tests.
-Do not modify `run.json` or `manifest.json`.
+Do not modify `run.json` or hand-edit `manifest.json`.
 Do not create findings or update security stores.
 
 ## 5. Write
@@ -66,18 +66,31 @@ On success, completion state is `complete` or `incomplete` (if scoped gaps
 remain but work stopped cleanly). On validation/prerequisite failure,
 `blocked`.
 
-## 6. After writing (describe only)
+## 6. Register the artifact
 
-Tell the operator the exact artifact id and path to record in
-`manifest.json`. Do **not** update the manifest yourself.
-Do **not** create a separate manifest-update file.
+After the report file is written, call the artifact helper to register it:
 
-Remind the operator of the gate:
+```text
+<policy_prefix>/bin/hermes-vps-artifacts register \
+  --run-json <run_json_path> \
+  --phase 010 \
+  --source-report <absolute-path-to-your-report-file>
+```
 
-- optional Roomote handoff;
-- human acceptance of exact artifact versions;
-- separate explicit request required before phase 020.
+The helper will:
+- auto-select the next unused version (e.g. `phase-010-hermes-v1`);
+- copy the report to its final versioned path under `reports/`;
+- compute SHA-256 and update the artifact index (`manifest.json`);
+- print the consultation prompt.
+
+If registration fails after the report is saved (saved-but-unregistered),
+follow the exact retry command printed by the helper. Do not re-run the
+inventory phase or overwrite the report.
+
+Structural and hash checks do not prove factual correctness of the report.
 
 ## 7. Stop
 
-Stop and wait. Do not start Task 020 or any other phase.
+After the consultation prompt is printed, stop.
+Do not start Task 020 or any other phase without a separate explicit human
+request. Normal progression does not require a separate acceptance file.

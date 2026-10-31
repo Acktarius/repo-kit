@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""hermesVPS artifact helper entry point.
+
+Sole writer of manifest.json.  Subcommands: register, accept, revise, selected.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+# Prevent __pycache__ writes under the policy tree.
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
+_EXT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _EXT_ROOT not in sys.path:
+    sys.path.insert(0, _EXT_ROOT)
+
+from lib.hermes_vps_artifacts import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

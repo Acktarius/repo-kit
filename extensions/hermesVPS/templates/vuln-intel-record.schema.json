@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hermesVPS phase-040 vulnerability intelligence record",
+  "description": "Structured evidence record from phase-040 advisory collection. Produced by bin/hermes-vps-collect-intel — do not manually assemble. Registered as the phase-040 payload (--payload-json). Freshness is evaluated per-provider using retrieved_at_utc, never using registration or import time. An honest incomplete record is acceptable; it must not imply successful vulnerability checking. Collection mode 'not_authorized' is valid and records that network access was not approved.",
+  "type": "object",
+  "required": [
+    "schema_version", "phase", "source_commit",
+    "collection_mode", "collected_at_utc", "freshness_policy_hours",
+    "providers", "vendor_advisories", "matches",
+    "no_match_packages", "unsupported_ecosystems", "inventory_gaps", "coverage"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "phase": {
+      "type": "string",
+      "const": "040"
+    },
+    "source_commit": {
+      "type": "string",
+      "description": "Full 40-char lowercase hex SHA of the inspected source commit"
+    },
+    "collection_mode": {
+      "type": "string",
+      "description": "How evidence was gathered. 'not_authorized' means network access was not approved; this is a valid honest record.",
+      "enum": ["live", "imported", "not_authorized", "partial"]
+    },
+    "collected_at_utc": {
+      "type": "string",
+      "description": "UTC ISO-8601 timestamp when collection was initiated. Freshness is NOT evaluated from this; use providers[*].retrieved_at_utc."
+    },
+    "freshness_policy_hours": {
+      "type": "number",
+      "description": "Effective freshness threshold in hours at the time of collection. Does not modify the freshness of existing evidence."
+    },
+    "imported_at_utc": {
+      "type": ["string", "null"],
+      "description": "Set only when collection_mode is 'imported'. Records when the prior evidence was re-imported; does not refresh provider age."
+    },
+    "providers": {
+      "type": "object",
+      "description": "Per-provider evidence. All URLs are defined in lib/hermes_vps_intel.py INTEL_SOURCES.",
+      "required": ["osv", "nvd", "cisa_kev"],
+      "properties": {
+        "osv": {
+          "type": "object",
+          "required": ["status", "endpoint_used", "retrieved_at_utc"],
+          "properties": {
+            "status": {
+              "type": "string",
+              "description": "Collection outcome for this provider.",
+              "enum": ["success", "no_match", "partial", "unsupported", "failed", "not_authorized", "not_checked"]
+            },
+            "endpoint_used": { "type": ["string", "null"] },
+            "retrieved_at_utc": {
+              "type": ["string", "null"],
+              "description": "Actual successful retrieval time. Null if not checked or failed. Freshness is evaluated against this value."
+            },
+            "response_sha256": { "type": ["string", "null"] },
+            "packages_queried": { "type": ["integer", "null"] },
+            "advisory_ids_returned": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "note": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        },
+        "nvd": {
+          "type": "object",
+          "required": ["status", "endpoint_used", "retrieved_at_utc"],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["success", "no_match", "partial", "unsupported", "failed", "not_authorized", "not_checked"]
+            },
+            "endpoint_used": { "type": ["string", "null"] },
+            "retrieved_at_utc": {
+              "type": ["string", "null"],
+              "description": "Actual retrieval time for freshness evaluation."
+            },
+            "response_sha256": { "type": ["string", "null"] },
+            "cves_enriched": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "cve_id": { "type": "string" },
+                  "descriptions": { "type": "array", "items": { "type": "string" } },
+                  "base_score_v31": { "type": ["number", "null"] },
+                  "base_severity_v31": { "type": ["string", "null"] },
+                  "published": { "type": ["string", "null"] },
+                  "last_modified": { "type": ["string", "null"] }
+                },
+                "additionalProperties": false
+              }
+            },
+            "cves_failed": { "type": "array", "items": { "type": "string" } },
+            "api_key_used": { "type": "boolean" },
+            "note": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        },
+        "cisa_kev": {
+          "type": "object",
+          "required": ["status", "endpoint_used", "retrieved_at_utc"],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["success", "no_match", "partial", "unsupported", "failed", "not_authorized", "not_checked"]
+            },
+            "endpoint_used": { "type": ["string", "null"] },
+            "retrieved_at_utc": {
+              "type": ["string", "null"],
+              "description": "Actual retrieval time for freshness evaluation."
+            },
+            "response_sha256": { "type": ["string", "null"] },
+            "catalog_version": { "type": ["string", "null"] },
+            "kev_count": { "type": ["integer", "null"] },
+            "matched_cves": {
+              "type": "array",
+              "description": "CVEs from this collection that appear in CISA KEV. Absence does not prove non-exploitation.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "cve_id": { "type": "string" },
+                  "vendor_project": { "type": ["string", "null"] },
+                  "product": { "type": ["string", "null"] },
+                  "vulnerability_name": { "type": ["string", "null"] },
+                  "date_added": { "type": ["string", "null"] },
+                  "known_ransomware": { "type": ["string", "null"] },
+                  "due_date": { "type": ["string", "null"] }
+                },
+                "additionalProperties": false
+              }
+            },
+            "note": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "vendor_advisories": {
+      "type": "array",
+      "description": "Optional: vendor advisory records fetched during collection. URLs validated as HTTPS; private/loopback/metadata targets rejected.",
+      "items": {
+        "type": "object",
+        "required": ["url", "status"],
+        "properties": {
+          "url": { "type": "string" },
+          "retrieved_at_utc": { "type": ["string", "null"] },
+          "response_sha256": { "type": ["string", "null"] },
+          "advisory_id": { "type": ["string", "null"] },
+          "status": {
+            "type": "string",
+            "enum": ["success", "failed", "rejected"]
+          },
+          "rejection_reason": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "matches": {
+      "type": "array",
+      "description": "Advisory matches. A match creates a candidate, not proof of exploitability. Aliases deduplicated without losing source references.",
+      "items": {
+        "type": "object",
+        "required": ["package", "version", "ecosystem", "advisory_ids"],
+        "properties": {
+          "package": { "type": "string" },
+          "version": { "type": "string" },
+          "ecosystem": { "type": "string" },
+          "advisory_ids": {
+            "type": "array",
+            "description": "Primary and aliased advisory IDs (GHSA, CVE, OSV). All preserved without losing source references.",
+            "items": { "type": "string" }
+          },
+          "aliases": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "affected_ranges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": { "type": "string" },
+                "introduced": { "type": ["string", "null"] },
+                "fixed": { "type": ["string", "null"] }
+              },
+              "additionalProperties": false
+            }
+          },
+          "fixed_versions": { "type": "array", "items": { "type": "string" } },
+          "kev_membership": {
+            "type": "boolean",
+            "description": "True if any advisory ID is in CISA KEV. false does not prove non-exploitation."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low", "unknown"]
+          },
+          "published": { "type": ["string", "null"] },
+          "modified": { "type": ["string", "null"] },
+          "summary": { "type": ["string", "null"] },
+          "candidate_id_suggestion": {
+            "type": ["string", "null"],
+            "description": "Suggested candidate ID for phase-060 triage (e.g. C-OSV-001). Not authoritative."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "no_match_packages": {
+      "type": "array",
+      "description": "Packages that were queried but returned no advisory matches. No match within the checked scope — not proof of no vulnerability.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "package": { "type": "string" },
+          "version": { "type": "string" },
+          "ecosystem": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "unsupported_ecosystems": {
+      "type": "array",
+      "description": "Ecosystems not supported by the queried providers. Coverage is incomplete for these.",
+      "items": { "type": "string" }
+    },
+    "inventory_gaps": {
+      "type": "array",
+      "description": "Packages that could not be fully queried due to missing version or other data.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "package": { "type": "string" },
+          "reason": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["total_packages_checked", "total_matches", "kev_matches"],
+      "properties": {
+        "total_packages_checked": { "type": "integer" },
+        "total_matches": { "type": "integer" },
+        "kev_matches": { "type": "integer" },
+        "packages_with_gaps": { "type": "integer" },
+        "baseline_or_refresh": {
+          "type": "string",
+          "enum": ["baseline", "refresh"]
+        },
+        "notes": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hermesVPS phase-060 triage payload",
+  "description": "Structured machine-readable output of phase 060 (validate-and-triage). Defines the in-scope candidate inventory for generate-findings.",
+  "type": "object",
+  "required": ["schema_version", "phase", "source_commit", "candidates"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "phase": {
+      "type": "string",
+      "const": "060"
+    },
+    "source_commit": {
+      "type": "string",
+      "description": "Full 40-char lowercase hex SHA of the inspected source commit"
+    },
+    "assessed_report_ids": {
+      "type": "array",
+      "description": "Artifact IDs of the phase-040 / phase-050 reports used as input",
+      "items": { "type": "string" }
+    },
+    "notes": {
+      "type": ["string", "null"]
+    },
+    "candidates": {
+      "type": "array",
+      "description": "Validated candidate security issues identified during triage",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "title", "disposition"],
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "description": "Stable candidate identifier (e.g. C-001). Must be unique within this payload.",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "title": { "type": "string" },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "validated-new",
+              "existing-record",
+              "duplicate",
+              "covered-by-accepted-risk",
+              "rejected",
+              "pending-evidence",
+              "blocked"
+            ]
+          },
+          "severity_estimate": {
+            "type": ["string", "null"],
+            "enum": ["low", "medium", "high", "critical", null]
+          },
+          "confidence": {
+            "type": ["string", "null"],
+            "enum": ["low", "medium", "high", null]
+          },
+          "source_phase": {
+            "type": ["string", "null"],
+            "description": "Which upstream phase produced this candidate (040 or 050)",
+            "enum": ["040", "050", null]
+          },
+          "source_finding_ref": {
+            "type": ["string", "null"],
+            "description": "Reference to the upstream finding in the 040/050 report"
+          },
+          "existing_sg_id": {
+            "type": ["string", "null"],
+            "description": "Existing SG-NNN ID if disposition is existing-record or duplicate"
+          },
+          "notes": { "type": ["string", "null"] },
+          "blocked_reason": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

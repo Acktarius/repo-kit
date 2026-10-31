@@ -1,52 +1,183 @@
 {
-  "$comment": "Operator-maintained manifest.json. Not a second config source: identity fields must agree with run.json. Hermes/runner must not update this file automatically. Absent file OR artifacts:[] is a valid empty start for phase 010.",
+  "$comment": "Auto-maintained artifact index. Sole writer: bin/hermes-vps-artifacts. Do not hand-edit. Identity fields must agree with run.json.",
   "schema_version": 1,
   "run_id": "2026-10-30-inventory-01",
-  "created_at_utc": "2026-10-30T23:00:00Z",
   "source": {
     "identity": "github.example/org/example-repo",
     "path": "/opt/data/repositories/example-repo",
-    "commit": "0123456789abcdef0123456789abcdef01234567",
-    "worktree_clean_at_start": true
+    "commit": "0123456789abcdef0123456789abcdef01234567"
   },
   "policy": {
     "prefix": "/opt/data/hermes-review",
-    "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
-    "toolkit_dirty_at_install": true
+    "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61"
   },
-  "security_contracts": {
-    "findings_schema": "security-assets/findings.schema.json",
-    "status_enums": ["open", "fixed", "accepted-risk", "duplicate", "rejected"],
-    "severity_enums": ["low", "medium", "high", "critical"],
-    "finding_id_pattern": "^SG-[0-9]{3,}$",
-    "note": "Phase 010 does not generate findings. Additional templates may be packaged in later stages."
-  },
-  "artifacts": [],
-  "next_phase_gate": {
-    "requires_explicit_human_request": true,
-    "auto_advance": false,
-    "roomote_review_optional": true,
-    "human_acceptance_required_before_dependent_phase": true,
-    "note_after_010": "After phase-010-hermes-vN is produced, record it here; optionally record Roomote review; record human acceptance of exact ids; then issue a separate explicit request for phase 020."
-  },
-  "$comment_after_010_example_entries": [
+  "artifacts": [
     {
+      "$comment": "Phase 010 — single-instance phase; selected_by_phase only",
       "id": "phase-010-hermes-v1",
       "kind": "hermes_phase_report",
       "phase": "010",
       "version": 1,
       "path": "reports/phase-010-hermes-v1.md",
-      "completion_state": "complete"
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_commit": "0123456789abcdef0123456789abcdef01234567",
+      "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
+      "producer": "hermes-vps-artifacts/register",
+      "created_at_utc": "2026-10-30T23:15:00Z",
+      "completion_status": "complete",
+      "prerequisite_artifacts": [],
+      "supersedes": null,
+      "reviews": []
     },
     {
-      "id": "phase-010-human-v1",
-      "kind": "human_acceptance",
-      "phase": "010",
+      "$comment": "Phase 040 — vuln-intel payload required; collection_mode in payload distinguishes live/imported/not_authorized",
+      "id": "phase-040-hermes-v1",
+      "kind": "hermes_phase_report",
+      "phase": "040",
       "version": 1,
-      "path": "approvals/phase-010-human-v1.md",
-      "accepted_artifacts": ["phase-010-hermes-v1"],
-      "roomote_review": "skipped",
-      "note": "Human-authored. Model-generated acceptance is not authorization."
+      "path": "reports/phase-040-hermes-v1.md",
+      "payload_path": "reports/payload-040-all-v1.json",
+      "payload_sha256": "bbccdd...",
+      "sha256": "ccddee...",
+      "source_commit": "0123456789abcdef0123456789abcdef01234567",
+      "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
+      "producer": "hermes-vps-artifacts/register",
+      "created_at_utc": "2026-10-30T23:30:00Z",
+      "completion_status": "complete",
+      "prerequisite_artifacts": [],
+      "supersedes": null,
+      "reviews": []
+    },
+    {
+      "$comment": "Phase 060 — single-instance; has payload_path for triage inventory",
+      "id": "phase-060-hermes-v1",
+      "kind": "hermes_phase_report",
+      "phase": "060",
+      "version": 1,
+      "path": "reports/phase-060-hermes-v1.md",
+      "payload_path": "reports/payload-060-all-v1.json",
+      "payload_sha256": "aabbcc...",
+      "sha256": "ddeeff...",
+      "source_commit": "0123456789abcdef0123456789abcdef01234567",
+      "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
+      "producer": "hermes-vps-artifacts/register",
+      "created_at_utc": "2026-10-31T00:00:00Z",
+      "completion_status": "complete",
+      "prerequisite_artifacts": ["phase-050-hermes-v1"],
+      "supersedes": null,
+      "reviews": []
+    },
+    {
+      "$comment": "Phase 070 — repeated phase; subject_id = candidate_id",
+      "id": "phase-070-hermes-v1",
+      "kind": "hermes_phase_report",
+      "phase": "070",
+      "version": 1,
+      "subject_id": "C-001",
+      "path": "reports/phase-070-hermes-v1.md",
+      "payload_path": "reports/payload-070-C-001-v1.json",
+      "payload_sha256": "112233...",
+      "sha256": "445566...",
+      "source_commit": "0123456789abcdef0123456789abcdef01234567",
+      "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
+      "producer": "hermes-vps-artifacts/register",
+      "created_at_utc": "2026-10-31T01:00:00Z",
+      "completion_status": "complete",
+      "prerequisite_artifacts": ["phase-060-hermes-v1"],
+      "supersedes": null,
+      "reviews": []
+    },
+    {
+      "$comment": "Phase 070 v2 — same subject C-001, supersedes v1 (revision)",
+      "id": "phase-070-hermes-v2",
+      "kind": "hermes_phase_report",
+      "phase": "070",
+      "version": 2,
+      "subject_id": "C-001",
+      "path": "reports/phase-070-hermes-v2.md",
+      "payload_path": "reports/payload-070-C-001-v2.json",
+      "payload_sha256": "778899...",
+      "sha256": "aabbdd...",
+      "source_commit": "0123456789abcdef0123456789abcdef01234567",
+      "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
+      "producer": "hermes-vps-artifacts/revise",
+      "created_at_utc": "2026-10-31T02:00:00Z",
+      "completion_status": "complete",
+      "prerequisite_artifacts": ["phase-060-hermes-v1"],
+      "supersedes": "phase-070-hermes-v1",
+      "reviews": []
+    },
+    {
+      "$comment": "Phase 070 v3 — different subject C-002; does not supersede v1 or v2",
+      "id": "phase-070-hermes-v3",
+      "kind": "hermes_phase_report",
+      "phase": "070",
+      "version": 3,
+      "subject_id": "C-002",
+      "path": "reports/phase-070-hermes-v3.md",
+      "payload_path": "reports/payload-070-C-002-v3.json",
+      "payload_sha256": "ccddee...",
+      "sha256": "ffaabb...",
+      "source_commit": "0123456789abcdef0123456789abcdef01234567",
+      "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
+      "producer": "hermes-vps-artifacts/register",
+      "created_at_utc": "2026-10-31T03:00:00Z",
+      "completion_status": "complete",
+      "prerequisite_artifacts": ["phase-060-hermes-v1"],
+      "supersedes": null,
+      "reviews": []
+    },
+    {
+      "$comment": "Phase 080 — repeated phase; subject_id = finding_id",
+      "id": "phase-080-hermes-v1",
+      "kind": "hermes_phase_report",
+      "phase": "080",
+      "version": 1,
+      "subject_id": "SG-001",
+      "path": "reports/phase-080-hermes-v1.md",
+      "sha256": "001122...",
+      "source_commit": "0123456789abcdef0123456789abcdef01234567",
+      "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
+      "producer": "hermes-vps-artifacts/register",
+      "created_at_utc": "2026-10-31T04:00:00Z",
+      "completion_status": "complete",
+      "prerequisite_artifacts": ["phase-060-hermes-v1", "phase-070-hermes-v2"],
+      "supersedes": null,
+      "reviews": []
+    },
+    {
+      "$comment": "Findings export — produced by generate-findings",
+      "id": "findings-v1",
+      "kind": "findings_export",
+      "version": 1,
+      "path": "reports/findings-v1.json",
+      "sha256": "334455...",
+      "source_commit": "0123456789abcdef0123456789abcdef01234567",
+      "toolkit_revision": "7c7484a5ed6472ebaac7b36e273f0e9528489c61",
+      "producer": "hermes-vps-artifacts/generate-findings",
+      "created_at_utc": "2026-10-31T05:00:00Z",
+      "completion_status": "partial",
+      "prerequisite_artifacts": ["phase-060-hermes-v1", "phase-070-hermes-v2", "phase-070-hermes-v3"],
+      "complete": false
     }
-  ]
+  ],
+  "selected_by_phase": {
+    "$comment": "Authoritative for single-instance phases (010–060). Informational for repeated phases.",
+    "010": "phase-010-hermes-v1",
+    "040": "phase-040-hermes-v1",
+    "060": "phase-060-hermes-v1",
+    "070": "phase-070-hermes-v3",
+    "080": "phase-080-hermes-v1",
+    "findings": "findings-v1"
+  },
+  "selected_by_subject": {
+    "$comment": "Authoritative for repeated phases (070, 080). Keyed by phase then subject_id.",
+    "070": {
+      "C-001": "phase-070-hermes-v2",
+      "C-002": "phase-070-hermes-v3"
+    },
+    "080": {
+      "SG-001": "phase-080-hermes-v1"
+    }
+  }
 }

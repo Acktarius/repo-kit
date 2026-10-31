@@ -62,16 +62,32 @@ before use. A non-default prefix does **not** work automatically.
    selected output still does not exist (including dangling symlinks).
    Preflight validation cannot prevent later concurrent filesystem changes.
 
-5. Write only the approved report path from the prompt. Then **stop**.
+5. Write the report to any new filename under the REPORTS DIR from the prompt.
+   Then call the ARTIFACT REGISTRATION command from the prompt with the absolute
+   path of the report you just wrote:
+
+   ```text
+   <policy_prefix>/bin/hermes-vps-artifacts register \
+     --run-json <run_json_path> \
+     --phase 010 \
+     --source-report <absolute-path-to-your-report>
+   ```
+
+   If registration fails after the report is saved, follow the retry command
+   printed by the helper.
+
+6. After the consultation prompt is printed: **stop**.
 
 ## Explicit non-authorizations
 
 - Runner success validates inputs; it does **not** prove OS isolation.
+- Structural/hash checks by the artifact helper do not prove factual correctness.
 - No source modification, scanner, build, test, install, or network
   permission is implied beyond the approved read-only inventory scope.
 - No phase advancement, publication, Roomote invocation, GitHub action, or
   pull request is authorized.
 - Reading or installing this skill does **not** execute a phase.
+- ACCEPT is optional; normal progression does not require it.
 
 ## Missing inputs
 

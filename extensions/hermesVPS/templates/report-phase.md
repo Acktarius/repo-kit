@@ -68,12 +68,16 @@ canonical target store until separately authorized. Distinguish:
 - Other files written under the run root (none expected beyond this report for
   read-only phases)
 
-## 7. Next human approval required
+## 7. After this report
 
-State the single next decision, for example:
+1. Call `hermes-vps-artifacts register` with this report path (see runner
+   prompt for the exact command). The helper will assign the final versioned
+   filename, compute SHA-256, update the artifact index, and print the
+   consultation prompt.
+2. If registration fails (saved-but-unregistered): follow the retry command
+   from the helper. Do not re-run this phase.
+3. After registration: **stop**. Do not start the next phase automatically.
 
-- review this report and prepare a Roomote handoff; or  
-- supply missing prerequisite artifact ids; or  
-- explicitly request the next phase after human acceptance of exact artifacts  
-
-Do not advance automatically.
+The consultation prompt from the helper includes instructions for optional
+second-opinion handoff. Normal progression to the next phase requires only a
+separate explicit human request — not a separate acceptance file.

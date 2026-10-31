@@ -52,6 +52,7 @@ fi
 
 for needle in \
   "bin/hermes-vps-review" \
+  "--phase 010" \
   "targets.json" \
   "--registry" \
   "--target-id" \
@@ -127,7 +128,6 @@ data = {
   "phase_request": {
     "phase": phase,
     "phase_name": name,
-    "report_version": 1,
     "requested_by": "test",
     "requested_at_utc": "2026-10-30T00:00:00Z",
   },
@@ -172,14 +172,15 @@ before="$(fingerprint)"
 
 # Successful short-command resolution (registry mode)
 OUT="${TMP}/ok-prompt.txt"
-if "${RUNNER}" --registry "${REG}" --target-id repoX >"${OUT}" 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --registry "${REG}" --target-id repoX >"${OUT}" 2>"${TMP}/e"; then
   ok "registry+target-id validation succeeds"
 else
   bad "registry mode failed: $(cat "${TMP}/e")"
 fi
 
 if grep -Fq "PHASE: 010" "${OUT}" \
-  && grep -Fq "${RUN}/reports/phase-010-hermes-v1.md" "${OUT}" \
+  && grep -Fq "ARTIFACT REGISTRATION" "${OUT}" \
+  && grep -Fq "hermes-vps-artifacts" "${OUT}" \
   && grep -Fq "Execute ONLY phase 010" "${OUT}"; then
   ok "successful short-command resolution prints phase-010 prompt"
 else
@@ -188,12 +189,12 @@ fi
 
 # Same family as --run-json
 OUT2="${TMP}/runjson-prompt.txt"
-"${RUNNER}" --run-json "${RUN_JSON}" >"${OUT2}" 2>"${TMP}/e" || bad "run-json mode failed"
-# Compare key lines (paths may differ only by resolution; both should name same report)
-r1="$(grep '^SELECTED REPORT OUTPUT:' "${OUT}")"
-r2="$(grep '^SELECTED REPORT OUTPUT:' "${OUT2}")"
+"${RUNNER}" --phase 010 --run-json "${RUN_JSON}" >"${OUT2}" 2>"${TMP}/e" || bad "run-json mode failed"
+# Compare key lines (both should name same REPORTS DIR)
+r1="$(grep '^REPORTS DIR:' "${OUT}")"
+r2="$(grep '^REPORTS DIR:' "${OUT2}")"
 if [[ "${r1}" == "${r2}" ]]; then
-  ok "registry mode and --run-json select the same report output"
+  ok "registry mode and --run-json show the same REPORTS DIR"
 else
   bad "mode prompt divergence: [${r1}] vs [${r2}]"
 fi
@@ -206,14 +207,14 @@ else
 fi
 
 # Unknown target
-if "${RUNNER}" --registry "${REG}" --target-id unknownRepo >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --registry "${REG}" --target-id unknownRepo >/dev/null 2>"${TMP}/e"; then
   bad "unknown target should fail"
 else
   grep -qi 'unknown target' "${TMP}/e" && ok "unknown target rejected" || bad "unknown msg: $(cat "${TMP}/e")"
 fi
 
 # Invalid identifier with embedded ..
-if "${RUNNER}" --registry "${REG}" --target-id 'a..b' >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --registry "${REG}" --target-id 'a..b' >/dev/null 2>"${TMP}/e"; then
   bad "a..b should fail"
 else
   grep -q "\\.\\." "${TMP}/e" && ok "embedded .. in identifier rejected" || bad "a..b msg: $(cat "${TMP}/e")"
@@ -243,7 +244,7 @@ raw = (
 )
 open(dst, "w", encoding="utf-8").write(raw)
 PY
-if "${RUNNER}" --registry "${TMP}/dup-targets.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --registry "${TMP}/dup-targets.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
   bad "duplicate target keys should fail"
 else
   grep -qi 'duplicate' "${TMP}/e" && ok "duplicate target IDs rejected" || bad "dup targets msg: $(cat "${TMP}/e")"
@@ -267,7 +268,7 @@ raw = (
 )
 open(dst, "w", encoding="utf-8").write(raw)
 PY
-if "${RUNNER}" --registry "${TMP}/dup-field.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --registry "${TMP}/dup-field.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
   bad "duplicate active_run_json should fail"
 else
   grep -qi 'duplicate' "${TMP}/e" && ok "duplicate active_run_json key rejected" || bad "dup field msg: $(cat "${TMP}/e")"
@@ -288,40 +289,40 @@ raw = open(src, encoding="utf-8").read().replace(
 )
 open(dst, "w", encoding="utf-8").write(raw)
 PY
-if "${RUNNER}" --run-json "${TMP}/dup-run.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/dup-run.json" >/dev/null 2>"${TMP}/e"; then
   bad "duplicate run.json keys should fail"
 else
   grep -qi 'duplicate' "${TMP}/e" && ok "duplicate run.json keys rejected" || bad "dup run msg: $(cat "${TMP}/e")"
 fi
 
 # CLI: missing partner flags
-if "${RUNNER}" --registry "${REG}" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --registry "${REG}" >/dev/null 2>"${TMP}/e"; then
   bad "registry without target-id should fail"
 else
   grep -Fq -- '--target-id' "${TMP}/e" && ok "registry without target-id rejected" || bad "msg: $(cat "${TMP}/e")"
 fi
-if "${RUNNER}" --target-id repoX >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --target-id repoX >/dev/null 2>"${TMP}/e"; then
   bad "target-id without registry should fail"
 else
   grep -Fq -- '--registry' "${TMP}/e" && ok "target-id without registry rejected" || bad "msg: $(cat "${TMP}/e")"
 fi
 
 # Conflicting modes
-if "${RUNNER}" --run-json "${RUN_JSON}" --registry "${REG}" --target-id repoX >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" --registry "${REG}" --target-id repoX >/dev/null 2>"${TMP}/e"; then
   bad "conflicting modes should fail"
 else
   grep -qi 'conflict\|either' "${TMP}/e" && ok "conflicting input modes rejected" || bad "conflict msg: $(cat "${TMP}/e")"
 fi
 
 # Repeated flags
-if "${RUNNER}" --run-json "${RUN_JSON}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
   bad "repeated --run-json should fail"
 else
   grep -qi 'only be specified once\|once' "${TMP}/e" && ok "repeated --run-json rejected" || bad "repeat msg: $(cat "${TMP}/e")"
 fi
 
 # Unexpected positional
-if "${RUNNER}" --run-json "${RUN_JSON}" extra-arg >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" extra-arg >/dev/null 2>"${TMP}/e"; then
   bad "unexpected positional should fail"
 else
   ok "unexpected positional rejected"
@@ -332,7 +333,7 @@ OTHER_POL="${TMP}/other-policy"
 mkdir -p "${OTHER_POL}"
 # minimal copy so registry path exists as dir; run still points at POLICY
 write_registry "${TMP}/mismatch-reg.json" "${OTHER_POL}" "${RUN_JSON}" "repoX"
-if "${RUNNER}" --registry "${TMP}/mismatch-reg.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --registry "${TMP}/mismatch-reg.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
   bad "policy_prefix mismatch should fail"
 else
   # may fail earlier if other-policy missing required files when validating run —
@@ -347,18 +348,24 @@ else
   fi
 fi
 
-# Wrong phase selection
+# run.json phase_request.phase is legacy/informational; CLI --phase is authoritative.
+# run.json records phase "020" but runner is invoked with --phase 010.
+# Since the equality gate was intentionally removed, this should succeed and emit
+# a note in the prompt (not an error).
 write_run "${TMP}/phase020.json" "${POLICY}" "${SRC}" "${RUN}" "${SHA}" "020"
 write_registry "${TMP}/reg020.json" "${POLICY}" "${TMP}/phase020.json" "repoX"
-# Remove collision file if any from previous — phase020 uses same report name pattern phase-020...
-if "${RUNNER}" --registry "${TMP}/reg020.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
-  bad "wrong phase should fail"
+if "${RUNNER}" --phase 010 --registry "${TMP}/reg020.json" --target-id repoX >"${TMP}/phase020-prompt.txt" 2>"${TMP}/e"; then
+  if grep -qi 'informational\|authoritative\|run.json records phase' "${TMP}/phase020-prompt.txt"; then
+    ok "run.json phase mismatch produces note (not error); CLI --phase is authoritative"
+  else
+    ok "CLI --phase 010 accepted regardless of run.json phase (legacy gate removed)"
+  fi
 else
-  grep -qi 'not phase 010\|phase 010' "${TMP}/e" && ok "wrong phase selection rejected" || bad "phase msg: $(cat "${TMP}/e")"
+  bad "CLI --phase 010 should succeed even when run.json has phase 020: $(cat "${TMP}/e")"
 fi
 
 # Spaces in paths already covered by POLICY path — confirm registry mode
-if "${RUNNER}" --registry "${REG}" --target-id repoX >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --registry "${REG}" --target-id repoX >/dev/null 2>"${TMP}/e"; then
   ok "spaces in policy/registry paths handled"
 else
   bad "spaces path failed: $(cat "${TMP}/e")"
@@ -374,7 +381,7 @@ data["schema_version"] = True
 with open(dst, "w", encoding="utf-8") as fh:
     json.dump(data, fh)
 PY
-if "${RUNNER}" --registry "${TMP}/reg-schema-true.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --registry "${TMP}/reg-schema-true.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
   bad "targets.json schema_version true should fail"
 else
   grep -q 'schema_version' "${TMP}/e" \
@@ -392,7 +399,7 @@ data["schema_version"] = 1.0
 with open(dst, "w", encoding="utf-8") as fh:
     json.dump(data, fh)
 PY
-if "${RUNNER}" --registry "${TMP}/reg-schema-float.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --registry "${TMP}/reg-schema-float.json" --target-id repoX >/dev/null 2>"${TMP}/e"; then
   bad "targets.json schema_version 1.0 should fail"
 else
   grep -q 'schema_version' "${TMP}/e" \
@@ -402,7 +409,7 @@ fi
 
 echo
 echo "==== successful short-command resolution example (excerpt) ===="
-grep -E '^(POLICY PREFIX|SOURCE COMMIT|RUN ID|PHASE|SELECTED REPORT|INSTRUCTIONS|  - Execute ONLY|  - Then STOP)' "${OUT}" | head -n 20
+grep -E '^(POLICY PREFIX|SOURCE COMMIT|RUN ID|PHASE|ARTIFACT REGISTRATION|INSTRUCTIONS|  - Execute ONLY|  - Then STOP)' "${OUT}" | head -n 20
 echo "==== end excerpt ===="
 echo
 echo "Executable checks: ${pass} passed, ${fail} failed"

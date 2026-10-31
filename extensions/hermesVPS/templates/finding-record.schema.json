@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hermesVPS phase-070 finding record payload",
+  "description": "Structured machine-readable output of phase 070 (reviewed-findings) for a single candidate. Used by generate-findings to build the consolidated findings export. Does not replace the canonical findings.schema.json used by the target repository's security/ store.",
+  "type": "object",
+  "required": ["schema_version", "phase", "candidate_id", "source_commit", "assessment_disposition", "proposed_finding"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "phase": {
+      "type": "string",
+      "const": "070"
+    },
+    "candidate_id": {
+      "type": "string",
+      "description": "Stable candidate identifier from the phase-060 triage payload",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "source_commit": {
+      "type": "string",
+      "description": "Full 40-char lowercase hex SHA of the inspected source commit"
+    },
+    "prerequisite_artifact_id": {
+      "type": ["string", "null"],
+      "description": "ID of the phase-060 artifact this assessment is based on"
+    },
+    "assessment_disposition": {
+      "type": "string",
+      "description": "Reviewer's determination about this candidate. Distinct from the canonical status field.",
+      "enum": [
+        "confirmed",
+        "suspected",
+        "dismissed",
+        "needs-investigation",
+        "blocked"
+      ]
+    },
+    "assessment_rationale": {
+      "type": ["string", "null"],
+      "description": "Explanation of the assessment_disposition. Must not be null for confirmed or dismissed."
+    },
+    "affected_components": {
+      "type": "array",
+      "description": "Affected code components, services, or subsystems (more specific than files[])",
+      "items": { "type": "string" }
+    },
+    "impact": {
+      "type": ["string", "null"],
+      "description": "Assessed impact description"
+    },
+    "likelihood": {
+      "type": ["string", "null"],
+      "enum": ["low", "medium", "high", null]
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Concrete evidence entries supporting the assessment",
+      "items": {
+        "type": "object",
+        "properties": {
+          "description": { "type": "string" },
+          "file": { "type": ["string", "null"] },
+          "line": { "type": ["integer", "null"] },
+          "excerpt": { "type": ["string", "null"] }
+        },
+        "required": ["description"],
+        "additionalProperties": false
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "description": "Unresolved uncertainties preserved from the assessment",
+      "items": { "type": "string" }
+    },
+    "blockers": {
+      "type": "array",
+      "description": "Blockers that prevent a definitive assessment",
+      "items": { "type": "string" }
+    },
+    "proposed_finding": {
+      "type": "object",
+      "description": "Proposed finding record. Fields match the canonical findings.schema.json where present. assessment_disposition is separate from canonical status.",
+      "required": ["title", "status", "severity", "files"],
+      "properties": {
+        "id": {
+          "type": ["string", "null"],
+          "description": "Stable SG-NNN ID if already assigned; null for new findings pending ID assignment",
+          "pattern": "^SG-[0-9]{3,}$"
+        },
+        "title": { "type": "string" },
+        "status": {
+          "type": "string",
+          "description": "Canonical status for the target repository findings store. 'open' for new findings; do not use 'fixed' merely because a remediation plan exists.",
+          "enum": ["open", "fixed", "accepted-risk", "duplicate", "rejected"]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        },
+        "confidence": {
+          "type": ["string", "null"],
+          "enum": ["low", "medium", "high", null]
+        },
+        "firstSeen": { "type": ["string", "null"], "format": "date-time" },
+        "lastReviewed": { "type": ["string", "null"], "format": "date-time" },
+        "source": { "type": ["string", "null"] },
+        "files": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "summary": { "type": ["string", "null"] },
+        "exploitPath": { "type": ["string", "null"] },
+        "remediation": { "type": ["string", "null"] },
+        "duplicateOf": { "type": ["string", "null"] },
+        "acceptedRiskId": { "type": ["string", "null"] },
+        "notes": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

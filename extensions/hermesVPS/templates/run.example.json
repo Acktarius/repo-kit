@@ -15,7 +15,6 @@
   "phase_request": {
     "phase": "010",
     "phase_name": "inventory",
-    "report_version": 1,
     "requested_by": "human-operator",
     "requested_at_utc": "2026-10-30T23:00:00Z"
   },
@@ -38,7 +37,7 @@
       "modify_source",
       "modify_policy",
       "modify_run_json",
-      "modify_manifest_json",
+      "hand_edit_manifest_json",
       "network",
       "install_packages",
       "execute_target_scripts",

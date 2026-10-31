@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hermesVPS phase-080 remediation plan provenance payload",
+  "description": "Structured provenance record for phase-080 (remediate-and-retest, gate 1: plan only). Records the exact intelligence snapshot and assessment artifact used to draft the plan. Validated by hermes-vps-artifacts at registration; referenced artifact IDs/hashes are added to prerequisite_artifacts. A new 040 selection made after this plan was created causes a downstream stale detection.",
+  "type": "object",
+  "required": [
+    "schema_version", "phase", "finding_id", "source_commit",
+    "intel_artifact_id", "intel_artifact_sha256",
+    "assessed_finding_artifact_id", "assessed_finding_sha256",
+    "intel_freshness_at_plan_time"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "phase": {
+      "type": "string",
+      "const": "080"
+    },
+    "finding_id": {
+      "type": "string",
+      "description": "Stable finding/SG-NNN identifier this plan addresses. Must match --subject-id passed to hermes-vps-artifacts register.",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "source_commit": {
+      "type": "string",
+      "description": "Full 40-char lowercase hex SHA of the inspected source commit"
+    },
+    "intel_artifact_id": {
+      "type": "string",
+      "description": "Exact ID of the phase-040 vuln-intel artifact used when drafting this plan. Resolved at plan creation; not a floating reference to 'current 040'. A later change to selected_by_phase[040] causes stale detection.",
+      "pattern": "^phase-040-hermes-v[0-9]+$"
+    },
+    "intel_artifact_sha256": {
+      "type": "string",
+      "description": "SHA-256 of the phase-040 artifact file at plan creation time. Validated against manifest at registration.",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "assessed_finding_artifact_id": {
+      "type": "string",
+      "description": "Exact ID of the phase-070 artifact whose finding this plan addresses. Resolved at plan creation.",
+      "pattern": "^phase-070-hermes-v[0-9]+$"
+    },
+    "assessed_finding_sha256": {
+      "type": "string",
+      "description": "SHA-256 of the phase-070 artifact file at plan creation time. Validated against manifest at registration.",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "intel_freshness_at_plan_time": {
+      "type": "object",
+      "description": "Freshness evaluation recorded when the plan was drafted. Preserved immutably; not updated when new 040 evidence is collected.",
+      "required": ["evaluated_at_utc", "effective_threshold_hours", "threshold_source", "freshness_ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "freshness_ok": { "type": "boolean" },
+        "evaluated_at_utc": { "type": "string" },
+        "effective_threshold_hours": { "type": "number" },
+        "threshold_source": {
+          "type": "string",
+          "enum": ["default", "cli", "run_config"]
+        },
+        "oldest_provider_age_hours": { "type": ["number", "null"] },
+        "stale_providers": { "type": "array", "items": { "type": "string" } },
+        "unknown_providers": { "type": "array", "items": { "type": "string" } },
+        "limitations": { "type": "array", "items": { "type": "string" } },
+        "note": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "plan_summary": {
+      "type": ["string", "null"],
+      "description": "Optional short summary of the remediation plan"
+    },
+    "gates_not_executed": {
+      "type": "array",
+      "description": "Gates 2-5 require separate explicit authorization. hermesVPS phase 080 implements gate 1 only.",
+      "items": { "type": "string" },
+      "default": ["gate-2-implement", "gate-3-retest", "gate-4-validate", "gate-5-close"]
+    }
+  },
+  "additionalProperties": false
+}

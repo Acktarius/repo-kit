@@ -81,8 +81,10 @@ for rel in \
   PROVENANCE.md \
   BOOTSTRAP.md \
   bin/hermes-vps-review \
+  bin/hermes-vps-artifacts \
   bin/init-hermes-review \
-  lib/hermes_vps_common.py; do
+  lib/hermes_vps_common.py \
+  lib/hermes_vps_artifacts.py; do
   if [[ -e "${EXT}/${rel}" ]]; then
     ok "payload has ${rel}"
   else
@@ -135,7 +137,6 @@ data = {
   "phase_request": {
     "phase": "010",
     "phase_name": "inventory",
-    "report_version": 1,
     "requested_by": "test",
     "requested_at_utc": "2026-10-30T00:00:00Z",
   },
@@ -165,7 +166,8 @@ fingerprint() {
 before="$(fingerprint)"
 
 PROMPT_OUT="${TMP}/prompt.txt"
-if "${RUNNER}" --run-json "${RUN_JSON}" --report-version 1 >"${PROMPT_OUT}" 2>"${TMP}/prompt.err"; then
+# --phase 010 is now required (intentional CLI compatibility change in phases 020-080 scope)
+if "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" >"${PROMPT_OUT}" 2>"${TMP}/prompt.err"; then
   ok "successful validation exits 0"
 else
   bad "successful validation failed: $(cat "${TMP}/prompt.err")"
@@ -173,10 +175,11 @@ fi
 
 if grep -Fq "Execute ONLY phase 010" "${PROMPT_OUT}" \
   && grep -Fq "${POLICY}/tasks/010-inventory.md" "${PROMPT_OUT}" \
-  && grep -Fq "${RUN}/reports/phase-010-hermes-v1.md" "${PROMPT_OUT}" \
+  && grep -Fq "ARTIFACT REGISTRATION" "${PROMPT_OUT}" \
+  && grep -Fq "hermes-vps-artifacts" "${PROMPT_OUT}" \
   && grep -Fq "${SHA}" "${PROMPT_OUT}" \
   && grep -Fq "Then STOP" "${PROMPT_OUT}"; then
-  ok "prompt identifies inputs, output, task, and stop instruction"
+  ok "prompt identifies inputs, registration command, and stop instruction"
 else
   bad "prompt missing required content"
   sed -n '1,80p' "${PROMPT_OUT}" >&2 || true
@@ -186,7 +189,7 @@ fi
 cp "${PROMPT_OUT}" "${TMP}/representative-prompt.txt"
 # Copy to a stable path under TMP that the outer harness can still... actually
 # tests delete TMP. Echo a short excerpt later via the script printing at end.
-REPR_SNIPPET="$(grep -E '^(POLICY PREFIX|SOURCE COMMIT|SELECTED REPORT|  5\.|INSTRUCTIONS|  - Execute ONLY|  - Then STOP)' "${PROMPT_OUT}" | head -n 20)"
+REPR_SNIPPET="$(grep -E '^(POLICY PREFIX|SOURCE COMMIT|ARTIFACT REGISTRATION|  5\.|INSTRUCTIONS|  - Execute ONLY|  - Then STOP)' "${PROMPT_OUT}" | head -n 20)"
 
 after="$(fingerprint)"
 if [[ "${before}" == "${after}" ]]; then
@@ -203,7 +206,7 @@ policy_fp() {
 find "${POLICY}" -type d -name '__pycache__' -prune -exec rm -rf {} +
 find "${POLICY}" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 POL_BEFORE="$(policy_fp)"
-if env -u PYTHONDONTWRITEBYTECODE "${RUNNER}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
+if env -u PYTHONDONTWRITEBYTECODE "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
   if [[ -z "$(find "${POLICY}" -type d -name '__pycache__' -print)" ]] \
     && [[ -z "$(find "${POLICY}" -type f \( -name '*.pyc' -o -name '*.pyo' \) -print)" ]] \
     && [[ "${POL_BEFORE}" == "$(policy_fp)" ]]; then
@@ -217,7 +220,7 @@ fi
 
 # malformed JSON
 echo '{not json' >"${TMP}/bad.json"
-if "${RUNNER}" --run-json "${TMP}/bad.json" >"${TMP}/o" 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/bad.json" >"${TMP}/o" 2>"${TMP}/e"; then
   bad "malformed JSON should fail"
 else
   grep -qi 'malformed JSON' "${TMP}/e" && ok "malformed JSON rejected" || bad "malformed JSON message unclear: $(cat "${TMP}/e")"
@@ -233,7 +236,7 @@ data["schema_version"] = "1"
 with open(dst, "w", encoding="utf-8") as fh:
     json.dump(data, fh)
 PY
-if "${RUNNER}" --run-json "${TMP}/badtype.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/badtype.json" >/dev/null 2>"${TMP}/e"; then
   bad "invalid field type should fail"
 else
   grep -q 'schema_version' "${TMP}/e" && ok "invalid field type rejected" || bad "type error unclear: $(cat "${TMP}/e")"
@@ -241,7 +244,7 @@ fi
 
 # missing policy file
 rm -f "${POLICY}/tasks/010-inventory.md"
-if "${RUNNER}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
   bad "missing task should fail"
 else
   grep -q 'missing required policy' "${TMP}/e" && ok "missing policy/task rejected" || bad "missing policy message unclear"
@@ -251,7 +254,7 @@ cp -a "${EXT}/tasks/010-inventory.md" "${POLICY}/tasks/010-inventory.md"
 
 # dirty worktree
 echo dirty >>"${SRC}/README.md"
-if "${RUNNER}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
   bad "dirty worktree should fail"
 else
   grep -qi 'dirty' "${TMP}/e" && ok "dirty worktree rejected" || bad "dirty message unclear"
@@ -268,7 +271,7 @@ data["source"]["commit"] = "0" * 40
 with open(dst, "w", encoding="utf-8") as fh:
     json.dump(data, fh)
 PY
-if "${RUNNER}" --run-json "${TMP}/mismatch.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/mismatch.json" >/dev/null 2>"${TMP}/e"; then
   bad "commit mismatch should fail"
 else
   grep -qi 'mismatch' "${TMP}/e" && ok "commit mismatch rejected" || bad "mismatch message unclear"
@@ -276,7 +279,7 @@ fi
 
 # paths containing spaces already used for POLICY — reconfirm success
 write_run "${RUN_JSON}" "${POLICY}" "${SRC}" "${RUN}" "${SHA}"
-if "${RUNNER}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
   ok "paths containing spaces accepted when valid"
 else
   bad "spaces path failed: $(cat "${TMP}/e")"
@@ -285,7 +288,7 @@ fi
 # output inside source
 write_run "${TMP}/inside-src.json" "${POLICY}" "${SRC}" "${SRC}/nested-run" "${SHA}"
 mkdir -p "${SRC}/nested-run/reports"
-if "${RUNNER}" --run-json "${TMP}/inside-src.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/inside-src.json" >/dev/null 2>"${TMP}/e"; then
   bad "output inside source should fail"
 else
   grep -qi 'inside the source' "${TMP}/e" && ok "output inside source rejected" || bad "inside-source message unclear: $(cat "${TMP}/e")"
@@ -294,7 +297,7 @@ fi
 # output inside policy
 write_run "${TMP}/inside-pol.json" "${POLICY}" "${SRC}" "${POLICY}/nested-run" "${SHA}"
 mkdir -p "${POLICY}/nested-run/reports"
-if "${RUNNER}" --run-json "${TMP}/inside-pol.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/inside-pol.json" >/dev/null 2>"${TMP}/e"; then
   bad "output inside policy should fail"
 else
   grep -qi 'inside the policy' "${TMP}/e" && ok "output inside policy rejected" || bad "inside-policy message unclear: $(cat "${TMP}/e")"
@@ -304,7 +307,7 @@ fi
 ESCAPE_LINK="${TMP}/escape-run"
 ln -s "${SRC}" "${ESCAPE_LINK}"
 write_run "${TMP}/symlink.json" "${POLICY}" "${SRC}" "${ESCAPE_LINK}" "${SHA}"
-if "${RUNNER}" --run-json "${TMP}/symlink.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/symlink.json" >/dev/null 2>"${TMP}/e"; then
   bad "symlink escape run_root should fail"
 else
   grep -qi 'inside the source' "${TMP}/e" && ok "symlink escape run_root rejected" || bad "symlink escape message unclear: $(cat "${TMP}/e")"
@@ -320,7 +323,7 @@ data["policy_prefix"] = policy + "/../" + os.path.basename(policy)
 with open(dst, "w", encoding="utf-8") as fh:
     json.dump(data, fh)
 PY
-if "${RUNNER}" --run-json "${TMP}/trav.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/trav.json" >/dev/null 2>"${TMP}/e"; then
   bad "path with '..' segments should fail"
 else
   grep -q "\\.\\." "${TMP}/e" && ok "path traversal '..' rejected" || bad "traversal message unclear: $(cat "${TMP}/e")"
@@ -336,21 +339,11 @@ data["run_id"] = "../evil"
 with open(dst, "w", encoding="utf-8") as fh:
     json.dump(data, fh)
 PY
-if "${RUNNER}" --run-json "${TMP}/badid.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/badid.json" >/dev/null 2>"${TMP}/e"; then
   bad "invalid run_id should fail"
 else
   grep -q 'run_id' "${TMP}/e" && ok "invalid run_id rejected" || bad "run_id message unclear"
 fi
-
-# report collision
-touch "${RUN}/reports/phase-010-hermes-v1.md"
-write_run "${RUN_JSON}" "${POLICY}" "${SRC}" "${RUN}" "${SHA}"
-if "${RUNNER}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
-  bad "report collision should fail"
-else
-  grep -qi 'collision' "${TMP}/e" && ok "report filename collision rejected" || bad "collision message unclear"
-fi
-rm -f "${RUN}/reports/phase-010-hermes-v1.md"
 
 # manifest/run identity mismatch
 python3 - "${RUN}" "${SHA}" "${POLICY}" "${SRC}" <<'PY'
@@ -367,7 +360,7 @@ with open(os.path.join(run, "manifest.json"), "w", encoding="utf-8") as fh:
     json.dump(manifest, fh)
 PY
 write_run "${RUN_JSON}" "${POLICY}" "${SRC}" "${RUN}" "${SHA}"
-if "${RUNNER}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
   bad "manifest run_id mismatch should fail"
 else
   grep -qi 'identity mismatch' "${TMP}/e" && ok "manifest/run identity mismatch rejected" || bad "manifest mismatch message unclear: $(cat "${TMP}/e")"
@@ -388,14 +381,14 @@ manifest = {
 with open(os.path.join(run, "manifest.json"), "w", encoding="utf-8") as fh:
     json.dump(manifest, fh)
 PY
-if "${RUNNER}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
   ok "agreeing empty manifest accepted"
 else
   bad "agreeing empty manifest failed: $(cat "${TMP}/e")"
 fi
 
 # relative run-json path rejected
-if (cd "${RUN}" && "${RUNNER}" --run-json "./run.json") >/dev/null 2>"${TMP}/e"; then
+if (cd "${RUN}" && "${RUNNER}" --phase 010 --run-json "./run.json") >/dev/null 2>"${TMP}/e"; then
   bad "relative --run-json should fail"
 else
   grep -qi 'absolute' "${TMP}/e" && ok "relative --run-json rejected" || bad "relative path message unclear"
@@ -413,7 +406,7 @@ data["schema_version"] = True
 with open(dst, "w", encoding="utf-8") as fh:
     json.dump(data, fh)
 PY
-if "${RUNNER}" --run-json "${TMP}/schema-true.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/schema-true.json" >/dev/null 2>"${TMP}/e"; then
   bad "schema_version true should fail"
 else
   grep -q 'schema_version' "${TMP}/e" && ok "schema_version true rejected" || bad "schema true msg: $(cat "${TMP}/e")"
@@ -429,7 +422,7 @@ data["schema_version"] = 1.0
 with open(dst, "w", encoding="utf-8") as fh:
     json.dump(data, fh)
 PY
-if "${RUNNER}" --run-json "${TMP}/schema-float.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/schema-float.json" >/dev/null 2>"${TMP}/e"; then
   bad "schema_version 1.0 should fail"
 else
   grep -q 'schema_version' "${TMP}/e" && ok "schema_version 1.0 rejected" || bad "schema float msg: $(cat "${TMP}/e")"
@@ -439,7 +432,7 @@ fi
 RUN_MISS="${TMP}/review-runs/example-repo/run-missing-reports"
 mkdir -p "${RUN_MISS}"
 write_run "${TMP}/missing-reports.json" "${POLICY}" "${SRC}" "${RUN_MISS}" "${SHA}"
-if "${RUNNER}" --run-json "${TMP}/missing-reports.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/missing-reports.json" >/dev/null 2>"${TMP}/e"; then
   bad "missing reports/ should fail (must not print success prompt)"
 else
   if grep -qi 'reports directory missing' "${TMP}/e" \
@@ -454,7 +447,7 @@ fi
 RUN_OK="${TMP}/review-runs/example-repo/run-prepared-reports"
 mkdir -p "${RUN_OK}/reports"
 write_run "${TMP}/prepared-reports.json" "${POLICY}" "${SRC}" "${RUN_OK}" "${SHA}"
-if "${RUNNER}" --run-json "${TMP}/prepared-reports.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/prepared-reports.json" >/dev/null 2>"${TMP}/e"; then
   ok "valid prepared reports/ accepted"
 else
   bad "prepared reports/ failed: $(cat "${TMP}/e")"
@@ -465,7 +458,7 @@ RUN_RS="${TMP}/review-runs/example-repo/run-reports-src"
 mkdir -p "${RUN_RS}"
 ln -s "${SRC}" "${RUN_RS}/reports"
 write_run "${TMP}/reports-src.json" "${POLICY}" "${SRC}" "${RUN_RS}" "${SHA}"
-if "${RUNNER}" --run-json "${TMP}/reports-src.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/reports-src.json" >/dev/null 2>"${TMP}/e"; then
   bad "reports/ symlink to source should fail"
 else
   grep -Eqi 'strictly inside the run root|into the source' "${TMP}/e" \
@@ -478,7 +471,7 @@ RUN_RP="${TMP}/review-runs/example-repo/run-reports-pol"
 mkdir -p "${RUN_RP}"
 ln -s "${POLICY}" "${RUN_RP}/reports"
 write_run "${TMP}/reports-pol.json" "${POLICY}" "${SRC}" "${RUN_RP}" "${SHA}"
-if "${RUNNER}" --run-json "${TMP}/reports-pol.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/reports-pol.json" >/dev/null 2>"${TMP}/e"; then
   bad "reports/ symlink to policy should fail"
 else
   grep -Eqi 'strictly inside the run root|into the policy' "${TMP}/e" \
@@ -493,26 +486,12 @@ RUN_RO="${TMP}/review-runs/example-repo/run-reports-out"
 mkdir -p "${RUN_RO}"
 ln -s "${OUTSIDE}" "${RUN_RO}/reports"
 write_run "${TMP}/reports-out.json" "${POLICY}" "${SRC}" "${RUN_RO}" "${SHA}"
-if "${RUNNER}" --run-json "${TMP}/reports-out.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/reports-out.json" >/dev/null 2>"${TMP}/e"; then
   bad "reports/ symlink outside run root should fail"
 else
   grep -qi 'strictly inside the run root' "${TMP}/e" \
     && ok "reports/ symlink outside run root rejected" \
     || bad "reports→outside msg: $(cat "${TMP}/e")"
-fi
-
-# dangling selected-report symlink
-RUN_DS="${TMP}/review-runs/example-repo/run-dangling-report"
-mkdir -p "${RUN_DS}/reports"
-ln -s "${RUN_DS}/reports/does-not-exist-target.md" \
-  "${RUN_DS}/reports/phase-010-hermes-v1.md"
-write_run "${TMP}/dangling-report.json" "${POLICY}" "${SRC}" "${RUN_DS}" "${SHA}"
-if "${RUNNER}" --run-json "${TMP}/dangling-report.json" >/dev/null 2>"${TMP}/e"; then
-  bad "dangling selected-report symlink should fail"
-else
-  grep -qi 'collision' "${TMP}/e" \
-    && ok "dangling selected-report symlink rejected" \
-    || bad "dangling report msg: $(cat "${TMP}/e")"
 fi
 
 # nested source path rather than worktree root
@@ -521,7 +500,7 @@ echo nested >"${SRC}/nested-dir/file.txt"
 # keep parent worktree clean: the nested file is untracked → would dirty parent;
 # for nested-path test we point source.path at nested-dir (which is not a root).
 write_run "${TMP}/nested-src.json" "${POLICY}" "${SRC}/nested-dir" "${RUN_OK}" "${SHA}"
-if "${RUNNER}" --run-json "${TMP}/nested-src.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/nested-src.json" >/dev/null 2>"${TMP}/e"; then
   bad "nested source path should fail"
 else
   grep -Eqi 'worktree root|not a usable Git worktree|non-bare' "${TMP}/e" \
@@ -534,7 +513,7 @@ rm -rf "${SRC}/nested-dir"
 BARE="${TMP}/repositories/example-bare.git"
 git clone --bare -q "${SRC}" "${BARE}"
 write_run "${TMP}/bare-src.json" "${POLICY}" "${BARE}" "${RUN_OK}" "${SHA}"
-if "${RUNNER}" --run-json "${TMP}/bare-src.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/bare-src.json" >/dev/null 2>"${TMP}/e"; then
   bad "bare repository should fail"
 else
   grep -Eqi 'non-bare|worktree' "${TMP}/e" \
@@ -549,7 +528,7 @@ LINKED_SHA="$(git -C "${LINKED}" rev-parse HEAD)"
 RUN_LW="${TMP}/review-runs/example-repo/run-linked"
 mkdir -p "${RUN_LW}/reports"
 write_run "${TMP}/linked-wt.json" "${POLICY}" "${LINKED}" "${RUN_LW}" "${LINKED_SHA}"
-if "${RUNNER}" --run-json "${TMP}/linked-wt.json" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${TMP}/linked-wt.json" >/dev/null 2>"${TMP}/e"; then
   ok "legitimate linked worktree accepted"
 else
   bad "linked worktree failed: $(cat "${TMP}/e")"
@@ -557,7 +536,7 @@ fi
 
 echo
 echo "==== representative prompt excerpt ===="
-echo "${REPR_SNIPPET}"
+echo "${REPR_SNIPPET:-<no matching lines>}"
 echo "==== end excerpt ===="
 echo
 echo "Summary: ${pass} passed, ${fail} failed"

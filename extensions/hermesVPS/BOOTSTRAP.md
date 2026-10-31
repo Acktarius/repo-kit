@@ -20,106 +20,109 @@ Default documented deployment binding (not universal):
 | Target registry | `/opt/data/hermes-review/targets.json` |
 | Initializer | `/opt/data/hermes-review/bin/init-hermes-review` |
 | Runner | `/opt/data/hermes-review/bin/hermes-vps-review` |
-| Shared library | `/opt/data/hermes-review/lib/hermes_vps_common.py` |
+| Artifact helper | `/opt/data/hermes-review/bin/hermes-vps-artifacts` |
 | Rules / tasks | under the policy prefix |
 | Source repository | `/opt/data/repositories/<target-id>` (from `run.json`) |
 | Run root | `/opt/data/review-runs/<target-id>/<run-id>/` (from `run.json`) |
 
-If the install prefix differs, the operator must use that prefix consistently
-in registry, `run.json`, and any registered skill copy. Non-default prefixes
-are not auto-discovered from this file’s location.
+If the install prefix differs, the operator must use that prefix consistently.
+Non-default prefixes are not auto-discovered from this file's location.
 
 The three trees (policy, source, run output) must be distinct.
 
 ## `run.json` vs `manifest.json` vs `targets.json`
 
 - **`targets.json`:** operator-maintained registry: `target-id` → exact
-  `active_run_json` path. Do not scan for runs or newest reports.
+  `active_run_json` path.
 - **`run.json`:** operator-prepared run configuration (authoritative identity,
-  commit, output, phase). Hermes and the runner must **not** modify it.
-- **`manifest.json`:** operator-maintained artefact/acceptance index. Optional
-  at empty phase-010 start. Hermes must **not** update it automatically
-  (procedural; not OS-enforced).
+  commit, output). Never modify. `phase_request.phase` is legacy/informational;
+  the CLI `--phase` flag is authoritative.
+- **`manifest.json`:** artifact index, maintained exclusively by
+  `bin/hermes-vps-artifacts`. Agents and the runner must not hand-edit it.
+
+## Runner CLI compatibility note
+
+**`--phase NNN` is required** on `hermes-vps-review`. Callers that previously
+omitted `--phase` (implying phase 010) must now pass `--phase 010` explicitly.
 
 ## Preferred setup before phase 010
-
-Operators should normally create the run with:
 
 ```text
 /opt/data/hermes-review/bin/init-hermes-review https://github.com/org/repo.git
 ```
 
-(or `python3 …/bin/init-hermes-review …` if the execute bit was lost). That
-creates the source checkout (if needed), run root, empty `reports/`, `run.json`,
-and registry entry, then validates. It does **not** start analysis and does
-**not** register skills.
-
-## Short command (when skill is registered)
+## Short commands (when skills are registered)
 
 ```text
 /hermes-vps-010 repoX
+/hermes-vps-020 repoX
+/hermes-vps-030 repoX
+/hermes-vps-040 repoX
+/hermes-vps-050 repoX [priority]
+/hermes-vps-060 repoX
+/hermes-vps-070 repoX C-001       ← candidate_id required
+/hermes-vps-080 repoX SG-001      ← finding_id required
+/hermes-vps-remediate repoX       ← after all 070 phases complete
 ```
 
-Registration is a separate opt-in step. Uploading this directory does **not**
-register slash commands. See README for documentation-only registration notes.
+## One-line upload fallback (for any phase)
 
-## One-line upload fallback (natural language; not a slash command)
-
-Copy-ready line (replace `repoX` with the approved registry key):
+Replace `NNN` with the phase number and `repoX` with the registry key:
 
 ```text
-Read /opt/data/hermes-review/BOOTSTRAP.md and execute only phase 010 for target repoX using /opt/data/hermes-review/targets.json; stop if validation fails.
+Read /opt/data/hermes-review/BOOTSTRAP.md and execute only phase NNN for target repoX using /opt/data/hermes-review/targets.json; stop if validation fails.
 ```
 
-### How this bootstrap routes that request
-
-When the human asks for phase 010 for a **target** via the fallback (or
-equivalent wording that names a registry target):
+### How this bootstrap routes that request (any phase)
 
 1. Treat the target token as a registry key only (not a path fragment).
-2. Run validation through the same runner the skill uses:
+2. Run validation:
 
    ```text
    /opt/data/hermes-review/bin/hermes-vps-review \
+     --phase NNN \
      --registry /opt/data/hermes-review/targets.json \
      --target-id <target-id>
    ```
 
-   Use separate argv elements; do not `eval`; do not invent shell scripts that
-   interpolate unvalidated text into executable syntax.
+   For phases 070 and 080, also pass `--trigger-input <subject_id>`.
 
-3. If the runner exits non-zero → report failure and **stop**.
-4. If the runner exits zero → follow the generated phase-010 instructions
-   (task/rules). Write only the approved report. Then stop.
+3. Non-zero exit → report failure and **stop**.
+4. Zero exit → follow the generated phase instructions (task/rules).
+   Write the report (and payload JSON for phases 060/070).
+   Then call `hermes-vps-artifacts register` with appropriate flags.
+   Then stop.
 5. Do not advance phases, contact Roomote/GitHub/MCP, or modify source/policy.
 
-Direct `--run-json` use remains valid for operators who already know the exact
-run path; registry mode is required for target-id short commands / fallback.
+## Phase gate sequence
+
+| Phase | Prerequisites | Special inputs |
+|-------|--------------|----------------|
+| 010 | none | — |
+| 020 | 010 | — |
+| 030 | 010, 020 | — |
+| 040 | 010, 020, 030 | network authorization; `--payload-json vuln-intel-record.json` required |
+| 050 | 010, 020 | review priority |
+| 060 | 040 OR 050 | — |
+| 070 | 060 | candidate_id (one per invocation); `--payload-json finding-record.json` required |
+| 080 | 060, 070 | finding_id (one per invocation); `--payload-json plan-080-*.json` required |
+| generate-findings | 060 + all 070s + 040 (freshness) | `--require-fresh-intel` optional |
 
 ## Tools
 
-**Runner:** Python 3 and Git. Fail clearly if missing; do not install packages.
-Do not claim they exist in the portal until checked.
+**Runner:** Python 3 and Git. Fail clearly if missing.
 
-**Not required:** `hermes` CLI, `gh`, Docker, sudo, MCP, Roomote filesystem,
-or a full repo-kit checkout.
+**Intelligence collector:** `bin/hermes-vps-collect-intel` (Python 3, stdlib only).
+Invoked by Hermes as part of phase-040 task; not called directly by operator.
+All endpoint URLs centralized in `lib/hermes_vps_intel.py INTEL_SOURCES`.
 
-## After the Hermes report (010 gate)
-
-1. Human reviews the report.  
-2. Optionally hand off to Roomote.  
-3. Human acceptance of exact artifact versions.  
-4. Separate explicit human request required before phase 020.  
+**Not required:** `hermes` CLI, `gh`, Docker, sudo, MCP, Roomote filesystem.
 
 ## Stop conditions
 
-Initializer failure (invalid GitHub HTTPS URL; target-id owner collision;
-missing `--activate-new-run` when replacing an active run; existing run
-directory; dirty or mismatched existing source; clone/auth failure);
-validation failure; missing `reports/` directory; `reports/` or selected
-output escaping the run root (including symlinks into source/policy/elsewhere);
-report collision (including dangling output symlinks); source path that is not
-the non-bare worktree root; dirty tree or SHA mismatch; `schema_version` not
-exact integer `1`; unknown or invalid target id; registry/run policy-prefix
-mismatch; wrong phase in the selected run; inaccessible
-policy/task/registry/run files.
+Validation failure; missing `reports/` directory; `reports/` escaping the run
+root; missing required policy/task/template files for the requested phase;
+source path not the non-bare worktree root; dirty tree or SHA mismatch;
+`schema_version` not exact integer `1`; unknown target id; registry/run
+policy-prefix mismatch; inaccessible policy/task/registry/run files; missing
+`--trigger-input` for repeated phases; cross-subject supersession attempt.
