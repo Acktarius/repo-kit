@@ -39,6 +39,10 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+# Prevent __pycache__ writes under the policy tree.
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
 # ---------------------------------------------------------------------------
 # Centralized endpoint configuration — SINGLE SOURCE OF TRUTH for all URLs.
 # Do not copy these URLs into rules, tasks, skills, or templates.
@@ -185,7 +189,13 @@ def _http_request(
     timeout: int = REQUEST_TIMEOUT_SECONDS,
     max_retries: int = MAX_RETRY_ATTEMPTS,
 ) -> tuple[int, bytes]:
-    """Return (http_status, response_bytes). Retries on 429 with exponential backoff."""
+    """Return (http_status, response_bytes). Retries on 429 with exponential backoff.
+
+    Raises ValueError via validate_url() before making any network request
+    if the URL targets a disallowed destination.
+    """
+    # URL policy check before any network activity.
+    validate_url(url)
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if extra_headers:
         headers.update(extra_headers)
@@ -844,27 +854,37 @@ def run_collection(
     advisory_ids = osv_result.get("advisory_ids_returned", [])
     matches_raw: list[dict[str, Any]] = osv_result.pop("_matches_raw", [])
 
-    # Fetch full advisory records and build normalized matches
+    # Fetch full advisory records and build normalized matches.
+    # Each entry in matches_raw carries the exact package/version/ecosystem for
+    # that advisory_id; preserve the per-package relationship (one match per
+    # package+advisory pair before alias deduplication).
     advisories = fetch_osv_advisories(advisory_ids, fixture_dir=fixture_dir)
     matches: list[dict[str, Any]] = []
-    seen_primary_ids: set[str] = set()
+    advisory_fetch_failed: list[str] = []
 
     for adv in advisories:
         if adv.get("_fetch_failed"):
+            advisory_fetch_failed.append(adv.get("id", "?"))
             continue
         adv_id = adv.get("id", "")
-        # Find the package context from matches_raw
-        pkg_context = next((mr for mr in matches_raw if mr["advisory_id"] == adv_id), {})
-        m = _extract_match_from_advisory(
-            adv,
-            pkg_context.get("package", "unknown"),
-            pkg_context.get("version", "unknown"),
-            pkg_context.get("ecosystem", "unknown"),
-        )
-        primary = m["advisory_ids"][0] if m["advisory_ids"] else None
-        if primary and primary not in seen_primary_ids:
-            seen_primary_ids.add(primary)
+        # Collect ALL packages that matched this advisory (not just the first).
+        pkg_contexts = [mr for mr in matches_raw if mr["advisory_id"] == adv_id]
+        if not pkg_contexts:
+            pkg_contexts = [{}]
+        for pkg_context in pkg_contexts:
+            m = _extract_match_from_advisory(
+                adv,
+                pkg_context.get("package", "unknown"),
+                pkg_context.get("version", "unknown"),
+                pkg_context.get("ecosystem", "unknown"),
+            )
             matches.append(m)
+
+    # Downgrade OSV status if any advisory full-record fetches failed.
+    if advisory_fetch_failed:
+        if osv_result.get("status") == Status.SUCCESS:
+            osv_result["status"] = Status.PARTIAL
+        osv_result.setdefault("fetch_failed_ids", []).extend(advisory_fetch_failed)
 
     # Collect CVE IDs for NVD enrichment (from all advisory IDs and aliases)
     all_cve_ids: list[str] = []
@@ -904,15 +924,22 @@ def run_collection(
     # Clean internal fields from provider results
     osv_clean = {k: v for k, v in osv_result.items() if not k.startswith("_")}
 
-    # Compute coverage
+    # Compute coverage.
+    # NEVER classify a package as "no-match" when the OSV collection failed or
+    # was only partial — we don't know whether it has advisories or not.
+    osv_status = osv_result.get("status", Status.NOT_CHECKED)
+    osv_collection_complete = osv_status in (Status.SUCCESS, Status.NO_MATCH)
+
     matched_names_lower = {m["package"].lower() for m in matches}
-    no_match_packages = [
-        {"package": p.get("name", ""), "version": p.get("version", "unknown"),
-         "ecosystem": p.get("ecosystem", "unknown")}
-        for p in packages
-        if p.get("name", "").lower() not in matched_names_lower
-        and not (not p.get("version") and not p.get("name"))
-    ]
+    no_match_packages: list[dict[str, Any]] = []
+    if osv_collection_complete:
+        no_match_packages = [
+            {"package": p.get("name", ""), "version": p.get("version", "unknown"),
+             "ecosystem": p.get("ecosystem", "unknown")}
+            for p in packages
+            if p.get("name", "").lower() not in matched_names_lower
+            and not (not p.get("version") and not p.get("name"))
+        ]
     inventory_gaps = [
         {"package": p.get("name", ""), "reason": "version-unknown"}
         for p in packages
@@ -969,9 +996,9 @@ def main() -> int:  # noqa: C901
     p.add_argument(
         "--mode",
         choices=["live", "imported", "not-authorized"],
-        default="live",
+        default="not-authorized",
         help=(
-            "Collection mode. "
+            "Collection mode (default: not-authorized — network collection must be explicit). "
             "'live': perform network requests (requires explicit network authorization in trigger). "
             "'imported': re-use prior evidence file (--import-evidence required); "
             "does not refresh evidence age. "

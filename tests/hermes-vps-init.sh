@@ -249,7 +249,7 @@ git -C "${SRC}" remote set-url origin "${URL}"
 
 # Validator agrees with produced run (no report created)
 BEFORE="$(find "${DATA}/review-runs/${REPO}/smoke-010/reports" -mindepth 1 | wc -l)"
-if "${RUNNER}" --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
+if "${RUNNER}" --phase 010 --run-json "${RUN_JSON}" >/dev/null 2>"${TMP}/e"; then
   ok "produced run.json validates with hermes-vps-review"
 else
   bad "runner validation failed: $(cat "${TMP}/e")"

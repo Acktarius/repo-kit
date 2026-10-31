@@ -620,10 +620,20 @@ fi
 
 echo "=== Section J: registration as phase-040 payload ==="
 
-# Register a baseline phase-010 first
+# Register baseline phases 010, 020, 030 first (prerequisite chain)
 RPT_010="${TMP}/phase-010.md"
 printf '# Phase 010\nContent.\n' >"${RPT_010}"
 "${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 010 --source-report "${RPT_010}" \
+    >/dev/null 2>/dev/null || true
+
+RPT_020J="${TMP}/phase-020j.md"
+printf '# Phase 020\nContent.\n' >"${RPT_020J}"
+"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 020 --source-report "${RPT_020J}" \
+    >/dev/null 2>/dev/null || true
+
+RPT_030J="${TMP}/phase-030j.md"
+printf '# Phase 030\nContent.\n' >"${RPT_030J}"
+"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 030 --source-report "${RPT_030J}" \
     >/dev/null 2>/dev/null || true
 
 RPT_040="${TMP}/phase-040.md"
@@ -670,17 +680,20 @@ else
 fi
 
 # Phase 040 with wrong collection_mode in payload must fail
-python3 -c "
-import json
-bad = {'schema_version': 1, 'phase': '040', 'source_commit': 'a' * 40,
+# Use the actual commit SHA so cross-commit validation does not fire first.
+python3 - "${TMP}/bad-mode-payload.json" "${SHA}" <<'PY'
+import json, sys
+path, commit = sys.argv[1], sys.argv[2]
+bad = {'schema_version': 1, 'phase': '040', 'source_commit': commit,
        'collection_mode': 'BAD_MODE', 'collected_at_utc': '2026-10-30T00:00:00Z',
        'providers': {'osv': {}, 'nvd': {}, 'cisa_kev': {}},
        'vendor_advisories': [], 'matches': [], 'no_match_packages': [],
        'unsupported_ecosystems': [], 'inventory_gaps': [],
        'coverage': {'total_packages_checked': 0, 'total_matches': 0, 'kev_matches': 0},
        'freshness_policy_hours': 24.0}
-print(json.dumps(bad))
-" >"${TMP}/bad-mode-payload.json"
+with open(path, "w") as fh:
+    json.dump(bad, fh); fh.write("\n")
+PY
 
 RPT_040C="${TMP}/phase-040c.md"
 printf '# Phase 040\nContent.\n' >"${RPT_040C}"

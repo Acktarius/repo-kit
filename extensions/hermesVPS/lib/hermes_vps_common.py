@@ -497,10 +497,12 @@ def resolve_selected_prereqs(
             raise ValidationError(
                 f"prerequisite artifact {pid!r} not found in manifest"
             )
-        if entry.get("completion_status") not in ("complete", "incomplete"):
+        status = entry.get("completion_status")
+        if status != "complete":
             raise ValidationError(
-                f"prerequisite artifact {pid!r} has unusable completion_status "
-                f"{entry.get('completion_status')!r}"
+                f"prerequisite artifact {pid!r} has completion_status "
+                f"{status!r}; only artifacts with completion_status='complete' "
+                "may serve as prerequisites"
             )
         rel_path = entry.get("path", "")
         abs_path = os.path.join(run_root, rel_path)

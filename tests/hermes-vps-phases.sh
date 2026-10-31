@@ -364,6 +364,77 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Missing-prerequisite rejection tests (before any upstream phases are registered)
+# ---------------------------------------------------------------------------
+
+# Phase 040 requires 010, 020, 030 — currently only 010 is done: must fail
+VULN_NOPRE="${TMP}/vuln-nopre.json"
+make_vuln_intel_payload "${VULN_NOPRE}" "${SHA}"
+RPT_NOPRE="${TMP}/report-nopre.md"
+make_report "${RPT_NOPRE}" "# Phase 040 no prereq test\n"
+if "${ARTIFACTS}" register \
+    --run-json "${RUN_JSON}" \
+    --phase 040 \
+    --source-report "${RPT_NOPRE}" \
+    --payload-json "${VULN_NOPRE}" \
+    >/dev/null 2>"${TMP}/nopre040.err"; then
+  bad "register: phase 040 without 020/030 should fail (missing prerequisites)"
+else
+  grep -qi 'prerequisite\|phase.020\|phase.030' "${TMP}/nopre040.err" \
+    && ok "register: phase 040 correctly rejected when 020/030 missing" \
+    || bad "register: phase 040 wrong error for missing prereqs: $(cat "${TMP}/nopre040.err")"
+fi
+
+# Phase 070 requires 060 — must fail
+RPT_070NOPRE="${TMP}/report-070-nopre.md"
+FIND_NOPRE="${TMP}/finding-nopre.json"
+make_report "${RPT_070NOPRE}" "# Phase 070 no prereq\n"
+make_finding_payload "${FIND_NOPRE}" "${SHA}" "C-NOPRE" "confirmed"
+if "${ARTIFACTS}" register \
+    --run-json "${RUN_JSON}" \
+    --phase 070 \
+    --subject-id "C-NOPRE" \
+    --source-report "${RPT_070NOPRE}" \
+    --payload-json "${FIND_NOPRE}" \
+    >/dev/null 2>"${TMP}/nopre070.err"; then
+  bad "register: phase 070 without 060 should fail (missing prerequisite)"
+else
+  grep -qi 'prerequisite\|phase.060' "${TMP}/nopre070.err" \
+    && ok "register: phase 070 correctly rejected when phase-060 missing" \
+    || bad "register: phase 070 wrong error: $(cat "${TMP}/nopre070.err")"
+fi
+
+# ---------------------------------------------------------------------------
+# Register phases 020 and 030 so downstream phases (040, 050, 060) can proceed
+# ---------------------------------------------------------------------------
+
+RPT_020="${TMP}/report-020.md"
+make_report "${RPT_020}" "# Phase 020 threat model\nContent.\n"
+
+if "${ARTIFACTS}" register \
+    --run-json "${RUN_JSON}" \
+    --phase 020 \
+    --source-report "${RPT_020}" \
+    >"${TMP}/reg020.out" 2>"${TMP}/reg020.err"; then
+  ok "register: phase 020 (prereq: 010 satisfied)"
+else
+  bad "register: phase 020 failed: $(cat "${TMP}/reg020.err")"
+fi
+
+RPT_030="${TMP}/report-030.md"
+make_report "${RPT_030}" "# Phase 030 scan plan\nContent.\n"
+
+if "${ARTIFACTS}" register \
+    --run-json "${RUN_JSON}" \
+    --phase 030 \
+    --source-report "${RPT_030}" \
+    >"${TMP}/reg030.out" 2>"${TMP}/reg030.err"; then
+  ok "register: phase 030 (prereq: 010, 020 satisfied)"
+else
+  bad "register: phase 030 failed: $(cat "${TMP}/reg030.err")"
+fi
+
+# ---------------------------------------------------------------------------
 # Section B2: Register phase 040 (required by phase 080 provenance)
 # ---------------------------------------------------------------------------
 
@@ -655,14 +726,17 @@ fi
 
 echo "=== Section F: Phase 080 subject-scoped selection ==="
 
-RPT_080="${TMP}/report-080-sg001.md"
-make_report "${RPT_080}" "# Phase 080 SG-001 gate 1\nPlan.\n"
+# Phase 080 subject-id must match the phase-070 candidate subject-id.
+# We use C-001 (already assessed in phase-070) as the subject.
+# The payload's finding_id field still carries SG-001 (the assigned finding ID).
+RPT_080="${TMP}/report-080-c001.md"
+make_report "${RPT_080}" "# Phase 080 C-001 remediation plan\nPlan.\n"
 
-# Phase 080 without --payload-json must fail
+# Phase 080 without --payload-json must fail (prerequisite check also fires; payload error first)
 if "${ARTIFACTS}" register \
     --run-json "${RUN_JSON}" \
     --phase 080 \
-    --subject-id "SG-001" \
+    --subject-id "C-001" \
     --source-report "${RPT_080}" \
     >/dev/null 2>"${TMP}/reg080-nopay.err"; then
   bad "register: phase 080 without --payload-json should fail"
@@ -672,18 +746,53 @@ else
     || bad "register: phase 080 wrong error: $(cat "${TMP}/reg080-nopay.err")"
 fi
 
-# Build provenance payload from manifest (040 and 070/C-001 must be registered)
-PAYLOAD_080_SG001="${TMP}/plan-080-sg001.json"
-make_phase080_plan_payload "${PAYLOAD_080_SG001}" "${SHA}" "${MANIFEST}" "SG-001" "C-001"
+# Phase 080 without phase-070 for subject must also fail (missing prereq)
+# Use a fresh run that has no 070 to test isolation
+RPT_080_NOPRE="${TMP}/report-080-nopre.md"
+make_report "${RPT_080_NOPRE}" "# Phase 080 no 070 prereq\n"
+PAYLOAD_080_NOPRE="${TMP}/plan-080-nopre.json"
+# Make a minimal (valid-structure) 080 payload stub for the prereq test
+python3 - "${PAYLOAD_080_NOPRE}" "${SHA}" <<'PY'
+import json, sys
+path, commit = sys.argv[1], sys.argv[2]
+data = {"schema_version": 1, "phase": "080", "finding_id": "C-NOPRE",
+        "source_commit": commit, "intel_artifact_id": "fake-040",
+        "intel_artifact_sha256": "a"*64, "assessed_finding_artifact_id": "fake-070",
+        "assessed_finding_sha256": "b"*64,
+        "intel_freshness_at_plan_time": {"evaluated_at_utc": "2026-10-30T00:00:00Z",
+            "effective_threshold_hours": 24.0, "threshold_source": "default",
+            "freshness_ok": False, "stale_providers": [], "unknown_providers": [],
+            "limitations": []}}
+with open(path, "w") as fh:
+    json.dump(data, fh); fh.write("\n")
+PY
+if "${ARTIFACTS}" register \
+    --run-json "${RUN_JSON}" \
+    --phase 080 \
+    --subject-id "C-NOPRE" \
+    --source-report "${RPT_080_NOPRE}" \
+    --payload-json "${PAYLOAD_080_NOPRE}" \
+    >/dev/null 2>"${TMP}/reg080-nopre.err"; then
+  bad "register: phase 080 without matching 070 should fail"
+else
+  grep -qi 'prerequisite\|phase-070\|phase 070' "${TMP}/reg080-nopre.err" \
+    && ok "register: phase 080 correctly rejected when 070 for subject missing" \
+    || bad "register: phase 080 wrong error (expected prereq failure): $(cat "${TMP}/reg080-nopre.err")"
+fi
+
+# Build provenance payload from manifest (040 and 070/C-001 must be registered).
+# finding_id and subject-id must match: use C-001 for both.
+PAYLOAD_080_C001="${TMP}/plan-080-c001.json"
+make_phase080_plan_payload "${PAYLOAD_080_C001}" "${SHA}" "${MANIFEST}" "C-001" "C-001"
 
 if "${ARTIFACTS}" register \
     --run-json "${RUN_JSON}" \
     --phase 080 \
-    --subject-id "SG-001" \
+    --subject-id "C-001" \
     --source-report "${RPT_080}" \
-    --payload-json "${PAYLOAD_080_SG001}" \
+    --payload-json "${PAYLOAD_080_C001}" \
     >"${TMP}/reg080.out" 2>"${TMP}/reg080.err"; then
-  ok "register: phase 080 SG-001 with provenance payload succeeds"
+  ok "register: phase 080 C-001 with provenance payload succeeds"
 else
   bad "register: phase 080 failed: $(cat "${TMP}/reg080.err")"
 fi
@@ -693,10 +802,10 @@ import json, sys
 with open(sys.argv[1], encoding="utf-8") as fh:
     m = json.load(fh)
 sbs_080 = m.get("selected_by_subject", {}).get("080", {})
-assert "SG-001" in sbs_080, f"SG-001 not in selected_by_subject[080]: {sbs_080}"
-print(f"PASS: selected_by_subject[080]: SG-001={sbs_080['SG-001']}")
+assert "C-001" in sbs_080, f"C-001 not in selected_by_subject[080]: {sbs_080}"
+print(f"PASS: selected_by_subject[080]: C-001={sbs_080['C-001']}")
 PY
-[[ $? -eq 0 ]] && ok "register: phase 080 uses selected_by_subject" \
+[[ $? -eq 0 ]] && ok "register: phase 080 uses selected_by_subject[C-001]" \
                || bad "register: phase 080 selected_by_subject missing"
 
 # Phase 080 cross-subject supersession rejected
@@ -704,7 +813,7 @@ ART_080="$(python3 -c "
 import json, sys
 with open('${MANIFEST}') as fh:
     m = json.load(fh)
-print(m['selected_by_subject']['080']['SG-001'])
+print(m['selected_by_subject']['080']['C-001'])
 ")"
 
 RPT_080_CROSS="${TMP}/report-080-cross.md"
@@ -714,7 +823,7 @@ if "${ARTIFACTS}" revise \
     --run-json "${RUN_JSON}" \
     --source-report "${RPT_080_CROSS}" \
     --supersedes "${ART_080}" \
-    --subject-id "SG-002" \
+    --subject-id "C-002" \
     --reviewer-identity "reviewer" \
     >/dev/null 2>"${TMP}/cross-080.err"; then
   bad "revise: phase 080 cross-subject supersession should be rejected"
@@ -880,7 +989,7 @@ assert "C-003" in cids_dismissed, f"C-003 should be dismissed: {cids_dismissed}"
 for f in export["findings"]:
     assert f.get("proposed_record", {}).get("status") != "fixed", \
         f"finding {f['candidate_id']} falsely marked fixed"
-# findings-v2 includes remediation plan for SG-001 (from phase 080 above)
+# findings-v2 includes remediation plan for C-001 (from phase 080 above)
 findings_with_plan = [f for f in export["findings"] if f.get("remediation_plan_artifact")]
 print(f"PASS: complete=True; dismissed={cids_dismissed}; findings_with_plan={[f['candidate_id'] for f in findings_with_plan]}")
 PY
@@ -992,10 +1101,35 @@ make_vuln_intel_payload "${PAYLOAD_040_V2}" "${SHA}"
   && ok "register: phase 040 v2 registered" \
   || bad "register: phase 040 v2 failed: $(cat "${TMP}/reg040.err")"
 
-"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 050 --source-report "${RPT_050}" \
+# Phase 050 now requires --subject-id (priority_area label); repeated=True
+"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 050 --subject-id "auth-module" \
+    --source-report "${RPT_050}" \
     >/dev/null 2>"${TMP}/reg050.err" \
-  && ok "register: phase 050 registered" \
+  && ok "register: phase 050 registered (subject-id: auth-module)" \
   || bad "register: phase 050 failed: $(cat "${TMP}/reg050.err")"
+
+# Multiple 050 priorities must survive — register a second priority area
+RPT_050B="${TMP}/report-050b.md"
+make_report "${RPT_050B}" "# Phase 050 priority 2\nContent.\n"
+"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 050 --subject-id "network-layer" \
+    --source-report "${RPT_050B}" \
+    >/dev/null 2>"${TMP}/reg050b.err" \
+  && ok "register: phase 050 registered second priority (subject-id: network-layer)" \
+  || bad "register: phase 050 second priority failed: $(cat "${TMP}/reg050b.err")"
+
+# Both priorities must be in selected_by_subject
+python3 - "${RUN}/manifest.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    m = json.load(fh)
+sbs_050 = m.get("selected_by_subject", {}).get("050", {})
+assert "auth-module" in sbs_050, f"auth-module not in 050 subject map; got {list(sbs_050)}"
+assert "network-layer" in sbs_050, f"network-layer not in 050 subject map; got {list(sbs_050)}"
+print(f"PASS: both priority areas found in selected_by_subject[050]")
+PY
+[[ $? -eq 0 ]] \
+  && ok "register: phase 050 multiple priorities both present in manifest" \
+  || bad "register: phase 050 multiple priorities not both in manifest"
 
 # Runner phase 060 prompt should show BOTH valid branches
 if "${RUNNER}" --phase 060 --run-json "${RUN_JSON}" >"${TMP}/p060-both.txt" 2>"${TMP}/p060-both.err"; then
@@ -1069,10 +1203,10 @@ else
   cat "${TMP}/sel-all.out" >&2 || true
 fi
 
-if grep -q 'SG-001' "${TMP}/sel-all.out"; then
-  ok "selected: shows subject-scoped 080 selection"
+if grep -q 'C-001' "${TMP}/sel-all.out" && grep -qi '080' "${TMP}/sel-all.out"; then
+  ok "selected: shows subject-scoped 080 selection (C-001)"
 else
-  bad "selected: SG-001 not shown in selected output"
+  bad "selected: C-001 phase-080 selection not shown in output"
 fi
 
 # Filter by phase

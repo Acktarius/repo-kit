@@ -218,6 +218,91 @@ def _update_subject_selection(
 
 
 # ---------------------------------------------------------------------------
+# Shared fail-closed prerequisite gate
+# ---------------------------------------------------------------------------
+
+def _check_phase_prerequisites(
+    manifest: dict[str, Any],
+    run_root: str,
+    phase: str,
+    subject_id: str | None = None,
+) -> list[str]:
+    """Enforce upstream phase prerequisites.  Returns resolved prerequisite artifact IDs.
+
+    This is the single authoritative gate used by cmd_register, cmd_generate_findings,
+    and the runner (via _resolve_prereqs).  Raises ValidationError if any required
+    upstream artifact is missing, incomplete, or has a mismatched SHA.
+
+    AllOf: every listed phase must have a complete selected artifact.
+    OneOf: at least one listed phase must have a complete selected artifact; all
+           valid branches are included in the returned IDs.
+    Phase-080: additionally requires a complete phase-070 artifact for this subject_id.
+    """
+    from lib.hermes_vps_phases import AllOf, OneOf  # noqa: PLC0415
+
+    phase_info = PHASE_TABLE.get(phase)
+    if phase_info is None:
+        return []
+
+    prereqs_desc = phase_info.prereqs
+    sel_phase: dict[str, str] = manifest.get("selected_by_phase", {})
+    sel_subj: dict[str, Any] = manifest.get("selected_by_subject", {})
+    resolved: list[str] = []
+
+    if isinstance(prereqs_desc, AllOf):
+        for req_phase in prereqs_desc.phases:
+            art_id = sel_phase.get(req_phase)
+            if not art_id:
+                raise ValidationError(
+                    f"phase {phase} requires a complete phase-{req_phase} artifact; "
+                    f"none selected — register and complete phase {req_phase} first"
+                )
+            resolve_selected_prereqs(manifest, run_root, [art_id])
+            resolved.append(art_id)
+
+    elif isinstance(prereqs_desc, OneOf):
+        valid_ids: list[str] = []
+        branch_errors: list[str] = []
+        for req_phase in prereqs_desc.phases:
+            art_id = sel_phase.get(req_phase)
+            if not art_id:
+                branch_errors.append(f"phase {req_phase}: no selected artifact")
+                continue
+            try:
+                resolve_selected_prereqs(manifest, run_root, [art_id])
+                valid_ids.append(art_id)
+            except ValidationError as exc:
+                branch_errors.append(f"phase {req_phase}: {exc}")
+        if not valid_ids:
+            raise ValidationError(
+                f"phase {phase} requires at least one of phases "
+                f"{prereqs_desc.phases!r} to be complete; "
+                f"none are valid — {'; '.join(branch_errors)}"
+            )
+        resolved.extend(valid_ids)
+
+    # Phase-080: also require a complete phase-070 for this subject.
+    if phase == "080" and subject_id:
+        sbs_070 = sel_subj.get("070", {})
+        art_070_id = sbs_070.get(subject_id)
+        if not art_070_id:
+            raise ValidationError(
+                f"phase 080 for subject {subject_id!r} requires a complete phase-070 "
+                f"assessment for the same subject; none registered for {subject_id!r}"
+            )
+        try:
+            resolve_selected_prereqs(manifest, run_root, [art_070_id])
+        except ValidationError as exc:
+            raise ValidationError(
+                f"phase 080 prerequisite phase-070[{subject_id!r}] failed: {exc}"
+            ) from exc
+        if art_070_id not in resolved:
+            resolved.append(art_070_id)
+
+    return resolved
+
+
+# ---------------------------------------------------------------------------
 # Consultation prompt
 # ---------------------------------------------------------------------------
 
@@ -249,26 +334,26 @@ Report path:    {final_path}
 Artifact index: {manifest_path}
 Run ID:         {ctx['run_id']}
 
-If the second agent CANNOT access those local paths, you must provide:
-  1. The full text of the report (paste or attach the file contents)
-  2. The relevant artifact index entry (paste the JSON entry from manifest.json)
-  3. Confirm the source commit and report SHA-256 above are accurate
+If the second agent CANNOT access those local paths, provide:
+  1. Full text of the report (paste or attach)
+  2. Relevant artifact index entry from manifest.json
+  3. Confirm source commit and report SHA-256 are accurate
 
-Second-opinion commands (agent may run; not required for normal progression):
-  ACCEPT (record review, no selection change):
+STOP. Do not start the next phase without a separate explicit human request.
+
+---- Advanced diagnostics (not required for normal progression) ----
+  ACCEPT (record second-opinion review, no selection change):
     {artifacts_bin} accept \\
       --run-json {run_json_path} \\
       --artifact-id {artifact_id} \\
       --reviewer-identity "declared-name-or-id"
 
-  REVISE (import corrected report, update selection):
+  REVISE (import corrected report, supersedes this artifact):
     {artifacts_bin} revise \\
       --run-json {run_json_path} \\
       --source-report /absolute/path/to/revised.md \\
       --supersedes {artifact_id} \\
       --reviewer-identity "declared-name-or-id"
-
-STOP. Do not start the next phase without a separate explicit human request.
 ======== end consultation prompt ========
 """
     print(text)
@@ -304,13 +389,26 @@ def _validate_destination_path(
 
 
 def _saved_but_unregistered(
-    final_path: str, sha: str, run_json_path: str, phase: str, reason: str
+    final_path: str,
+    sha: str,
+    run_json_path: str,
+    phase: str,
+    reason: str,
+    payload_path: str | None = None,
+    subject_id: str | None = None,
 ) -> None:
+    payload_flag = f" \\\n      --payload-json {payload_path}" if payload_path else ""
+    subject_flag = f" \\\n      --subject-id {subject_id}" if subject_id else ""
     print(
         f"error: Report saved at {final_path} (SHA-256: {sha}) but NOT registered.\n"
         f"Reason: {reason}\n"
-        f"Safe retry: hermes-vps-artifacts register "
-        f"--run-json {run_json_path} --phase {phase} --source-report {final_path}",
+        f"Safe retry:\n"
+        f"  hermes-vps-artifacts register \\\n"
+        f"    --run-json {run_json_path} \\\n"
+        f"    --phase {phase} \\\n"
+        f"    --source-report {final_path}"
+        f"{subject_flag}"
+        f"{payload_flag}",
         file=sys.stderr,
     )
 
@@ -362,9 +460,12 @@ def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: 
             die("--payload-json must be an absolute path")
         if not os.path.isfile(payload_json_path):
             die(f"--payload-json not found: {payload_json_path}")
-        # Validate it's valid JSON
+        # Validate JSON and cross-check source_commit
         try:
-            _load_payload_json(payload_json_path, phase, subject_id)
+            _load_payload_json(
+                payload_json_path, phase, subject_id,
+                expected_commit=ctx["source_commit"],
+            )
         except ValidationError as exc:
             die(str(exc))
 
@@ -378,25 +479,42 @@ def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: 
         except ValidationError as exc:
             die(str(exc))
 
+        # Enforce upstream phase prerequisites (fail-closed).
+        try:
+            prereq_ids = _check_phase_prerequisites(manifest, run_root, phase, subject_id)
+        except ValidationError as exc:
+            die(f"prerequisite check failed: {exc}")
+
         # Compute SHA-256 of source report
         try:
             src_sha = sha256_file(source_report)
         except OSError as exc:
             die(f"cannot read --source-report: {exc}")
 
-        # Idempotency: already registered with same SHA for this phase?
+        # Bundle-aware idempotency: same report SHA for this phase and subject?
         existing = _find_by_sha(manifest, phase, src_sha)
         if existing is not None:
             # For repeated phases, also check subject_id matches
             if subject_id is not None and existing.get("subject_id") != subject_id:
-                # Same SHA registered under a different subject — that's fine; allow re-registration
+                # Same SHA registered under a different subject — allow re-registration
                 pass
             else:
+                # Report content matches; also check payload (bundle-aware).
+                if payload_json_path:
+                    new_payload_sha = sha256_file(payload_json_path)
+                    existing_payload_sha = existing.get("payload_sha256")
+                    if existing_payload_sha and new_payload_sha != existing_payload_sha:
+                        die(
+                            f"artifact {existing['id']!r} is already registered with this "
+                            "report content but a DIFFERENT payload.\n"
+                            "Report SHA matches; payload SHA differs — this is not a safe retry.\n"
+                            "Use 'hermes-vps-artifacts revise' to update the payload."
+                        )
                 existing_rel = existing.get("path", "")
                 existing_abs = os.path.join(run_root, existing_rel)
                 print(
                     f"(idempotent: artifact {existing['id']!r} already registered "
-                    f"with this SHA-256; no changes made)",
+                    "with this SHA-256; no changes made)",
                     file=sys.stderr,
                 )
                 _print_consult_prompt(
@@ -455,19 +573,20 @@ def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: 
         try:
             final_sha = sha256_file(final_path)
         except OSError as exc:
-            _saved_but_unregistered(final_path, src_sha, run_json_path, phase, str(exc))
+            _saved_but_unregistered(
+                final_path, src_sha, run_json_path, phase, str(exc),
+                payload_path=payload_json_path, subject_id=subject_id,
+            )
             return 1
         if final_sha != src_sha:
             _saved_but_unregistered(
-                final_path,
-                src_sha,
-                run_json_path,
-                phase,
+                final_path, src_sha, run_json_path, phase,
                 f"SHA mismatch after copy: expected={src_sha} got={final_sha}",
+                payload_path=payload_json_path, subject_id=subject_id,
             )
             return 1
 
-        # Handle payload JSON if provided
+        # Handle payload JSON if provided (exclusive-create semantics).
         payload_rel: str | None = None
         payload_sha: str | None = None
         if payload_json_path:
@@ -477,7 +596,23 @@ def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: 
                 _validate_destination_path(payload_dest, reports_dir, ctx)
             except ValidationError as exc:
                 die(str(exc))
-            if not os.path.lexists(payload_dest):
+            if os.path.lexists(payload_dest):
+                if os.path.isfile(payload_dest):
+                    # Retry: file exists — verify it matches
+                    existing_payload_sha = sha256_file(payload_dest)
+                    new_payload_sha = sha256_file(payload_json_path)
+                    if existing_payload_sha != new_payload_sha:
+                        die(
+                            f"payload destination already exists with different content: "
+                            f"{payload_dest}\n"
+                            "Collision on payload file — cannot overwrite. "
+                            "Use 'hermes-vps-artifacts revise' to update."
+                        )
+                else:
+                    die(
+                        f"payload destination exists but is not a regular file: {payload_dest}"
+                    )
+            else:
                 try:
                     shutil.copy2(payload_json_path, payload_dest)
                 except OSError as exc:
@@ -491,7 +626,9 @@ def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: 
         # Phase-080 provenance: validate referenced artifact IDs/hashes against manifest
         extra_prereqs: list[str] = []
         if phase == "080" and payload_json_path:
-            p080_payload = _load_payload_json(payload_json_path, "080", subject_id)
+            p080_payload = _load_payload_json(
+                payload_json_path, "080", subject_id, expected_commit=ctx["source_commit"]
+            )
             intel_art_id = p080_payload.get("intel_artifact_id", "")
             intel_art_sha = p080_payload.get("intel_artifact_sha256", "")
             finding_art_id = p080_payload.get("assessed_finding_artifact_id", "")
@@ -536,6 +673,20 @@ def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: 
                     file=sys.stderr,
                 )
 
+        # Determine completion_status.
+        # Blocked assessments (070 with disposition "blocked") are not complete work.
+        completion_status = "complete"
+        if phase == "070" and payload_json_path:
+            try:
+                p_data = load_json(payload_json_path)
+                if p_data.get("assessment_disposition") == "blocked":
+                    completion_status = "blocked"
+            except Exception:  # noqa: BLE001
+                pass  # Already validated above; any re-read error keeps "complete"
+
+        # Merge prerequisite IDs: upstream phase prereqs + 080-specific provenance refs.
+        all_prereq_ids = list(dict.fromkeys(prereq_ids + extra_prereqs))
+
         entry: dict[str, Any] = {
             "id": artifact_id,
             "kind": "hermes_phase_report",
@@ -547,8 +698,8 @@ def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: 
             "toolkit_revision": ctx["toolkit_revision"],
             "producer": "hermes-vps-artifacts/register",
             "created_at_utc": _utcnow(),
-            "completion_status": "complete",
-            "prerequisite_artifacts": extra_prereqs,
+            "completion_status": completion_status,
+            "prerequisite_artifacts": all_prereq_ids,
             "supersedes": None,
             "reviews": [],
         }
@@ -581,18 +732,66 @@ def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: 
         ctx, artifact_id, final_path, final_sha, manifest_path, run_json_path, phase, version,
         subject_id=subject_id,
     )
+
+    # Auto-consolidation hint: after registering a phase-070 assessment, check if all
+    # candidates from the selected phase-060 triage are now assessed.  If so, prompt
+    # the operator to run generate-findings without starting a new phase first.
+    if phase == "070":
+        try:
+            with open(manifest_path, encoding="utf-8") as _mfh:
+                _m = json.load(_mfh)
+            _sel_060 = _m.get("selected_by_phase", {}).get("060")
+            if _sel_060:
+                _art_060 = _find_by_id(_m, _sel_060)
+                if _art_060:
+                    _payload_rel_060 = _art_060.get("payload_path", "")
+                    if _payload_rel_060:
+                        _payload_abs_060 = os.path.join(ctx["run_root"], _payload_rel_060)
+                        if os.path.isfile(_payload_abs_060):
+                            _triage = json.load(open(_payload_abs_060, encoding="utf-8"))
+                            _cids = [
+                                c.get("candidate_id", "")
+                                for c in _triage.get("candidates", [])
+                                if isinstance(c, dict)
+                            ]
+                            _cids = [c for c in _cids if c]
+                            _sbs_070 = _m.get("selected_by_subject", {}).get("070", {})
+                            _missing = [c for c in _cids if c not in _sbs_070]
+                            if not _missing and _cids:
+                                artifacts_bin = os.path.join(
+                                    ctx["policy_prefix"], "bin", "hermes-vps-artifacts"
+                                )
+                                print(
+                                    "\n>>> All candidates from phase-060 are now assessed. <<<\n"
+                                    "Run generate-findings to consolidate:\n"
+                                    f"  {artifacts_bin} generate-findings \\\n"
+                                    f"    --run-json {run_json_path}\n"
+                                    "Then stop — do not start phase-080 without "
+                                    "a separate explicit human request.",
+                                    file=sys.stderr,
+                                )
+        except Exception:  # noqa: BLE001
+            pass  # Auto-hint is best-effort; never break the register flow
+
     return 0
 
 
-def _load_payload_json(path: str, phase: str, subject_id: str | None) -> dict[str, Any]:
-    """Load and minimally validate a structured payload JSON file."""
+def _load_payload_json(
+    path: str, phase: str, subject_id: str | None,
+    expected_commit: str | None = None,
+) -> dict[str, Any]:
+    """Load and validate a structured payload JSON file.
+
+    Validates: schema_version, phase field, subject_id for repeated phases,
+    source_commit cross-check (when expected_commit supplied), and phase-specific
+    required nested fields.
+    """
     try:
         data = load_json(path)
     except ValidationError as exc:
         raise ValidationError(f"--payload-json: {exc}") from exc
     if not isinstance(data, dict):
         raise ValidationError("--payload-json: must be a JSON object")
-    # Minimal structural check: must have schema_version and phase
     sv = data.get("schema_version")
     if not isinstance(sv, int) or sv < 1:
         raise ValidationError("--payload-json: schema_version must be a positive integer")
@@ -601,6 +800,17 @@ def _load_payload_json(path: str, phase: str, subject_id: str | None) -> dict[st
         raise ValidationError(
             f"--payload-json: phase field {recorded_phase!r} != --phase {phase!r}"
         )
+
+    # Cross-artifact source_commit identity check.
+    payload_commit = data.get("source_commit", "")
+    if expected_commit and payload_commit:
+        if payload_commit.lower() != expected_commit.lower():
+            raise ValidationError(
+                f"--payload-json: source_commit {payload_commit!r} does not match "
+                f"run context commit {expected_commit!r}; payload was produced "
+                "for a different checkout"
+            )
+
     # For repeated phases, verify subject_id is present
     if phase in REPEATED_PHASES:
         payload_subject_key = PHASE_TABLE[phase].trigger_label
@@ -784,14 +994,10 @@ def cmd_revise(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: C9
 
         # Payload handling for revised artifacts
         payload_json_path: str | None = getattr(args, "payload_json", None)
-        try:
-            from hermes_vps_phases import PHASE_TABLE  # type: ignore[import]
-            phase_info_for_revise = PHASE_TABLE.get(phase)
-            payload_required_for_phase = (
-                phase_info_for_revise is not None and phase_info_for_revise.payload_required
-            )
-        except ImportError:
-            payload_required_for_phase = False
+        phase_info_for_revise = PHASE_TABLE.get(phase)
+        payload_required_for_phase = (
+            phase_info_for_revise is not None and phase_info_for_revise.payload_required
+        )
         if payload_required_for_phase and not payload_json_path:
             die(
                 f"phase {phase} requires a structured payload; "
@@ -803,7 +1009,10 @@ def cmd_revise(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: C9
             if not os.path.isfile(payload_json_path):
                 die(f"--payload-json not found: {payload_json_path}")
             try:
-                _load_payload_json(payload_json_path, phase, new_subject_id)
+                _load_payload_json(
+                    payload_json_path, phase, new_subject_id,
+                    expected_commit=ctx["source_commit"],
+                )
             except ValidationError as exc:
                 die(str(exc))
 
@@ -870,19 +1079,64 @@ def cmd_revise(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: C9
         try:
             final_sha = sha256_file(final_path)
         except OSError as exc:
-            _saved_but_unregistered(final_path, src_sha, run_json_path, phase, str(exc))
+            _saved_but_unregistered(
+                final_path, src_sha, run_json_path, phase, str(exc),
+                payload_path=payload_json_path, subject_id=new_subject_id,
+            )
             return 1
         if final_sha != src_sha:
             _saved_but_unregistered(
-                final_path,
-                src_sha,
-                run_json_path,
-                phase,
+                final_path, src_sha, run_json_path, phase,
                 f"SHA mismatch after copy: expected={src_sha} got={final_sha}",
+                payload_path=payload_json_path, subject_id=new_subject_id,
             )
             return 1
 
         rel_path = os.path.relpath(final_path, run_root)
+
+        # Phase-080 provenance validation for revised plans (same path as initial register).
+        revise_extra_prereqs: list[str] = []
+        if phase == "080" and payload_json_path:
+            p080_payload = _load_payload_json(
+                payload_json_path, "080", new_subject_id,
+                expected_commit=ctx["source_commit"],
+            )
+            intel_art_id = p080_payload.get("intel_artifact_id", "")
+            intel_art_sha = p080_payload.get("intel_artifact_sha256", "")
+            finding_art_id = p080_payload.get("assessed_finding_artifact_id", "")
+            finding_art_sha = p080_payload.get("assessed_finding_sha256", "")
+            intel_art = _find_by_id(manifest, intel_art_id)
+            if intel_art is None:
+                die(
+                    f"revised phase-080 payload references intel_artifact_id {intel_art_id!r} "
+                    "which is not registered in manifest"
+                )
+            recorded_intel_sha = intel_art.get("payload_sha256") or intel_art.get("sha256", "")
+            if intel_art_sha and recorded_intel_sha and intel_art_sha != recorded_intel_sha:
+                die(
+                    f"revised phase-080 payload intel_artifact_sha256 {intel_art_sha[:16]}… "
+                    f"does not match manifest record {recorded_intel_sha[:16]}…"
+                )
+            finding_art = _find_by_id(manifest, finding_art_id)
+            if finding_art is None:
+                die(
+                    f"revised phase-080 payload references assessed_finding_artifact_id "
+                    f"{finding_art_id!r} which is not registered in manifest"
+                )
+            recorded_finding_sha = finding_art.get("sha256", "")
+            if finding_art_sha and recorded_finding_sha and finding_art_sha != recorded_finding_sha:
+                die(
+                    f"revised phase-080 payload assessed_finding_sha256 {finding_art_sha[:16]}… "
+                    "does not match manifest record"
+                )
+            revise_extra_prereqs = [intel_art_id, finding_art_id]
+            current_040 = manifest.get("selected_by_phase", {}).get("040")
+            if current_040 and intel_art_id != current_040:
+                print(
+                    f"WARNING: revised phase-080 plan uses intel artifact {intel_art_id!r} "
+                    f"but current selected phase-040 is {current_040!r}.",
+                    file=sys.stderr,
+                )
 
         review_record: dict[str, Any] = {
             "outcome": "REVISE",
@@ -893,21 +1147,52 @@ def cmd_revise(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: C9
             "recorded_at_utc": _utcnow(),
         }
 
-        # Copy payload for revised artifact if provided
+        # Copy payload for revised artifact (exclusive-create: fail on SHA mismatch).
         payload_path_rel: str | None = None
         payload_sha: str | None = None
         if payload_json_path:
             payload_fname = f"payload-{phase}-{new_subject_id}-v{version}.json"
             payload_dest = os.path.join(reports_dir, payload_fname)
-            try:
-                shutil.copy2(payload_json_path, payload_dest)
-            except OSError as exc:
-                die(f"failed to copy --payload-json to {payload_dest}: {exc}")
+            if os.path.lexists(payload_dest):
+                if os.path.isfile(payload_dest):
+                    existing_sha = sha256_file(payload_dest)
+                    new_sha = sha256_file(payload_json_path)
+                    if existing_sha != new_sha:
+                        die(
+                            f"payload destination already exists with different content: "
+                            f"{payload_dest}\n"
+                            "Collision on payload file. "
+                            "If you need a different payload, use a fresh revise."
+                        )
+                else:
+                    die(
+                        f"payload destination exists but is not a regular file: {payload_dest}"
+                    )
+            else:
+                try:
+                    shutil.copy2(payload_json_path, payload_dest)
+                except OSError as exc:
+                    die(f"failed to copy --payload-json to {payload_dest}: {exc}")
             try:
                 payload_sha = sha256_file(payload_dest)
             except OSError as exc:
                 die(f"cannot read copied payload: {exc}")
             payload_path_rel = os.path.relpath(payload_dest, run_root)
+
+        # Determine completion_status for revised artifact.
+        completion_status = "complete"
+        if phase == "070" and payload_json_path:
+            try:
+                p_data = load_json(payload_json_path)
+                if p_data.get("assessment_disposition") == "blocked":
+                    completion_status = "blocked"
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Merge prerequisite IDs from prior entry and any 080-specific provenance refs.
+        merged_prereqs = list(dict.fromkeys(
+            prior.get("prerequisite_artifacts", []) + revise_extra_prereqs
+        ))
 
         entry: dict[str, Any] = {
             "id": artifact_id,
@@ -920,8 +1205,8 @@ def cmd_revise(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: C9
             "toolkit_revision": ctx["toolkit_revision"],
             "producer": "hermes-vps-artifacts/revise",
             "created_at_utc": _utcnow(),
-            "completion_status": "complete",
-            "prerequisite_artifacts": prior.get("prerequisite_artifacts", []),
+            "completion_status": completion_status,
+            "prerequisite_artifacts": merged_prereqs,
             "supersedes": supersedes_id,
             "reviews": [review_record],
         }
@@ -1079,7 +1364,7 @@ def _assess_intel_freshness_from_manifest(
 ) -> dict[str, Any]:
     """Load selected phase-040 payload and assess freshness. Returns readiness.intel dict."""
     try:
-        from hermes_vps_intel import assess_freshness as _af  # type: ignore[import]
+        from lib.hermes_vps_intel import assess_freshness as _af  # noqa: PLC0415
     except ImportError:
         return {
             "artifact_id": None,
@@ -1307,11 +1592,46 @@ def cmd_generate_findings(args: argparse.Namespace, run_json_path: str) -> int: 
                     "source_artifact": art_070_id,
                 })
             elif disposition in ("confirmed", "suspected", "needs-investigation", "blocked"):
-                # Resolve optional phase-080 plan for this finding
+                # Resolve optional phase-080 plan.
+                # Look up by proposed finding ID first, then by candidate_id as fallback
+                # (covers new findings not yet assigned a stable finding ID).
                 finding_id = proposed.get("id")
                 plan_artifact_id: str | None = None
+                sbs_080_map: dict[str, str] = manifest.get("selected_by_subject", {}).get("080", {})
                 if finding_id:
-                    plan_artifact_id = manifest.get("selected_by_subject", {}).get("080", {}).get(finding_id)
+                    plan_artifact_id = sbs_080_map.get(finding_id)
+                if plan_artifact_id is None:
+                    plan_artifact_id = sbs_080_map.get(cid)
+                # Verify 080 plan is structurally valid before including it.
+                if plan_artifact_id is not None:
+                    plan_art = _find_by_id(manifest, plan_artifact_id)
+                    if plan_art is None:
+                        errors.append(
+                            f"selected phase-080 artifact {plan_artifact_id!r} for "
+                            f"finding/candidate {finding_id or cid!r} not found in manifest"
+                        )
+                        plan_artifact_id = None
+                    else:
+                        plan_payload_rel = plan_art.get("payload_path")
+                        if plan_payload_rel:
+                            plan_payload_abs = os.path.join(run_root, plan_payload_rel)
+                            if not os.path.isfile(plan_payload_abs):
+                                errors.append(
+                                    f"phase-080 plan payload file missing for "
+                                    f"{plan_artifact_id!r}: {plan_payload_abs}"
+                                )
+                                plan_artifact_id = None
+                            else:
+                                try:
+                                    _plan_data = load_json(plan_payload_abs)
+                                    if not isinstance(_plan_data, dict):
+                                        raise ValidationError("plan payload must be a JSON object")
+                                except (ValidationError, Exception) as _exc:
+                                    errors.append(
+                                        f"phase-080 plan payload corrupt for "
+                                        f"{plan_artifact_id!r}: {_exc}"
+                                    )
+                                    plan_artifact_id = None
 
                 finding_entry: dict[str, Any] = {
                     "candidate_id": cid,
@@ -1361,17 +1681,30 @@ def cmd_generate_findings(args: argparse.Namespace, run_json_path: str) -> int: 
         for finding_sid, plan_art_id in sbs_080.items():
             plan_art = _find_by_id(manifest, plan_art_id)
             if plan_art is None:
+                prov_limitations.append(
+                    f"finding {finding_sid!r}: selected plan artifact "
+                    f"{plan_art_id!r} not found in manifest"
+                )
                 continue
             plan_payload_rel = plan_art.get("payload_path")
             if not plan_payload_rel:
+                prov_limitations.append(
+                    f"finding {finding_sid!r}: plan artifact {plan_art_id!r} "
+                    "has no registered payload; provenance cannot be verified"
+                )
                 continue
             plan_payload_abs = os.path.join(run_root, plan_payload_rel)
             if not os.path.isfile(plan_payload_abs):
+                prov_limitations.append(
+                    f"finding {finding_sid!r}: plan payload file missing: {plan_payload_abs}"
+                )
                 continue
             try:
-                with open(plan_payload_abs, encoding="utf-8") as fh:
-                    plan_payload = json.load(fh)
-            except (json.JSONDecodeError, OSError):
+                plan_payload = load_json(plan_payload_abs)
+            except (ValidationError, Exception) as _exc:
+                prov_limitations.append(
+                    f"finding {finding_sid!r}: plan payload corrupt or unreadable: {_exc}"
+                )
                 continue
             plan_intel_id = plan_payload.get("intel_artifact_id")
             if plan_intel_id and sel_040 and plan_intel_id != sel_040:

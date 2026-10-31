@@ -1,0 +1,7 @@
+# Python bytecode — must never be tracked in this extension tree.
+# hermes_vps_artifacts.py and hermes-vps-review already set
+# sys.dont_write_bytecode=True and PYTHONDONTWRITEBYTECODE=1, but
+# transient invocations (e.g. direct python3 calls) can still produce them.
+__pycache__/
+*.py[cod]
+*.pyo

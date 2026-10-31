@@ -132,13 +132,18 @@ PHASE_TABLE: dict[str, PhaseInfo] = {
     "050": PhaseInfo(
         title="Source and configuration review",
         phase_name="source-review",
-        # 010 + 020 required; 030 checked if present (scanner-assisted)
+        # 010 + 020 required; 030 checked if present (scanner-assisted).
+        # Repeated because multiple priority areas may be reviewed independently;
+        # earlier inputs are preserved per subject_id (priority label).
         prereqs=AllOf(["010", "020"]),
         policy_files=_phase_files(
             "rules/rules_050-source-review.md",
             "tasks/050-source-review.md",
             "templates/phase-050-report.md",
         ),
+        subject_id_required=True,
+        repeated=True,
+        trigger_label="priority_area",
     ),
     "060": PhaseInfo(
         title="Validate and triage",
