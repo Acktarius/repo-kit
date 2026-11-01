@@ -475,51 +475,93 @@ def validate_manifest_identity(manifest: dict[str, Any], ctx: dict[str, Any]) ->
         )
 
 
-def resolve_selected_prereqs(
-    manifest: dict[str, Any],
-    run_root: str,
-    prereq_ids: list[str],
-) -> list[dict[str, Any]]:
-    """Resolve and verify a list of prerequisite artifact IDs from the index.
+# ---------------------------------------------------------------------------
+# Minimal JSON Schema validator (stdlib only)
+#
+# Supports the keyword subset used by templates/*.schema.json.  Any other
+# structural keyword raises, so a schema edit can never be silently unenforced.
+# ---------------------------------------------------------------------------
 
-    Verifies that each artifact is present, complete, and its report file exists
-    with matching SHA-256.  Returns the list of artifact entries in order.
+_SCHEMA_ANNOTATIONS = {"$schema", "title", "description", "default", "format", "$comment"}
+_SCHEMA_KEYWORDS = {
+    "type", "const", "enum", "required", "properties",
+    "additionalProperties", "items", "pattern", "minimum", "minItems",
+}
 
-    Raises ValidationError for any unresolvable or hash-mismatched prerequisite.
-    """
-    index: dict[str, dict[str, Any]] = {
-        a["id"]: a for a in manifest.get("artifacts", []) if isinstance(a, dict)
-    }
-    results: list[dict[str, Any]] = []
-    for pid in prereq_ids:
-        entry = index.get(pid)
-        if entry is None:
+
+def _schema_type_ok(value: Any, typ: str) -> bool:
+    if typ == "null":
+        return value is None
+    if typ == "boolean":
+        return isinstance(value, bool)
+    if typ == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if typ == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if typ == "string":
+        return isinstance(value, str)
+    if typ == "array":
+        return isinstance(value, list)
+    if typ == "object":
+        return isinstance(value, dict)
+    raise ValidationError(f"schema uses unsupported type {typ!r}")
+
+
+def validate_schema(value: Any, schema: dict[str, Any], label: str = "$") -> None:
+    """Raise ValidationError at the first violation of schema by value."""
+    unknown = set(schema) - _SCHEMA_KEYWORDS - _SCHEMA_ANNOTATIONS
+    if unknown:
+        raise ValidationError(f"schema at {label} uses unsupported keywords: {sorted(unknown)}")
+
+    if "type" in schema:
+        types = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
+        if not any(_schema_type_ok(value, t) for t in types):
             raise ValidationError(
-                f"prerequisite artifact {pid!r} not found in manifest"
+                f"{label}: expected type {'|'.join(types)}, got {type(value).__name__}"
             )
-        status = entry.get("completion_status")
-        if status != "complete":
-            raise ValidationError(
-                f"prerequisite artifact {pid!r} has completion_status "
-                f"{status!r}; only artifacts with completion_status='complete' "
-                "may serve as prerequisites"
-            )
-        rel_path = entry.get("path", "")
-        abs_path = os.path.join(run_root, rel_path)
-        if not os.path.isfile(abs_path):
-            raise ValidationError(
-                f"prerequisite artifact {pid!r} file not found: {abs_path}"
-            )
-        recorded_sha = entry.get("sha256", "")
-        if recorded_sha:
-            actual_sha = sha256_file(abs_path)
-            if actual_sha != recorded_sha:
-                raise ValidationError(
-                    f"prerequisite artifact {pid!r} SHA-256 mismatch: "
-                    f"recorded={recorded_sha} actual={actual_sha}"
-                )
-        results.append(entry)
-    return results
+    if "const" in schema and value != schema["const"]:
+        raise ValidationError(f"{label}: must equal {schema['const']!r}, got {value!r}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValidationError(f"{label}: {value!r} not in {schema['enum']!r}")
+
+    if isinstance(value, str) and "pattern" in schema:
+        if not re.search(schema["pattern"], value):
+            raise ValidationError(f"{label}: {value!r} does not match {schema['pattern']!r}")
+    if (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        and "minimum" in schema and value < schema["minimum"]
+    ):
+        raise ValidationError(f"{label}: {value!r} is below minimum {schema['minimum']!r}")
+
+    if isinstance(value, dict):
+        for key in schema.get("required", []):
+            if key not in value:
+                raise ValidationError(f"{label}: missing required field {key!r}")
+        props = schema.get("properties", {})
+        extra = schema.get("additionalProperties", True)
+        for key, sub in value.items():
+            if key in props:
+                validate_schema(sub, props[key], f"{label}.{key}")
+            elif extra is False:
+                raise ValidationError(f"{label}: unexpected field {key!r}")
+            elif isinstance(extra, dict):
+                validate_schema(sub, extra, f"{label}.{key}")
+
+    if isinstance(value, list):
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            raise ValidationError(f"{label}: needs at least {schema['minItems']} item(s)")
+        if "items" in schema:
+            for i, item in enumerate(value):
+                validate_schema(item, schema["items"], f"{label}[{i}]")
+
+
+def load_schema(policy_prefix: str, name: str) -> dict[str, Any]:
+    """Load templates/<name> from the policy prefix (fail closed if absent)."""
+    path = os.path.join(policy_prefix, "templates", name)
+    schema = load_json(path)
+    if not isinstance(schema, dict):
+        raise ValidationError(f"schema {path} must be a JSON object")
+    return schema
 
 
 def resolve_registry(registry_path: str, target_id: str) -> tuple[str, str]:

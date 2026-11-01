@@ -6,7 +6,7 @@
   "required": [
     "schema_version", "generated_at_utc", "run_id", "source_commit",
     "source_identity", "complete", "selected_artifact_ids", "coverage",
-    "findings", "dismissed_candidates"
+    "readiness", "findings", "dismissed_candidates"
   ],
   "properties": {
     "schema_version": {
@@ -20,7 +20,8 @@
     "run_id": { "type": "string" },
     "source_commit": {
       "type": "string",
-      "description": "Full 40-char lowercase hex SHA of the inspected source commit"
+      "description": "Full 40-char lowercase hex SHA of the inspected source commit; must equal run.json source.commit",
+      "pattern": "^[0-9a-f]{40}$"
     },
     "source_identity": { "type": "string" },
     "toolkit_revision": { "type": ["string", "null"] },
@@ -36,12 +37,12 @@
         "060": { "type": ["string", "null"] },
         "070": {
           "type": "object",
-          "description": "subject-scoped: {candidate_id: artifact_id}",
+          "description": "subject-scoped: {candidate_id: artifact_id} for the assessments actually used",
           "additionalProperties": { "type": "string" }
         },
         "080": {
           "type": "object",
-          "description": "subject-scoped: {finding_id: artifact_id}",
+          "description": "subject-scoped: {candidate_id: artifact_id} for the current, non-stale plans actually used",
           "additionalProperties": { "type": "string" }
         }
       },
@@ -61,7 +62,12 @@
         "stale_assessments": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Candidate IDs whose 070 artifact failed integrity or prerequisite checks"
+          "description": "Candidate IDs whose 070 artifact failed integrity, currency, or upstream-staleness checks"
+        },
+        "incomplete_assessments": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Candidate IDs whose selected 070 artifact is registered as blocked or incomplete"
         },
         "complete": { "type": "boolean" },
         "intel_collected_at_utc": {
@@ -121,7 +127,8 @@
           "properties": {
             "complete": { "type": "boolean" },
             "missing_assessments": { "type": "array", "items": { "type": "string" } },
-            "stale_assessments": { "type": "array", "items": { "type": "string" } }
+            "stale_assessments": { "type": "array", "items": { "type": "string" } },
+            "incomplete_assessments": { "type": "array", "items": { "type": "string" } }
           }
         },
         "provenance_080": {
@@ -129,17 +136,16 @@
           "description": "Phase-080 plan provenance checks",
           "properties": {
             "findings_with_plans": { "type": "integer" },
-            "mismatched_intel": {
+            "stale_plans": {
               "type": "array",
               "items": { "type": "string" },
-              "description": "Finding IDs whose 080 plan used a different 040 intel artifact than currently selected"
-            },
-            "limitations": { "type": "array", "items": { "type": "string" } }
+              "description": "Candidate IDs whose selected 080 plan is stale (superseded 040/060/070 input, hash mismatch, or not complete); such plans are excluded"
+            }
           }
         },
         "readiness_ok": {
           "type": "boolean",
-          "description": "True only when assessment is complete, intel is fresh, and no provenance mismatches"
+          "description": "True only when assessment is complete, intel is fresh, and no selected 080 plan is stale"
         },
         "policy_check_failed": {
           "type": "boolean",

@@ -14,6 +14,8 @@ import datetime
 import fcntl
 import json
 import os
+import re
+import shlex
 import shutil
 import sys
 from typing import Any
@@ -29,27 +31,33 @@ if _EXT_ROOT not in sys.path:
 from lib.hermes_vps_common import (  # noqa: E402
     ValidationError,
     die,
-    expect_str,
     expect_type,
     is_within,
     load_json,
-    realpath_abs,
-    resolve_selected_prereqs,
+    load_schema,
     sha256_file,
+    validate_identifier,
     validate_manifest_identity,
     validate_run,
+    validate_schema,
     write_json_atomic,
 )
+from lib.hermes_vps_intel import assess_freshness  # noqa: E402
 from lib.hermes_vps_phases import (  # noqa: E402
     PHASE_TABLE,
     REPEATED_PHASES,
-    PAYLOAD_PHASES,
     VALID_PHASES,
 )
-
-ARTIFACT_ID_RE = __import__("re").compile(r"^phase-[0-9]{3}-hermes-v[0-9]+$")
-PAYLOAD_ID_RE = __import__("re").compile(r"^payload-[0-9]{3}-[^/]+$")
-CANDIDATE_ID_RE = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+from lib.hermes_vps_resolver import (  # noqa: E402
+    artifact_problems,
+    current_selection,
+    file_problems,
+    find_artifact,
+    load_artifact_payload,
+    prerequisite_hashes,
+    resolve_prerequisites,
+    triage_candidate_ids,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -119,8 +127,8 @@ def _load_or_init_manifest(manifest_path: str, ctx: dict[str, Any]) -> dict[str,
         },
         "artifacts": [],
         "selected_by_phase": {},
-        # subject-scoped selection for repeated phases (070, 080)
-        # structure: {"070": {"C-001": "phase-070-hermes-v1"}, "080": {"SG-001": "phase-080-hermes-v1"}}
+        # subject-scoped selection for repeated phases (050, 070, 080)
+        # structure: {"050": {"auth": ...}, "070": {"C-001": "phase-070-hermes-v1"}, "080": {"C-001": ...}}
         "selected_by_subject": {},
     }
 
@@ -157,29 +165,11 @@ def _next_findings_version(manifest: dict[str, Any]) -> int:
     return n
 
 
-def _find_by_sha(manifest: dict[str, Any], phase: str, sha: str) -> dict[str, Any] | None:
-    """Return the first phase artifact entry that matches sha, or None."""
-    for art in manifest.get("artifacts", []):
-        if (
-            isinstance(art, dict)
-            and art.get("kind") == "hermes_phase_report"
-            and art.get("phase") == phase
-            and art.get("sha256") == sha
-        ):
-            return art
-    return None
-
-
-def _find_by_id(manifest: dict[str, Any], artifact_id: str) -> dict[str, Any] | None:
-    for art in manifest.get("artifacts", []):
-        if isinstance(art, dict) and art.get("id") == artifact_id:
-            return art
-    return None
 
 
 def _check_duplicate_id(manifest: dict[str, Any], artifact_id: str, sha: str) -> None:
     """Raise ValidationError if artifact_id already exists with a different SHA."""
-    existing = _find_by_id(manifest, artifact_id)
+    existing = find_artifact(manifest, artifact_id)
     if existing is not None and existing.get("sha256") != sha:
         raise ValidationError(
             f"artifact {artifact_id!r} already registered with different SHA-256; "
@@ -204,102 +194,14 @@ def _check_duplicate_phase_version(
             )
 
 
-def _update_subject_selection(
-    manifest: dict[str, Any], phase: str, subject_id: str, artifact_id: str
+def _update_selection(
+    manifest: dict[str, Any], phase: str, subject_id: str | None, artifact_id: str
 ) -> None:
-    """Update selected_by_subject[phase][subject_id] = artifact_id."""
-    sbs = manifest.setdefault("selected_by_subject", {})
-    if not isinstance(sbs, dict):
-        sbs = {}
-        manifest["selected_by_subject"] = sbs
-    if phase not in sbs or not isinstance(sbs[phase], dict):
-        sbs[phase] = {}
-    sbs[phase][subject_id] = artifact_id
-
-
-# ---------------------------------------------------------------------------
-# Shared fail-closed prerequisite gate
-# ---------------------------------------------------------------------------
-
-def _check_phase_prerequisites(
-    manifest: dict[str, Any],
-    run_root: str,
-    phase: str,
-    subject_id: str | None = None,
-) -> list[str]:
-    """Enforce upstream phase prerequisites.  Returns resolved prerequisite artifact IDs.
-
-    This is the single authoritative gate used by cmd_register, cmd_generate_findings,
-    and the runner (via _resolve_prereqs).  Raises ValidationError if any required
-    upstream artifact is missing, incomplete, or has a mismatched SHA.
-
-    AllOf: every listed phase must have a complete selected artifact.
-    OneOf: at least one listed phase must have a complete selected artifact; all
-           valid branches are included in the returned IDs.
-    Phase-080: additionally requires a complete phase-070 artifact for this subject_id.
-    """
-    from lib.hermes_vps_phases import AllOf, OneOf  # noqa: PLC0415
-
-    phase_info = PHASE_TABLE.get(phase)
-    if phase_info is None:
-        return []
-
-    prereqs_desc = phase_info.prereqs
-    sel_phase: dict[str, str] = manifest.get("selected_by_phase", {})
-    sel_subj: dict[str, Any] = manifest.get("selected_by_subject", {})
-    resolved: list[str] = []
-
-    if isinstance(prereqs_desc, AllOf):
-        for req_phase in prereqs_desc.phases:
-            art_id = sel_phase.get(req_phase)
-            if not art_id:
-                raise ValidationError(
-                    f"phase {phase} requires a complete phase-{req_phase} artifact; "
-                    f"none selected — register and complete phase {req_phase} first"
-                )
-            resolve_selected_prereqs(manifest, run_root, [art_id])
-            resolved.append(art_id)
-
-    elif isinstance(prereqs_desc, OneOf):
-        valid_ids: list[str] = []
-        branch_errors: list[str] = []
-        for req_phase in prereqs_desc.phases:
-            art_id = sel_phase.get(req_phase)
-            if not art_id:
-                branch_errors.append(f"phase {req_phase}: no selected artifact")
-                continue
-            try:
-                resolve_selected_prereqs(manifest, run_root, [art_id])
-                valid_ids.append(art_id)
-            except ValidationError as exc:
-                branch_errors.append(f"phase {req_phase}: {exc}")
-        if not valid_ids:
-            raise ValidationError(
-                f"phase {phase} requires at least one of phases "
-                f"{prereqs_desc.phases!r} to be complete; "
-                f"none are valid — {'; '.join(branch_errors)}"
-            )
-        resolved.extend(valid_ids)
-
-    # Phase-080: also require a complete phase-070 for this subject.
-    if phase == "080" and subject_id:
-        sbs_070 = sel_subj.get("070", {})
-        art_070_id = sbs_070.get(subject_id)
-        if not art_070_id:
-            raise ValidationError(
-                f"phase 080 for subject {subject_id!r} requires a complete phase-070 "
-                f"assessment for the same subject; none registered for {subject_id!r}"
-            )
-        try:
-            resolve_selected_prereqs(manifest, run_root, [art_070_id])
-        except ValidationError as exc:
-            raise ValidationError(
-                f"phase 080 prerequisite phase-070[{subject_id!r}] failed: {exc}"
-            ) from exc
-        if art_070_id not in resolved:
-            resolved.append(art_070_id)
-
-    return resolved
+    """Repeated phases select per subject; all other phases select per phase."""
+    if phase in REPEATED_PHASES:
+        manifest.setdefault("selected_by_subject", {}).setdefault(phase, {})[subject_id] = artifact_id
+    else:
+        manifest["selected_by_phase"][phase] = artifact_id
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +223,10 @@ def _print_consult_prompt(
     phase_info = PHASE_TABLE.get(phase)
     phase_title = phase_info.phase_name if phase_info else phase
     subject_line = f"Subject ID:     {subject_id}\n" if subject_id else ""
+    revise_payload = (
+        " \\\n      --payload-json /absolute/path/to/revised-payload.json"
+        if phase_info is not None and phase_info.payload_required else ""
+    )
     text = f"""\
 ======== hermesVPS consultation prompt (hermes-vps-artifacts) ========
 NOTE: Structural/hash checks do not prove factual correctness of report content.
@@ -353,14 +259,151 @@ STOP. Do not start the next phase without a separate explicit human request.
       --run-json {run_json_path} \\
       --source-report /absolute/path/to/revised.md \\
       --supersedes {artifact_id} \\
-      --reviewer-identity "declared-name-or-id"
+      --reviewer-identity "declared-name-or-id"{revise_payload}
 ======== end consultation prompt ========
 """
     print(text)
 
 
 # ---------------------------------------------------------------------------
-# Destination-path validation
+# Bundle validation (report completion state + payload schema/identity)
+# ---------------------------------------------------------------------------
+
+_STATE_LINE_RE = re.compile(
+    r"^\s*-?\s*(?:completion\s+state|state)\s*:\s*(complete|incomplete|blocked)\s*$",
+    re.IGNORECASE,
+)
+
+
+def declared_completion(report_path: str) -> str:
+    """Return the single completion state declared in the report.
+
+    Accepts the template forms 'State: `complete`' and
+    '- **Completion state:** `blocked`'.  An unfilled template line
+    ('`complete` | `incomplete` | `blocked`'), a missing declaration, or
+    conflicting declarations are rejected.
+    """
+    states: set[str] = set()
+    with open(report_path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            m = _STATE_LINE_RE.match(line.replace("*", "").replace("`", ""))
+            if m:
+                states.add(m.group(1).lower())
+    if len(states) != 1:
+        found = sorted(states) if states else "none"
+        raise ValidationError(
+            f"report must declare exactly one completion state "
+            f"('State: complete|incomplete|blocked'); found {found}: {report_path}"
+        )
+    return states.pop()
+
+
+def _validate_payload(
+    ctx: dict[str, Any], phase: str, subject_id: str | None, path: str
+) -> dict[str, Any]:
+    """Full schema, mandatory source identity, and subject identity for a payload."""
+    info = PHASE_TABLE[phase]
+    try:
+        data = load_json(path)
+    except ValidationError as exc:
+        raise ValidationError(f"--payload-json: {exc}") from exc
+    try:
+        validate_schema(data, load_schema(ctx["policy_prefix"], info.payload_schema), "payload")
+    except ValidationError as exc:
+        raise ValidationError(f"--payload-json fails {info.payload_schema}: {exc}") from exc
+    if data["source_commit"] != ctx["source_commit"]:
+        raise ValidationError(
+            f"--payload-json: source_commit {data['source_commit']!r} does not match "
+            f"run commit {ctx['source_commit']!r}; payload was produced for a different checkout"
+        )
+    if info.repeated and data.get(info.trigger_label) != subject_id:
+        raise ValidationError(
+            f"--payload-json: {info.trigger_label} {data.get(info.trigger_label)!r} "
+            f"!= --subject-id {subject_id!r}"
+        )
+    if phase == "060":
+        ids = [c["candidate_id"] for c in data["candidates"]]
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        if dupes:
+            raise ValidationError(f"--payload-json: duplicate candidate_id values {dupes}")
+    return data
+
+
+def _completion_status(phase: str, declared: str, payload: dict[str, Any]) -> str:
+    if phase == "070":
+        disposition = payload["assessment_disposition"]
+        if (disposition == "blocked") != (declared == "blocked"):
+            raise ValidationError(
+                f"report declares completion state {declared!r} but payload "
+                f"assessment_disposition is {disposition!r}; a blocked assessment must "
+                "be declared blocked in both"
+            )
+    return declared
+
+
+def _check_payload_against_manifest(
+    manifest: dict[str, Any],
+    run_root: str,
+    phase: str,
+    subject_id: str | None,
+    data: dict[str, Any],
+    prereq_ids: list[str],
+) -> list[str]:
+    """Cross-artifact identity checks; returns extra provenance prerequisite IDs."""
+    if phase == "060":
+        claimed = data.get("assessed_report_ids")
+        if claimed is not None and sorted(set(claimed)) != sorted(prereq_ids):
+            raise ValidationError(
+                f"payload assessed_report_ids {sorted(set(claimed))} differ from the "
+                f"resolved phase-060 inputs {sorted(prereq_ids)}"
+            )
+    if phase == "070":
+        claimed = data.get("prerequisite_artifact_id")
+        sel_060 = current_selection(manifest, "060", None)
+        if claimed is not None and claimed != sel_060:
+            raise ValidationError(
+                f"payload prerequisite_artifact_id {claimed!r} is not the selected phase-060 {sel_060!r}"
+            )
+    if phase == "080":
+        sel_040 = current_selection(manifest, "040", None)
+        if data["intel_artifact_id"] != sel_040:
+            raise ValidationError(
+                f"phase-080 plan pins intel_artifact_id {data['intel_artifact_id']!r} but the "
+                f"selected phase-040 is {sel_040!r}"
+            )
+        problems = artifact_problems(manifest, run_root, sel_040)
+        if problems:
+            raise ValidationError(f"phase-040 {sel_040} is not usable: " + "; ".join(problems))
+        if data["intel_artifact_sha256"] != find_artifact(manifest, sel_040).get("payload_sha256"):
+            raise ValidationError(
+                f"phase-080 plan intel_artifact_sha256 does not match the payload SHA-256 of {sel_040}"
+            )
+        sel_070 = current_selection(manifest, "070", subject_id)
+        if data["assessed_finding_artifact_id"] != sel_070:
+            raise ValidationError(
+                f"phase-080 plan pins assessed_finding_artifact_id "
+                f"{data['assessed_finding_artifact_id']!r} but the selected phase-070 for "
+                f"{subject_id!r} is {sel_070!r}"
+            )
+        entry_070 = find_artifact(manifest, sel_070)
+        if data["assessed_finding_sha256"] != entry_070.get("payload_sha256"):
+            raise ValidationError(
+                f"phase-080 plan assessed_finding_sha256 does not match the payload SHA-256 of {sel_070}"
+            )
+        finding_id = data.get("finding_id")
+        if finding_id is not None:
+            proposed_id = load_artifact_payload(run_root, entry_070)["proposed_finding"].get("id")
+            if finding_id != proposed_id:
+                raise ValidationError(
+                    f"phase-080 plan finding_id {finding_id!r} != phase-070 proposed_finding.id "
+                    f"{proposed_id!r} for {subject_id!r}"
+                )
+        return [sel_040]
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Destination paths, exclusive creation, recovery
 # ---------------------------------------------------------------------------
 
 def _validate_destination_path(
@@ -388,90 +431,107 @@ def _validate_destination_path(
         )
 
 
-def _saved_but_unregistered(
-    final_path: str,
-    sha: str,
-    run_json_path: str,
-    phase: str,
-    reason: str,
-    payload_path: str | None = None,
-    subject_id: str | None = None,
-) -> None:
-    payload_flag = f" \\\n      --payload-json {payload_path}" if payload_path else ""
-    subject_flag = f" \\\n      --subject-id {subject_id}" if subject_id else ""
+def _exclusive_copy(src: str, dest: str, expected_sha: str) -> None:
+    """Create dest with O_EXCL|O_NOFOLLOW and copy src into it.
+
+    An existing regular file with identical content is accepted (retry of a
+    saved-but-unregistered bundle); anything else at dest is a collision.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(dest, flags, 0o644)
+    except FileExistsError:
+        if os.path.islink(dest) or not os.path.isfile(dest):
+            raise ValidationError(f"destination exists and is not a regular file: {dest}") from None
+        if sha256_file(dest) != expected_sha:
+            raise ValidationError(
+                f"destination already exists with different content: {dest}; "
+                "registered files are never overwritten"
+            ) from None
+        return
+    with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:
+        shutil.copyfileobj(inp, out)
+        out.flush()
+        os.fsync(out.fileno())
+    if sha256_file(dest) != expected_sha:
+        raise ValidationError(f"SHA-256 mismatch after copy to {dest}")
+
+
+def _write_json_exclusive(path: str, data: Any) -> None:
+    """Atomically create path with JSON content; never replaces an existing file."""
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    with open(tmp_path, "x", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    try:
+        os.link(tmp_path, path)
+    except FileExistsError:
+        raise ValidationError(f"{path} already exists; refusing to overwrite") from None
+    finally:
+        os.unlink(tmp_path)
+
+
+def _recovery_command(ctx: dict[str, Any], subcommand: str, argv: list[str]) -> str:
+    artifacts_bin = os.path.join(ctx["policy_prefix"], "bin", "hermes-vps-artifacts")
+    return shlex.join([artifacts_bin, subcommand, *argv])
+
+
+def _not_registered(reason: str, written: list[str], recovery: str) -> int:
+    saved = "".join(f"  {p} (SHA-256: {sha256_file(p)})\n" for p in written if os.path.isfile(p))
     print(
-        f"error: Report saved at {final_path} (SHA-256: {sha}) but NOT registered.\n"
-        f"Reason: {reason}\n"
-        f"Safe retry:\n"
-        f"  hermes-vps-artifacts register \\\n"
-        f"    --run-json {run_json_path} \\\n"
-        f"    --phase {phase} \\\n"
-        f"    --source-report {final_path}"
-        f"{subject_flag}"
-        f"{payload_flag}",
+        f"error: bundle NOT registered.\nReason: {reason}\n"
+        + (f"Files already written:\n{saved}" if saved else "")
+        + f"Safe retry (same operation, all arguments preserved):\n  {recovery}",
         file=sys.stderr,
     )
+    return 1
 
 
 # ---------------------------------------------------------------------------
-# Subcommand: register
+# Shared commit path for register and revise
 # ---------------------------------------------------------------------------
 
-def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: C901
-    """Register a finalized report; auto-selects next version."""
-    data = load_json(run_json_path)
+def _commit_bundle(  # noqa: C901
+    ctx: dict[str, Any],
+    run_json_path: str,
+    *,
+    subcommand: str,
+    argv: list[str],
+    phase: str,
+    subject_id: str | None,
+    source_report: str,
+    payload_json_path: str | None,
+    supersedes: str | None = None,
+    reviewer: str | None = None,
+) -> int:
+    info = PHASE_TABLE[phase]
+    if info.payload_required and not payload_json_path:
+        die(f"phase {phase} requires --payload-json ({info.phase_name} structured payload)")
+    if not info.payload_required and payload_json_path:
+        die(f"phase {phase} does not use --payload-json; remove that flag")
+    for label, path in (("--source-report", source_report), ("--payload-json", payload_json_path)):
+        if path is None:
+            continue
+        if not os.path.isabs(path):
+            die(f"{label} must be an absolute path")
+        if not os.path.isfile(path):
+            die(f"{label} not found: {path}")
+
     try:
-        ctx = validate_run(data, expected_policy_prefix=None)
+        declared = declared_completion(source_report)
+        payload = _validate_payload(ctx, phase, subject_id, payload_json_path) if payload_json_path else {}
+        completion_status = _completion_status(phase, declared, payload)
     except ValidationError as exc:
         die(str(exc))
-
-    phase = args.phase
-    if phase not in VALID_PHASES:
-        die(f"unknown phase {phase!r}; valid phases: {', '.join(sorted(VALID_PHASES))}")
-
-    phase_info = PHASE_TABLE[phase]
-
-    # subject_id required for repeated phases
-    subject_id: str | None = getattr(args, "subject_id", None)
-    if phase_info.subject_id_required:
-        if not subject_id:
-            die(f"phase {phase} requires --subject-id ({phase_info.trigger_label})")
-        subject_id = subject_id.strip()
-        if not CANDIDATE_ID_RE.match(subject_id):
-            die(f"--subject-id must match ^[A-Za-z0-9][A-Za-z0-9._-]{{0,127}}$ (got {subject_id!r})")
-    elif subject_id:
-        die(f"phase {phase} does not use --subject-id; remove that flag")
-
-    # payload_json optional for payload phases
-    payload_json_path: str | None = getattr(args, "payload_json", None)
-    if phase_info.payload_required and not payload_json_path:
-        die(f"phase {phase} requires --payload-json ({phase_info.phase_name} structured payload)")
-    if not phase_info.payload_required and payload_json_path:
-        die(f"phase {phase} does not use --payload-json; remove that flag")
-
-    source_report = args.source_report
-    if not os.path.isabs(source_report):
-        die("--source-report must be an absolute path")
-    if not os.path.isfile(source_report):
-        die(f"--source-report not found: {source_report}")
-
-    if payload_json_path:
-        if not os.path.isabs(payload_json_path):
-            die("--payload-json must be an absolute path")
-        if not os.path.isfile(payload_json_path):
-            die(f"--payload-json not found: {payload_json_path}")
-        # Validate JSON and cross-check source_commit
-        try:
-            _load_payload_json(
-                payload_json_path, phase, subject_id,
-                expected_commit=ctx["source_commit"],
-            )
-        except ValidationError as exc:
-            die(str(exc))
+    src_sha = sha256_file(source_report)
+    payload_sha = sha256_file(payload_json_path) if payload_json_path else None
 
     run_root = ctx["run_root"]
     reports_dir = ctx["reports_dir"]
     manifest_path = ctx["manifest_path"]
+    recovery = _recovery_command(ctx, subcommand, argv)
 
     with RunLock(run_root):
         try:
@@ -479,386 +539,174 @@ def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: 
         except ValidationError as exc:
             die(str(exc))
 
-        # Enforce upstream phase prerequisites (fail-closed).
+        # Bundle-aware retry detection: report AND payload must both match.
+        for art in manifest["artifacts"]:
+            if not (
+                isinstance(art, dict)
+                and art.get("kind") == "hermes_phase_report"
+                and art.get("phase") == phase
+                and art.get("subject_id") == subject_id
+                and art.get("sha256") == src_sha
+            ):
+                continue
+            if art.get("payload_sha256") != payload_sha:
+                if supersedes is not None:
+                    continue  # revising the payload under an unchanged report
+                die(
+                    f"artifact {art['id']!r} already has this report with a DIFFERENT payload; "
+                    "this is not a safe retry. To change the payload, revise the current "
+                    "selection with both the report and the new payload."
+                )
+            if supersedes is not None and art.get("supersedes") != supersedes:
+                die(f"identical bundle is already registered as {art['id']!r}; nothing to revise")
+            print(
+                f"(idempotent: bundle already registered as {art['id']!r}; no changes made)",
+                file=sys.stderr,
+            )
+            _print_consult_prompt(
+                ctx, art["id"], os.path.join(run_root, art["path"]), src_sha,
+                manifest_path, run_json_path, phase, art["version"], subject_id=subject_id,
+            )
+            return _maybe_consolidate(ctx, manifest, run_json_path) if phase == "070" else 0
+
+        if supersedes is not None:
+            prior = find_artifact(manifest, supersedes)
+            if prior is None or prior.get("kind") != "hermes_phase_report":
+                die(f"artifact {supersedes!r} not found in manifest; cannot supersede it")
+            if prior.get("phase") != phase or prior.get("subject_id") != subject_id:
+                die(
+                    f"cross-subject supersession rejected: {supersedes!r} is phase "
+                    f"{prior.get('phase')} subject {prior.get('subject_id')!r}; "
+                    f"revision is phase {phase} subject {subject_id!r}"
+                )
+            current = current_selection(manifest, phase, subject_id)
+            if current != supersedes:
+                die(f"can only supersede the current selection {current!r}, not {supersedes!r}")
+
         try:
-            prereq_ids = _check_phase_prerequisites(manifest, run_root, phase, subject_id)
+            prereq_ids = resolve_prerequisites(manifest, run_root, phase, subject_id)
+            prereq_ids += [
+                i for i in _check_payload_against_manifest(
+                    manifest, run_root, phase, subject_id, payload, prereq_ids
+                ) if i not in prereq_ids
+            ]
         except ValidationError as exc:
             die(f"prerequisite check failed: {exc}")
 
-        # Compute SHA-256 of source report
-        try:
-            src_sha = sha256_file(source_report)
-        except OSError as exc:
-            die(f"cannot read --source-report: {exc}")
-
-        # Bundle-aware idempotency: same report SHA for this phase and subject?
-        existing = _find_by_sha(manifest, phase, src_sha)
-        if existing is not None:
-            # For repeated phases, also check subject_id matches
-            if subject_id is not None and existing.get("subject_id") != subject_id:
-                # Same SHA registered under a different subject — allow re-registration
-                pass
-            else:
-                # Report content matches; also check payload (bundle-aware).
-                if payload_json_path:
-                    new_payload_sha = sha256_file(payload_json_path)
-                    existing_payload_sha = existing.get("payload_sha256")
-                    if existing_payload_sha and new_payload_sha != existing_payload_sha:
-                        die(
-                            f"artifact {existing['id']!r} is already registered with this "
-                            "report content but a DIFFERENT payload.\n"
-                            "Report SHA matches; payload SHA differs — this is not a safe retry.\n"
-                            "Use 'hermes-vps-artifacts revise' to update the payload."
-                        )
-                existing_rel = existing.get("path", "")
-                existing_abs = os.path.join(run_root, existing_rel)
-                print(
-                    f"(idempotent: artifact {existing['id']!r} already registered "
-                    "with this SHA-256; no changes made)",
-                    file=sys.stderr,
-                )
-                _print_consult_prompt(
-                    ctx,
-                    existing["id"],
-                    existing_abs,
-                    src_sha,
-                    manifest_path,
-                    run_json_path,
-                    phase,
-                    existing["version"],
-                    subject_id=existing.get("subject_id"),
-                )
-                return 0
-
-        # Auto-select next version
         version = _next_version(manifest, phase)
         artifact_id = f"phase-{phase}-hermes-v{version}"
-        final_name = f"phase-{phase}-hermes-v{version}.md"
-        final_path = os.path.join(reports_dir, final_name)
-
-        # Check for same ID with different content
+        final_path = os.path.join(reports_dir, f"{artifact_id}.md")
+        payload_dest = os.path.join(reports_dir, f"payload-{phase}-{subject_id or 'all'}-v{version}.json")
         try:
             _check_duplicate_id(manifest, artifact_id, src_sha)
             _check_duplicate_phase_version(manifest, phase, version, artifact_id)
-        except ValidationError as exc:
-            die(str(exc))
-
-        # Validate final_path is inside reports_dir and not source/policy
-        try:
             _validate_destination_path(final_path, reports_dir, ctx)
+            _validate_destination_path(payload_dest, reports_dir, ctx)
         except ValidationError as exc:
             die(str(exc))
 
-        # Handle retry: final path already exists
-        if os.path.lexists(final_path):
-            if os.path.isfile(final_path):
-                existing_sha = sha256_file(final_path)
-                if existing_sha == src_sha:
-                    pass  # Retry scenario: file already copied; just register
-                else:
-                    die(
-                        f"report path already exists with different content: {final_path}\n"
-                        "Collision — cannot overwrite. "
-                        "If this is a new revision, use 'hermes-vps-artifacts revise'."
-                    )
-            else:
-                die(f"destination path exists but is not a regular file: {final_path}")
-        else:
-            try:
-                shutil.copy2(source_report, final_path)
-            except OSError as exc:
-                die(f"failed to copy report to {final_path}: {exc}")
-
-        # Verify SHA after copy
+        written: list[str] = []
         try:
-            final_sha = sha256_file(final_path)
-        except OSError as exc:
-            _saved_but_unregistered(
-                final_path, src_sha, run_json_path, phase, str(exc),
-                payload_path=payload_json_path, subject_id=subject_id,
-            )
-            return 1
-        if final_sha != src_sha:
-            _saved_but_unregistered(
-                final_path, src_sha, run_json_path, phase,
-                f"SHA mismatch after copy: expected={src_sha} got={final_sha}",
-                payload_path=payload_json_path, subject_id=subject_id,
-            )
-            return 1
-
-        # Handle payload JSON if provided (exclusive-create semantics).
-        payload_rel: str | None = None
-        payload_sha: str | None = None
-        if payload_json_path:
-            payload_fname = f"payload-{phase}-{subject_id}-v{version}.json"
-            payload_dest = os.path.join(reports_dir, payload_fname)
-            try:
-                _validate_destination_path(payload_dest, reports_dir, ctx)
-            except ValidationError as exc:
-                die(str(exc))
-            if os.path.lexists(payload_dest):
-                if os.path.isfile(payload_dest):
-                    # Retry: file exists — verify it matches
-                    existing_payload_sha = sha256_file(payload_dest)
-                    new_payload_sha = sha256_file(payload_json_path)
-                    if existing_payload_sha != new_payload_sha:
-                        die(
-                            f"payload destination already exists with different content: "
-                            f"{payload_dest}\n"
-                            "Collision on payload file — cannot overwrite. "
-                            "Use 'hermes-vps-artifacts revise' to update."
-                        )
-                else:
-                    die(
-                        f"payload destination exists but is not a regular file: {payload_dest}"
-                    )
-            else:
-                try:
-                    shutil.copy2(payload_json_path, payload_dest)
-                except OSError as exc:
-                    die(f"failed to copy payload JSON to {payload_dest}: {exc}")
-            payload_sha = sha256_file(payload_dest)
-            payload_rel = os.path.relpath(payload_dest, run_root)
-
-        # Relative path stored in manifest
-        rel_path = os.path.relpath(final_path, run_root)
-
-        # Phase-080 provenance: validate referenced artifact IDs/hashes against manifest
-        extra_prereqs: list[str] = []
-        if phase == "080" and payload_json_path:
-            p080_payload = _load_payload_json(
-                payload_json_path, "080", subject_id, expected_commit=ctx["source_commit"]
-            )
-            intel_art_id = p080_payload.get("intel_artifact_id", "")
-            intel_art_sha = p080_payload.get("intel_artifact_sha256", "")
-            finding_art_id = p080_payload.get("assessed_finding_artifact_id", "")
-            finding_art_sha = p080_payload.get("assessed_finding_sha256", "")
-
-            # Validate intel artifact
-            intel_art = _find_by_id(manifest, intel_art_id)
-            if intel_art is None:
-                die(
-                    f"phase-080 payload references intel_artifact_id {intel_art_id!r} "
-                    "which is not registered in manifest"
-                )
-            recorded_intel_sha = intel_art.get("payload_sha256") or intel_art.get("sha256", "")
-            if intel_art_sha and recorded_intel_sha and intel_art_sha != recorded_intel_sha:
-                die(
-                    f"phase-080 payload intel_artifact_sha256 {intel_art_sha[:16]}… "
-                    f"does not match manifest record {recorded_intel_sha[:16]}…"
-                )
-
-            # Validate assessed finding artifact
-            finding_art = _find_by_id(manifest, finding_art_id)
-            if finding_art is None:
-                die(
-                    f"phase-080 payload references assessed_finding_artifact_id {finding_art_id!r} "
-                    "which is not registered in manifest"
-                )
-            recorded_finding_sha = finding_art.get("sha256", "")
-            if finding_art_sha and recorded_finding_sha and finding_art_sha != recorded_finding_sha:
-                die(
-                    f"phase-080 payload assessed_finding_sha256 {finding_art_sha[:16]}… "
-                    "does not match manifest record"
-                )
-
-            extra_prereqs = [intel_art_id, finding_art_id]
-            # Warn if intel_artifact_id differs from current selected 040
-            current_040 = manifest.get("selected_by_phase", {}).get("040")
-            if current_040 and intel_art_id != current_040:
-                print(
-                    f"WARNING: phase-080 plan uses intel artifact {intel_art_id!r} but "
-                    f"current selected phase-040 is {current_040!r}. "
-                    "This mismatch will be detected by generate-findings.",
-                    file=sys.stderr,
-                )
-
-        # Determine completion_status.
-        # Blocked assessments (070 with disposition "blocked") are not complete work.
-        completion_status = "complete"
-        if phase == "070" and payload_json_path:
-            try:
-                p_data = load_json(payload_json_path)
-                if p_data.get("assessment_disposition") == "blocked":
-                    completion_status = "blocked"
-            except Exception:  # noqa: BLE001
-                pass  # Already validated above; any re-read error keeps "complete"
-
-        # Merge prerequisite IDs: upstream phase prereqs + 080-specific provenance refs.
-        all_prereq_ids = list(dict.fromkeys(prereq_ids + extra_prereqs))
+            _exclusive_copy(source_report, final_path, src_sha)
+            written.append(final_path)
+            if payload_json_path:
+                _exclusive_copy(payload_json_path, payload_dest, payload_sha)
+                written.append(payload_dest)
+        except (ValidationError, OSError) as exc:
+            return _not_registered(str(exc), written, recovery)
 
         entry: dict[str, Any] = {
             "id": artifact_id,
             "kind": "hermes_phase_report",
             "phase": phase,
             "version": version,
-            "path": rel_path,
-            "sha256": final_sha,
+            "path": os.path.relpath(final_path, run_root),
+            "sha256": src_sha,
             "source_commit": ctx["source_commit"],
             "toolkit_revision": ctx["toolkit_revision"],
-            "producer": "hermes-vps-artifacts/register",
+            "producer": f"hermes-vps-artifacts/{subcommand}",
             "created_at_utc": _utcnow(),
             "completion_status": completion_status,
-            "prerequisite_artifacts": all_prereq_ids,
-            "supersedes": None,
+            "prerequisite_artifacts": prereq_ids,
+            "prerequisite_hashes": prerequisite_hashes(manifest, prereq_ids),
+            "supersedes": supersedes,
             "reviews": [],
         }
+        if reviewer is not None:
+            entry["reviews"].append({
+                "outcome": "REVISE",
+                "artifact_id": artifact_id,
+                "supersedes": supersedes,
+                "reviewer_identity_declared": reviewer,
+                "authenticated": False,
+                "recorded_at_utc": _utcnow(),
+            })
         if subject_id is not None:
             entry["subject_id"] = subject_id
-        if payload_rel is not None:
-            entry["payload_path"] = payload_rel
+        if payload_json_path:
+            entry["payload_path"] = os.path.relpath(payload_dest, run_root)
             entry["payload_sha256"] = payload_sha
 
         manifest["artifacts"].append(entry)
-
-        # Update selection: repeated phases use selected_by_subject, others use selected_by_phase
-        if phase in REPEATED_PHASES and subject_id is not None:
-            _update_subject_selection(manifest, phase, subject_id, artifact_id)
-            # Also update selected_by_phase to the most recent for informational purposes;
-            # not authoritative for repeated phases.
-            manifest["selected_by_phase"][phase] = artifact_id
-        else:
-            manifest["selected_by_phase"][phase] = artifact_id
-
+        _update_selection(manifest, phase, subject_id, artifact_id)
         try:
             write_json_atomic(manifest_path, manifest)
         except OSError as exc:
-            _saved_but_unregistered(
-                final_path, final_sha, run_json_path, phase, f"index write failed: {exc}"
+            return _not_registered(f"index write failed: {exc}", written, recovery)
+
+        _print_consult_prompt(
+            ctx, artifact_id, final_path, src_sha, manifest_path, run_json_path, phase, version,
+            subject_id=subject_id,
+        )
+        if completion_status != "complete":
+            print(
+                f"NOTE: {artifact_id} is registered as {completion_status!r}; it cannot serve "
+                "as a prerequisite until a complete revision is registered.",
+                file=sys.stderr,
             )
-            return 1
-
-    _print_consult_prompt(
-        ctx, artifact_id, final_path, final_sha, manifest_path, run_json_path, phase, version,
-        subject_id=subject_id,
-    )
-
-    # Auto-consolidation hint: after registering a phase-070 assessment, check if all
-    # candidates from the selected phase-060 triage are now assessed.  If so, prompt
-    # the operator to run generate-findings without starting a new phase first.
-    if phase == "070":
-        try:
-            with open(manifest_path, encoding="utf-8") as _mfh:
-                _m = json.load(_mfh)
-            _sel_060 = _m.get("selected_by_phase", {}).get("060")
-            if _sel_060:
-                _art_060 = _find_by_id(_m, _sel_060)
-                if _art_060:
-                    _payload_rel_060 = _art_060.get("payload_path", "")
-                    if _payload_rel_060:
-                        _payload_abs_060 = os.path.join(ctx["run_root"], _payload_rel_060)
-                        if os.path.isfile(_payload_abs_060):
-                            _triage = json.load(open(_payload_abs_060, encoding="utf-8"))
-                            _cids = [
-                                c.get("candidate_id", "")
-                                for c in _triage.get("candidates", [])
-                                if isinstance(c, dict)
-                            ]
-                            _cids = [c for c in _cids if c]
-                            _sbs_070 = _m.get("selected_by_subject", {}).get("070", {})
-                            _missing = [c for c in _cids if c not in _sbs_070]
-                            if not _missing and _cids:
-                                artifacts_bin = os.path.join(
-                                    ctx["policy_prefix"], "bin", "hermes-vps-artifacts"
-                                )
-                                print(
-                                    "\n>>> All candidates from phase-060 are now assessed. <<<\n"
-                                    "Run generate-findings to consolidate:\n"
-                                    f"  {artifacts_bin} generate-findings \\\n"
-                                    f"    --run-json {run_json_path}\n"
-                                    "Then stop — do not start phase-080 without "
-                                    "a separate explicit human request.",
-                                    file=sys.stderr,
-                                )
-        except Exception:  # noqa: BLE001
-            pass  # Auto-hint is best-effort; never break the register flow
-
+        if supersedes is not None:
+            print(
+                f"Revised: {artifact_id!r} supersedes {supersedes!r}. "
+                f"Selection updated to {artifact_id!r}. Original preserved.",
+                file=sys.stderr,
+            )
+        if phase == "070":
+            return _maybe_consolidate(ctx, manifest, run_json_path)
     return 0
 
 
-def _load_payload_json(
-    path: str, phase: str, subject_id: str | None,
-    expected_commit: str | None = None,
-) -> dict[str, Any]:
-    """Load and validate a structured payload JSON file.
-
-    Validates: schema_version, phase field, subject_id for repeated phases,
-    source_commit cross-check (when expected_commit supplied), and phase-specific
-    required nested fields.
-    """
+def cmd_register(args: argparse.Namespace, run_json_path: str) -> int:
+    """Register a finalized report bundle; auto-selects next version."""
     try:
-        data = load_json(path)
+        ctx = validate_run(load_json(run_json_path), expected_policy_prefix=None)
     except ValidationError as exc:
-        raise ValidationError(f"--payload-json: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValidationError("--payload-json: must be a JSON object")
-    sv = data.get("schema_version")
-    if not isinstance(sv, int) or sv < 1:
-        raise ValidationError("--payload-json: schema_version must be a positive integer")
-    recorded_phase = data.get("phase")
-    if recorded_phase != phase:
-        raise ValidationError(
-            f"--payload-json: phase field {recorded_phase!r} != --phase {phase!r}"
-        )
+        die(str(exc))
 
-    # Cross-artifact source_commit identity check.
-    payload_commit = data.get("source_commit", "")
-    if expected_commit and payload_commit:
-        if payload_commit.lower() != expected_commit.lower():
-            raise ValidationError(
-                f"--payload-json: source_commit {payload_commit!r} does not match "
-                f"run context commit {expected_commit!r}; payload was produced "
-                "for a different checkout"
-            )
+    phase = args.phase
+    if phase not in VALID_PHASES:
+        die(f"unknown phase {phase!r}; valid phases: {', '.join(sorted(VALID_PHASES))}")
+    info = PHASE_TABLE[phase]
+    subject_id: str | None = args.subject_id
+    if info.subject_id_required:
+        if not subject_id:
+            die(f"phase {phase} requires --subject-id ({info.trigger_label})")
+        try:
+            validate_identifier(subject_id, "--subject-id")
+        except ValidationError as exc:
+            die(str(exc))
+    elif subject_id:
+        die(f"phase {phase} does not use --subject-id; remove that flag")
 
-    # For repeated phases, verify subject_id is present
-    if phase in REPEATED_PHASES:
-        payload_subject_key = PHASE_TABLE[phase].trigger_label
-        payload_subject = data.get(payload_subject_key) or data.get("subject_id")
-        if payload_subject and subject_id and payload_subject != subject_id:
-            raise ValidationError(
-                f"--payload-json: {payload_subject_key} {payload_subject!r} "
-                f"!= --subject-id {subject_id!r}"
-            )
-
-    # Phase-040 specific validation (vuln-intel-record)
-    if phase == "040":
-        valid_modes = {"live", "imported", "not_authorized", "partial"}
-        mode = data.get("collection_mode", "")
-        if mode not in valid_modes:
-            raise ValidationError(
-                f"--payload-json: collection_mode {mode!r} not in {sorted(valid_modes)}"
-            )
-        if "collected_at_utc" not in data:
-            raise ValidationError("--payload-json: missing required field 'collected_at_utc'")
-        if "providers" not in data or not isinstance(data.get("providers"), dict):
-            raise ValidationError("--payload-json: missing or invalid 'providers' object")
-        for pname in ("osv", "nvd", "cisa_kev"):
-            if pname not in data["providers"]:
-                raise ValidationError(f"--payload-json: missing provider {pname!r} in providers")
-
-    # Phase-080 specific validation (plan provenance)
-    if phase == "080":
-        required_080 = (
-            "intel_artifact_id", "intel_artifact_sha256",
-            "assessed_finding_artifact_id", "assessed_finding_sha256",
-            "intel_freshness_at_plan_time",
-        )
-        for field in required_080:
-            val = data.get(field)
-            if not val:
-                raise ValidationError(
-                    f"--payload-json: phase-080 plan requires non-empty field {field!r}"
-                )
-        # Validate freshness snapshot has required sub-fields
-        freshness_snap = data.get("intel_freshness_at_plan_time", {})
-        for sub in ("evaluated_at_utc", "effective_threshold_hours", "freshness_ok"):
-            if sub not in freshness_snap:
-                raise ValidationError(
-                    f"--payload-json: intel_freshness_at_plan_time missing field {sub!r}"
-                )
-
-    return data
+    argv = ["--run-json", run_json_path, "--phase", phase, "--source-report", args.source_report]
+    if subject_id:
+        argv += ["--subject-id", subject_id]
+    if args.payload_json:
+        argv += ["--payload-json", args.payload_json]
+    return _commit_bundle(
+        ctx, run_json_path, subcommand="register", argv=argv, phase=phase,
+        subject_id=subject_id, source_report=args.source_report,
+        payload_json_path=args.payload_json,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -896,7 +744,7 @@ def cmd_accept(args: argparse.Namespace, run_json_path: str) -> int:
         except ValidationError as exc:
             die(str(exc))
 
-        entry = _find_by_id(manifest, artifact_id)
+        entry = find_artifact(manifest, artifact_id)
         if entry is None:
             die(
                 f"artifact {artifact_id!r} not found in manifest; "
@@ -937,312 +785,48 @@ def cmd_accept(args: argparse.Namespace, run_json_path: str) -> int:
 # Subcommand: revise
 # ---------------------------------------------------------------------------
 
-def cmd_revise(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: C901
-    """Import an external revised report, register it, update selection."""
-    data = load_json(run_json_path)
+def cmd_revise(args: argparse.Namespace, run_json_path: str) -> int:
+    """Import a revised bundle through the same validation path as register."""
     try:
-        ctx = validate_run(data, expected_policy_prefix=None)
+        ctx = validate_run(load_json(run_json_path), expected_policy_prefix=None)
     except ValidationError as exc:
         die(str(exc))
 
-    supersedes_id = args.supersedes.strip()
+    supersedes = args.supersedes.strip()
     reviewer = args.reviewer_identity.strip()
     if not reviewer:
         die("--reviewer-identity must not be empty")
-    source_report = args.source_report
-    if not os.path.isabs(source_report):
-        die("--source-report must be an absolute path")
-    if not os.path.isfile(source_report):
-        die(f"--source-report not found: {source_report}")
+    if not os.path.isfile(ctx["manifest_path"]):
+        die("manifest.json does not exist; no artifacts registered yet")
+    try:
+        manifest = _load_or_init_manifest(ctx["manifest_path"], ctx)
+    except ValidationError as exc:
+        die(str(exc))
+    prior = find_artifact(manifest, supersedes)
+    if prior is None or prior.get("kind") != "hermes_phase_report":
+        die(f"artifact {supersedes!r} not found in manifest; cannot supersede an unknown artifact")
 
-    run_root = ctx["run_root"]
-    reports_dir = ctx["reports_dir"]
-    manifest_path = ctx["manifest_path"]
-
-    with RunLock(run_root):
-        if not os.path.isfile(manifest_path):
-            die("manifest.json does not exist; no artifacts registered yet")
-        try:
-            manifest = _load_or_init_manifest(manifest_path, ctx)
-        except ValidationError as exc:
-            die(str(exc))
-
-        prior = _find_by_id(manifest, supersedes_id)
-        if prior is None:
-            die(
-                f"artifact {supersedes_id!r} not found in manifest; "
-                "cannot supersede an unknown artifact"
-            )
-
-        phase = prior.get("phase", "")
-        prior_subject = prior.get("subject_id")
-
-        # Cross-subject supersession rejection: --supersedes must match subject_id if provided
-        new_subject_id: str | None = getattr(args, "subject_id", None)
-        if new_subject_id:
-            new_subject_id = new_subject_id.strip()
-        if prior_subject is not None and new_subject_id is not None:
-            if new_subject_id != prior_subject:
-                die(
-                    f"cross-subject supersession rejected: prior artifact {supersedes_id!r} "
-                    f"has subject_id {prior_subject!r} but --subject-id is {new_subject_id!r}; "
-                    "supersedes must refer to the same phase and subject"
-                )
-        # Infer subject_id from prior if not explicitly provided
-        if new_subject_id is None and prior_subject is not None:
-            new_subject_id = prior_subject
-
-        # Payload handling for revised artifacts
-        payload_json_path: str | None = getattr(args, "payload_json", None)
-        phase_info_for_revise = PHASE_TABLE.get(phase)
-        payload_required_for_phase = (
-            phase_info_for_revise is not None and phase_info_for_revise.payload_required
+    phase = prior["phase"]
+    subject_id: str | None = prior.get("subject_id")
+    if args.subject_id is not None and args.subject_id != subject_id:
+        die(
+            f"cross-subject supersession rejected: prior artifact {supersedes!r} has "
+            f"subject_id {subject_id!r} but --subject-id is {args.subject_id!r}"
         )
-        if payload_required_for_phase and not payload_json_path:
-            die(
-                f"phase {phase} requires a structured payload; "
-                "provide --payload-json for the revised artifact"
-            )
-        if payload_json_path:
-            if not os.path.isabs(payload_json_path):
-                die("--payload-json must be an absolute path")
-            if not os.path.isfile(payload_json_path):
-                die(f"--payload-json not found: {payload_json_path}")
-            try:
-                _load_payload_json(
-                    payload_json_path, phase, new_subject_id,
-                    expected_commit=ctx["source_commit"],
-                )
-            except ValidationError as exc:
-                die(str(exc))
 
-        try:
-            src_sha = sha256_file(source_report)
-        except OSError as exc:
-            die(f"cannot read --source-report: {exc}")
-
-        # Check if this exact SHA is already registered (idempotent revise retry)
-        existing = _find_by_sha(manifest, phase, src_sha)
-        if existing is not None and existing["id"] != supersedes_id:
-            # For repeated phases, check subject matches
-            if new_subject_id is not None and existing.get("subject_id") != new_subject_id:
-                pass  # Different subject — not an idempotent match
-            else:
-                existing_rel = existing.get("path", "")
-                existing_abs = os.path.join(run_root, existing_rel)
-                print(
-                    f"(idempotent: revised artifact {existing['id']!r} already registered "
-                    "with this SHA-256; no changes made)",
-                    file=sys.stderr,
-                )
-                _print_consult_prompt(
-                    ctx,
-                    existing["id"],
-                    existing_abs,
-                    src_sha,
-                    manifest_path,
-                    run_json_path,
-                    phase,
-                    existing["version"],
-                    subject_id=existing.get("subject_id"),
-                )
-                return 0
-
-        version = _next_version(manifest, phase)
-        artifact_id = f"phase-{phase}-hermes-v{version}"
-        final_name = f"phase-{phase}-hermes-v{version}.md"
-        final_path = os.path.join(reports_dir, final_name)
-
-        try:
-            _check_duplicate_id(manifest, artifact_id, src_sha)
-            _check_duplicate_phase_version(manifest, phase, version, artifact_id)
-            _validate_destination_path(final_path, reports_dir, ctx)
-        except ValidationError as exc:
-            die(str(exc))
-
-        if os.path.lexists(final_path):
-            if os.path.isfile(final_path):
-                if sha256_file(final_path) == src_sha:
-                    pass  # retry scenario
-                else:
-                    die(
-                        f"destination already exists with different content: {final_path}"
-                    )
-            else:
-                die(f"destination path exists but is not a regular file: {final_path}")
-        else:
-            try:
-                shutil.copy2(source_report, final_path)
-            except OSError as exc:
-                die(f"failed to copy report to {final_path}: {exc}")
-
-        try:
-            final_sha = sha256_file(final_path)
-        except OSError as exc:
-            _saved_but_unregistered(
-                final_path, src_sha, run_json_path, phase, str(exc),
-                payload_path=payload_json_path, subject_id=new_subject_id,
-            )
-            return 1
-        if final_sha != src_sha:
-            _saved_but_unregistered(
-                final_path, src_sha, run_json_path, phase,
-                f"SHA mismatch after copy: expected={src_sha} got={final_sha}",
-                payload_path=payload_json_path, subject_id=new_subject_id,
-            )
-            return 1
-
-        rel_path = os.path.relpath(final_path, run_root)
-
-        # Phase-080 provenance validation for revised plans (same path as initial register).
-        revise_extra_prereqs: list[str] = []
-        if phase == "080" and payload_json_path:
-            p080_payload = _load_payload_json(
-                payload_json_path, "080", new_subject_id,
-                expected_commit=ctx["source_commit"],
-            )
-            intel_art_id = p080_payload.get("intel_artifact_id", "")
-            intel_art_sha = p080_payload.get("intel_artifact_sha256", "")
-            finding_art_id = p080_payload.get("assessed_finding_artifact_id", "")
-            finding_art_sha = p080_payload.get("assessed_finding_sha256", "")
-            intel_art = _find_by_id(manifest, intel_art_id)
-            if intel_art is None:
-                die(
-                    f"revised phase-080 payload references intel_artifact_id {intel_art_id!r} "
-                    "which is not registered in manifest"
-                )
-            recorded_intel_sha = intel_art.get("payload_sha256") or intel_art.get("sha256", "")
-            if intel_art_sha and recorded_intel_sha and intel_art_sha != recorded_intel_sha:
-                die(
-                    f"revised phase-080 payload intel_artifact_sha256 {intel_art_sha[:16]}… "
-                    f"does not match manifest record {recorded_intel_sha[:16]}…"
-                )
-            finding_art = _find_by_id(manifest, finding_art_id)
-            if finding_art is None:
-                die(
-                    f"revised phase-080 payload references assessed_finding_artifact_id "
-                    f"{finding_art_id!r} which is not registered in manifest"
-                )
-            recorded_finding_sha = finding_art.get("sha256", "")
-            if finding_art_sha and recorded_finding_sha and finding_art_sha != recorded_finding_sha:
-                die(
-                    f"revised phase-080 payload assessed_finding_sha256 {finding_art_sha[:16]}… "
-                    "does not match manifest record"
-                )
-            revise_extra_prereqs = [intel_art_id, finding_art_id]
-            current_040 = manifest.get("selected_by_phase", {}).get("040")
-            if current_040 and intel_art_id != current_040:
-                print(
-                    f"WARNING: revised phase-080 plan uses intel artifact {intel_art_id!r} "
-                    f"but current selected phase-040 is {current_040!r}.",
-                    file=sys.stderr,
-                )
-
-        review_record: dict[str, Any] = {
-            "outcome": "REVISE",
-            "artifact_id": artifact_id,
-            "supersedes": supersedes_id,
-            "reviewer_identity_declared": reviewer,
-            "authenticated": False,
-            "recorded_at_utc": _utcnow(),
-        }
-
-        # Copy payload for revised artifact (exclusive-create: fail on SHA mismatch).
-        payload_path_rel: str | None = None
-        payload_sha: str | None = None
-        if payload_json_path:
-            payload_fname = f"payload-{phase}-{new_subject_id}-v{version}.json"
-            payload_dest = os.path.join(reports_dir, payload_fname)
-            if os.path.lexists(payload_dest):
-                if os.path.isfile(payload_dest):
-                    existing_sha = sha256_file(payload_dest)
-                    new_sha = sha256_file(payload_json_path)
-                    if existing_sha != new_sha:
-                        die(
-                            f"payload destination already exists with different content: "
-                            f"{payload_dest}\n"
-                            "Collision on payload file. "
-                            "If you need a different payload, use a fresh revise."
-                        )
-                else:
-                    die(
-                        f"payload destination exists but is not a regular file: {payload_dest}"
-                    )
-            else:
-                try:
-                    shutil.copy2(payload_json_path, payload_dest)
-                except OSError as exc:
-                    die(f"failed to copy --payload-json to {payload_dest}: {exc}")
-            try:
-                payload_sha = sha256_file(payload_dest)
-            except OSError as exc:
-                die(f"cannot read copied payload: {exc}")
-            payload_path_rel = os.path.relpath(payload_dest, run_root)
-
-        # Determine completion_status for revised artifact.
-        completion_status = "complete"
-        if phase == "070" and payload_json_path:
-            try:
-                p_data = load_json(payload_json_path)
-                if p_data.get("assessment_disposition") == "blocked":
-                    completion_status = "blocked"
-            except Exception:  # noqa: BLE001
-                pass
-
-        # Merge prerequisite IDs from prior entry and any 080-specific provenance refs.
-        merged_prereqs = list(dict.fromkeys(
-            prior.get("prerequisite_artifacts", []) + revise_extra_prereqs
-        ))
-
-        entry: dict[str, Any] = {
-            "id": artifact_id,
-            "kind": "hermes_phase_report",
-            "phase": phase,
-            "version": version,
-            "path": rel_path,
-            "sha256": final_sha,
-            "source_commit": ctx["source_commit"],
-            "toolkit_revision": ctx["toolkit_revision"],
-            "producer": "hermes-vps-artifacts/revise",
-            "created_at_utc": _utcnow(),
-            "completion_status": completion_status,
-            "prerequisite_artifacts": merged_prereqs,
-            "supersedes": supersedes_id,
-            "reviews": [review_record],
-        }
-        if new_subject_id is not None:
-            entry["subject_id"] = new_subject_id
-        if payload_path_rel is not None:
-            entry["payload_path"] = payload_path_rel
-            entry["payload_sha256"] = payload_sha
-
-        manifest["artifacts"].append(entry)
-
-        # Update selections
-        if phase in REPEATED_PHASES and new_subject_id is not None:
-            _update_subject_selection(manifest, phase, new_subject_id, artifact_id)
-            manifest["selected_by_phase"][phase] = artifact_id
-        else:
-            manifest["selected_by_phase"][phase] = artifact_id
-
-        try:
-            write_json_atomic(manifest_path, manifest)
-        except OSError as exc:
-            _saved_but_unregistered(
-                final_path, final_sha, run_json_path, phase, f"index write failed: {exc}"
-            )
-            return 1
-
-    _print_consult_prompt(
-        ctx, artifact_id, final_path, final_sha, manifest_path, run_json_path, phase, version,
-        subject_id=new_subject_id,
+    argv = [
+        "--run-json", run_json_path, "--source-report", args.source_report,
+        "--supersedes", supersedes, "--reviewer-identity", reviewer,
+    ]
+    if args.subject_id:
+        argv += ["--subject-id", args.subject_id]
+    if args.payload_json:
+        argv += ["--payload-json", args.payload_json]
+    return _commit_bundle(
+        ctx, run_json_path, subcommand="revise", argv=argv, phase=phase,
+        subject_id=subject_id, source_report=args.source_report,
+        payload_json_path=args.payload_json, supersedes=supersedes, reviewer=reviewer,
     )
-    print(
-        f"Revised: {artifact_id!r} supersedes {supersedes_id!r}. "
-        f"Selection updated to {artifact_id!r}. Original preserved.",
-        file=sys.stderr,
-    )
-    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1250,7 +834,7 @@ def cmd_revise(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: C9
 # ---------------------------------------------------------------------------
 
 def cmd_selected(args: argparse.Namespace, run_json_path: str) -> int:
-    """Read-only: print selected artifact(s) and verify SHA-256."""
+    """Read-only: print selected artifact(s) with integrity and staleness checks."""
     data = load_json(run_json_path)
     try:
         ctx = validate_run(data, expected_policy_prefix=None)
@@ -1291,23 +875,22 @@ def cmd_selected(args: argparse.Namespace, run_json_path: str) -> int:
 
     ok = True
     for ph in phases:
-        # For repeated phases, use subject-scoped selection
         if ph in REPEATED_PHASES:
             subj_map = selected_by_subject.get(ph, {})
             if not subj_map:
                 print(f"  phase {ph}: (no subject-scoped selections)")
                 continue
             for subj_id, art_id in sorted(subj_map.items()):
-                ok = ok and _print_artifact_status(manifest, run_root, ph, art_id, subject_id=subj_id)
+                ok = _print_artifact_status(manifest, run_root, ph, art_id, subject_id=subj_id) and ok
         else:
             art_id = selected_by_phase.get(ph)
             if art_id is None:
                 print(f"  phase {ph}: (no selection)")
                 continue
-            ok = ok and _print_artifact_status(manifest, run_root, ph, art_id)
+            ok = _print_artifact_status(manifest, run_root, ph, art_id) and ok
 
     if not ok:
-        print("\nerror: one or more selected artifacts failed verification", file=sys.stderr)
+        print("\nerror: one or more selected artifacts are not usable", file=sys.stderr)
         return 1
     return 0
 
@@ -1319,7 +902,7 @@ def _print_artifact_status(
     art_id: str,
     subject_id: str | None = None,
 ) -> bool:
-    entry = _find_by_id(manifest, art_id)
+    entry = find_artifact(manifest, art_id)
     subject_label = f" [{subject_id}]" if subject_id else ""
     if entry is None:
         print(
@@ -1327,577 +910,64 @@ def _print_artifact_status(
             file=sys.stderr,
         )
         return False
-    rel_path = entry.get("path", "")
-    abs_path = os.path.join(run_root, rel_path)
-    recorded_sha = entry.get("sha256", "")
-    sha_status = "(no SHA recorded)"
-    ok = True
-    if recorded_sha and os.path.isfile(abs_path):
-        actual = sha256_file(abs_path)
-        if actual == recorded_sha:
-            sha_status = f"SHA-256 OK ({recorded_sha[:16]}…)"
-        else:
-            sha_status = f"SHA-256 MISMATCH (recorded={recorded_sha[:16]}… actual={actual[:16]}…)"
-            ok = False
-    elif not os.path.isfile(abs_path):
-        sha_status = "FILE MISSING"
-        ok = False
+    problems = artifact_problems(manifest, run_root, art_id)
+    if entry.get("kind") == "findings_export":
+        problems = file_problems(run_root, entry)
+    status = "OK (complete, SHA-256 OK, current)" if not problems else "NOT USABLE"
     print(
         f"  phase {phase}{subject_label}: {art_id}\n"
-        f"    path:   {abs_path}\n"
-        f"    status: {entry.get('completion_status', '?')}\n"
-        f"    {sha_status}"
+        f"    path:   {os.path.join(run_root, entry.get('path', ''))}\n"
+        f"    status: {entry.get('completion_status', '?')} — {status}"
+        + "".join(f"\n      ! {p}" for p in problems)
     )
-    return ok
+    return not problems
 
 
 # ---------------------------------------------------------------------------
-# Subcommand: generate-findings
+# Findings consolidation (generate-findings and automatic consolidation)
 # ---------------------------------------------------------------------------
 
-def _assess_intel_freshness_from_manifest(
-    manifest: dict[str, Any],
-    run_root: str,
-    threshold_hours: float,
-    threshold_source: str,
-    at_utc: str | None = None,
+def _intel_readiness(
+    manifest: dict[str, Any], run_root: str, hours: float, source: str, at_utc: str
 ) -> dict[str, Any]:
-    """Load selected phase-040 payload and assess freshness. Returns readiness.intel dict."""
-    try:
-        from lib.hermes_vps_intel import assess_freshness as _af  # noqa: PLC0415
-    except ImportError:
+    """Freshness and coverage of the selected phase-040 payload (fail closed to unknown)."""
+    sel_040 = current_selection(manifest, "040", None)
+
+    def _unknown(reason: str) -> dict[str, Any]:
         return {
-            "artifact_id": None,
-            "freshness": {"ok": None, "limitations": ["hermes_vps_intel not importable"]},
-            "coverage": {"notes": "intel library not available"},
+            "artifact_id": sel_040,
+            "freshness": {
+                "ok": None, "evaluated_at_utc": at_utc,
+                "effective_threshold_hours": hours, "threshold_source": source,
+                "limitations": [reason],
+            },
+            "coverage": {"notes": reason, "limitations": []},
         }
 
-    sel_040 = manifest.get("selected_by_phase", {}).get("040")
     if not sel_040:
-        return {
-            "artifact_id": None,
-            "freshness": {
-                "ok": None,
-                "evaluated_at_utc": at_utc or _utcnow(),
-                "effective_threshold_hours": threshold_hours,
-                "threshold_source": threshold_source,
-                "limitations": ["no phase-040 artifact selected"],
-            },
-            "coverage": {"notes": "no vuln-intel evidence registered"},
-        }
-
-    art_040 = _find_by_id(manifest, sel_040)
-    if art_040 is None:
-        return {
-            "artifact_id": sel_040,
-            "freshness": {
-                "ok": None,
-                "limitations": [f"artifact {sel_040!r} not found in manifest"],
-            },
-            "coverage": {"notes": "selected 040 artifact not found"},
-        }
-
-    # Try to load payload
-    payload_rel = art_040.get("payload_path")
-    if not payload_rel:
-        return {
-            "artifact_id": sel_040,
-            "freshness": {
-                "ok": None,
-                "limitations": ["phase-040 artifact has no payload_path"],
-            },
-            "coverage": {"notes": "no payload registered for 040"},
-        }
-
-    payload_abs = os.path.join(run_root, payload_rel)
-    if not os.path.isfile(payload_abs):
-        return {
-            "artifact_id": sel_040,
-            "freshness": {
-                "ok": None,
-                "limitations": [f"payload file missing: {payload_abs}"],
-            },
-            "coverage": {"notes": "payload file not found"},
-        }
-
-    # Verify payload SHA
-    recorded_sha = art_040.get("payload_sha256", "")
-    if recorded_sha:
-        actual_sha = sha256_file(payload_abs)
-        if actual_sha != recorded_sha:
-            return {
-                "artifact_id": sel_040,
-                "freshness": {
-                    "ok": None,
-                    "limitations": [
-                        f"payload SHA mismatch — stale or tampered: "
-                        f"recorded={recorded_sha[:16]}… actual={actual_sha[:16]}…"
-                    ],
-                },
-                "coverage": {"notes": "payload integrity check failed"},
-            }
-
-    try:
-        with open(payload_abs, encoding="utf-8") as fh:
-            intel_record = json.load(fh)
-    except (json.JSONDecodeError, OSError) as exc:
-        return {
-            "artifact_id": sel_040,
-            "freshness": {"ok": None, "limitations": [f"payload read error: {exc}"]},
-            "coverage": {"notes": "payload unreadable"},
-        }
-
-    freshness = _af(intel_record, threshold_hours, threshold_source, at_utc)
-
-    providers = intel_record.get("providers", {})
-    coverage_notes: list[str] = []
-    for pname, pdata in providers.items():
-        if isinstance(pdata, dict) and pdata.get("status") not in ("success", "no_match"):
-            coverage_notes.append(f"{pname}: {pdata.get('status', 'unknown')}")
-
+        return _unknown("no phase-040 artifact selected")
+    problems = artifact_problems(manifest, run_root, sel_040)
+    if problems:
+        return _unknown(f"phase-040 {sel_040} is not usable: " + "; ".join(problems))
+    record = load_artifact_payload(run_root, find_artifact(manifest, sel_040))
+    providers = record["providers"]
     return {
         "artifact_id": sel_040,
-        "freshness": freshness,
+        "freshness": assess_freshness(record, hours, source, at_utc),
         "coverage": {
-            "osv_status": providers.get("osv", {}).get("status"),
-            "nvd_status": providers.get("nvd", {}).get("status"),
-            "cisa_kev_status": providers.get("cisa_kev", {}).get("status"),
-            "total_matches": intel_record.get("coverage", {}).get("total_matches", 0),
-            "kev_matches": intel_record.get("coverage", {}).get("kev_matches", 0),
-            "collection_mode": intel_record.get("collection_mode"),
-            "collected_at_utc": intel_record.get("collected_at_utc"),
-            "limitations": coverage_notes,
+            "osv_status": providers["osv"]["status"],
+            "nvd_status": providers["nvd"]["status"],
+            "cisa_kev_status": providers["cisa_kev"]["status"],
+            "total_matches": record["coverage"]["total_matches"],
+            "kev_matches": record["coverage"]["kev_matches"],
+            "collection_mode": record["collection_mode"],
+            "collected_at_utc": record["collected_at_utc"],
+            "limitations": [
+                f"{name}: {p['status']}" for name, p in providers.items()
+                if p["status"] not in ("success", "no_match")
+            ],
         },
     }
-
-
-def cmd_generate_findings(args: argparse.Namespace, run_json_path: str) -> int:  # noqa: C901
-    """Consolidate all selected phase-070 payloads into a findings export snapshot.
-
-    Exit codes:
-      0  — success (export written and registered)
-      1  — fatal error (nothing written or registered)
-      2  — policy check failed (--require-fresh-intel, export still written and registered)
-    """
-    data = load_json(run_json_path)
-    try:
-        ctx = validate_run(data, expected_policy_prefix=None)
-    except ValidationError as exc:
-        die(str(exc))
-
-    manifest_path = ctx["manifest_path"]
-    run_root = ctx["run_root"]
-    reports_dir = ctx["reports_dir"]
-    policy_prefix = ctx["policy_prefix"]
-
-    require_fresh_intel: bool = getattr(args, "require_fresh_intel", False)
-    freshness_hours: float = getattr(args, "freshness_hours", None) or 24.0
-    freshness_source = "cli" if getattr(args, "freshness_hours", None) else "default"
-
-    if not os.path.isfile(manifest_path):
-        die("manifest.json does not exist; no artifacts registered yet")
-
-    with RunLock(run_root):
-        try:
-            manifest = _load_or_init_manifest(manifest_path, ctx)
-        except ValidationError as exc:
-            die(str(exc))
-
-        # --- Assess intelligence freshness (phase 040 payload) ---
-        generated_at = _utcnow()
-        intel_readiness = _assess_intel_freshness_from_manifest(
-            manifest, run_root, freshness_hours, freshness_source, at_utc=generated_at
-        )
-        intel_freshness_ok: bool = bool(intel_readiness.get("freshness", {}).get("ok"))
-        intel_limitations: list[str] = intel_readiness.get("freshness", {}).get("limitations", [])
-        coverage_limitations: list[str] = intel_readiness.get("coverage", {}).get("limitations", [])
-
-        if intel_limitations or not intel_freshness_ok:
-            lvl = "WARNING"
-            print(
-                f"{lvl}: intelligence freshness check:\n"
-                + "\n".join(f"  {lim}" for lim in intel_limitations or ["no fresh intel"]),
-                file=sys.stderr,
-            )
-
-        # --- Resolve phase 060 triage payload (defines candidate inventory) ---
-        sel_060 = manifest.get("selected_by_phase", {}).get("060")
-        if not sel_060:
-            die("no selected phase-060 artifact; validate-and-triage must complete before generate-findings")
-        art_060 = _find_by_id(manifest, sel_060)
-        if art_060 is None:
-            die(f"selected phase-060 artifact {sel_060!r} not found in manifest")
-        triage_payload = _load_registered_payload(art_060, run_root, "060", None)
-        candidates: list[dict[str, Any]] = triage_payload.get("candidates", [])
-        if not isinstance(candidates, list):
-            die("phase-060 triage payload: candidates must be a list")
-
-        candidate_ids: list[str] = [c.get("candidate_id", "") for c in candidates if isinstance(c, dict)]
-        candidate_ids = [c for c in candidate_ids if c]
-
-        # --- Resolve selected 070 artifacts per candidate ---
-        sbs_070: dict[str, str] = manifest.get("selected_by_subject", {}).get("070", {})
-
-        assessed: list[str] = []
-        missing_assessments: list[str] = []
-        stale_assessments: list[str] = []
-        findings: list[dict[str, Any]] = []
-        dismissed: list[dict[str, Any]] = []
-
-        errors: list[str] = []
-
-        for cid in candidate_ids:
-            art_070_id = sbs_070.get(cid)
-            if art_070_id is None:
-                missing_assessments.append(cid)
-                continue
-            art_070 = _find_by_id(manifest, art_070_id)
-            if art_070 is None:
-                errors.append(f"selected phase-070 artifact {art_070_id!r} for candidate {cid!r} not in manifest")
-                continue
-
-            # Verify SHA integrity
-            rel_070 = art_070.get("path", "")
-            abs_070 = os.path.join(run_root, rel_070)
-            if not os.path.isfile(abs_070):
-                errors.append(f"phase-070 artifact {art_070_id!r} report file missing: {abs_070}")
-                stale_assessments.append(cid)
-                continue
-            recorded_sha = art_070.get("sha256", "")
-            if recorded_sha:
-                actual_sha = sha256_file(abs_070)
-                if actual_sha != recorded_sha:
-                    errors.append(
-                        f"phase-070 artifact {art_070_id!r} SHA-256 mismatch "
-                        f"(recorded={recorded_sha[:16]}… actual={actual_sha[:16]}…)"
-                    )
-                    stale_assessments.append(cid)
-                    continue
-
-            # Load the structured finding payload
-            try:
-                finding_payload = _load_registered_payload(art_070, run_root, "070", cid)
-            except ValidationError as exc:
-                errors.append(f"candidate {cid!r}: {exc}")
-                continue
-
-            proposed = finding_payload.get("proposed_finding", {})
-            disposition = finding_payload.get("assessment_disposition", "unknown")
-
-            if disposition in ("dismissed", "rejected"):
-                dismissed.append({
-                    "candidate_id": cid,
-                    "disposition": disposition,
-                    "rationale": finding_payload.get("assessment_rationale", ""),
-                    "source_artifact": art_070_id,
-                })
-            elif disposition in ("confirmed", "suspected", "needs-investigation", "blocked"):
-                # Resolve optional phase-080 plan.
-                # Look up by proposed finding ID first, then by candidate_id as fallback
-                # (covers new findings not yet assigned a stable finding ID).
-                finding_id = proposed.get("id")
-                plan_artifact_id: str | None = None
-                sbs_080_map: dict[str, str] = manifest.get("selected_by_subject", {}).get("080", {})
-                if finding_id:
-                    plan_artifact_id = sbs_080_map.get(finding_id)
-                if plan_artifact_id is None:
-                    plan_artifact_id = sbs_080_map.get(cid)
-                # Verify 080 plan is structurally valid before including it.
-                if plan_artifact_id is not None:
-                    plan_art = _find_by_id(manifest, plan_artifact_id)
-                    if plan_art is None:
-                        errors.append(
-                            f"selected phase-080 artifact {plan_artifact_id!r} for "
-                            f"finding/candidate {finding_id or cid!r} not found in manifest"
-                        )
-                        plan_artifact_id = None
-                    else:
-                        plan_payload_rel = plan_art.get("payload_path")
-                        if plan_payload_rel:
-                            plan_payload_abs = os.path.join(run_root, plan_payload_rel)
-                            if not os.path.isfile(plan_payload_abs):
-                                errors.append(
-                                    f"phase-080 plan payload file missing for "
-                                    f"{plan_artifact_id!r}: {plan_payload_abs}"
-                                )
-                                plan_artifact_id = None
-                            else:
-                                try:
-                                    _plan_data = load_json(plan_payload_abs)
-                                    if not isinstance(_plan_data, dict):
-                                        raise ValidationError("plan payload must be a JSON object")
-                                except (ValidationError, Exception) as _exc:
-                                    errors.append(
-                                        f"phase-080 plan payload corrupt for "
-                                        f"{plan_artifact_id!r}: {_exc}"
-                                    )
-                                    plan_artifact_id = None
-
-                finding_entry: dict[str, Any] = {
-                    "candidate_id": cid,
-                    "finding_id": finding_id,
-                    "assessment_disposition": disposition,
-                    "assessment_rationale": finding_payload.get("assessment_rationale", ""),
-                    "proposed_record": _extract_canonical_fields(proposed),
-                    "affected_components": finding_payload.get("affected_components", []),
-                    "impact": finding_payload.get("impact", ""),
-                    "likelihood": finding_payload.get("likelihood", ""),
-                    "evidence": finding_payload.get("evidence", []),
-                    "unknowns": finding_payload.get("unknowns", []),
-                    "blockers": finding_payload.get("blockers", []),
-                    "source_artifact": art_070_id,
-                    "source_commit": art_070.get("source_commit", ctx["source_commit"]),
-                    "remediation_plan_artifact": plan_artifact_id,
-                }
-                # Explicitly never mark a finding fixed merely because a remediation plan exists
-                if plan_artifact_id and finding_entry["proposed_record"].get("status") == "fixed":
-                    finding_entry["proposed_record"]["status"] = "open"
-                    finding_entry["_note"] = (
-                        "status reset from 'fixed' to 'open': a remediation plan does not "
-                        "constitute a fix; status must be updated only after verified remediation"
-                    )
-                findings.append(finding_entry)
-                assessed.append(cid)
-            else:
-                missing_assessments.append(cid)
-
-        if errors:
-            for err in errors:
-                print(f"error: {err}", file=sys.stderr)
-
-        assessment_complete = (
-            len(missing_assessments) == 0
-            and len(stale_assessments) == 0
-            and not errors
-        )
-        complete = assessment_complete
-
-        # --- Phase-080 provenance check: detect intel_artifact_id mismatches ---
-        sbs_080: dict[str, str] = manifest.get("selected_by_subject", {}).get("080", {})
-        sel_040 = manifest.get("selected_by_phase", {}).get("040")
-        prov_mismatched_intel: list[str] = []
-        prov_limitations: list[str] = []
-
-        for finding_sid, plan_art_id in sbs_080.items():
-            plan_art = _find_by_id(manifest, plan_art_id)
-            if plan_art is None:
-                prov_limitations.append(
-                    f"finding {finding_sid!r}: selected plan artifact "
-                    f"{plan_art_id!r} not found in manifest"
-                )
-                continue
-            plan_payload_rel = plan_art.get("payload_path")
-            if not plan_payload_rel:
-                prov_limitations.append(
-                    f"finding {finding_sid!r}: plan artifact {plan_art_id!r} "
-                    "has no registered payload; provenance cannot be verified"
-                )
-                continue
-            plan_payload_abs = os.path.join(run_root, plan_payload_rel)
-            if not os.path.isfile(plan_payload_abs):
-                prov_limitations.append(
-                    f"finding {finding_sid!r}: plan payload file missing: {plan_payload_abs}"
-                )
-                continue
-            try:
-                plan_payload = load_json(plan_payload_abs)
-            except (ValidationError, Exception) as _exc:
-                prov_limitations.append(
-                    f"finding {finding_sid!r}: plan payload corrupt or unreadable: {_exc}"
-                )
-                continue
-            plan_intel_id = plan_payload.get("intel_artifact_id")
-            if plan_intel_id and sel_040 and plan_intel_id != sel_040:
-                prov_mismatched_intel.append(finding_sid)
-                prov_limitations.append(
-                    f"finding {finding_sid!r}: plan used intel {plan_intel_id!r} "
-                    f"but current selected 040 is {sel_040!r}; "
-                    "reassessment recommended before declaring plan fully current"
-                )
-
-        if prov_limitations:
-            for lim in prov_limitations:
-                print(f"WARNING: {lim}", file=sys.stderr)
-
-        # --- Build multi-field readiness object ---
-        readiness_limitations: list[str] = []
-        readiness_limitations.extend(intel_limitations)
-        readiness_limitations.extend(coverage_limitations)
-        if not assessment_complete:
-            if missing_assessments:
-                readiness_limitations.append(
-                    f"missing assessments for: {', '.join(missing_assessments)}"
-                )
-            if stale_assessments:
-                readiness_limitations.append(
-                    f"stale assessments for: {', '.join(stale_assessments)}"
-                )
-        readiness_limitations.extend(prov_limitations)
-
-        readiness: dict[str, Any] = {
-            "intel": intel_readiness,
-            "assessment": {
-                "complete": assessment_complete,
-                "missing_assessments": missing_assessments,
-                "stale_assessments": stale_assessments,
-            },
-            "provenance_080": {
-                "findings_with_plans": len(sbs_080),
-                "mismatched_intel": prov_mismatched_intel,
-                "limitations": prov_limitations,
-            },
-            "readiness_ok": (
-                assessment_complete
-                and intel_freshness_ok
-                and not prov_mismatched_intel
-            ),
-            "policy_check_failed": False,  # updated below if --require-fresh-intel
-            "limitations": readiness_limitations,
-        }
-
-        if not assessment_complete:
-            print(
-                "WARNING: findings export is PARTIAL:\n"
-                f"  missing assessments: {missing_assessments}\n"
-                f"  stale assessments:   {stale_assessments}\n"
-                "  A partial export is NOT a complete remediation handoff.",
-                file=sys.stderr,
-            )
-
-        coverage = {
-            "total_candidates": len(candidate_ids),
-            "assessed": len(assessed),
-            "missing_assessments": missing_assessments,
-            "stale_assessments": stale_assessments,
-            "complete": assessment_complete,
-            "intel_collected_at_utc": intel_readiness.get("coverage", {}).get("collected_at_utc"),
-            "intel_freshness_ok": intel_freshness_ok,
-        }
-
-        version = _next_findings_version(manifest)
-        findings_fname = f"findings-v{version}.json"
-        findings_path = os.path.join(reports_dir, findings_fname)
-
-        export: dict[str, Any] = {
-            "schema_version": 1,
-            "generated_at_utc": generated_at,
-            "run_id": ctx["run_id"],
-            "source_commit": ctx["source_commit"],
-            "source_identity": ctx["source_identity"],
-            "toolkit_revision": ctx["toolkit_revision"],
-            "complete": complete,
-            "selected_artifact_ids": {
-                "060": sel_060,
-                "070": dict(sbs_070),
-                "080": dict(sbs_080),
-            },
-            "coverage": coverage,
-            "readiness": readiness,
-            "findings": findings,
-            "dismissed_candidates": dismissed,
-        }
-
-        try:
-            write_json_atomic(findings_path, export)
-        except OSError as exc:
-            die(f"failed to write findings export: {exc}")
-
-        findings_sha = sha256_file(findings_path)
-        findings_rel = os.path.relpath(findings_path, run_root)
-
-        # Determine prerequisite artifacts
-        prereq_ids: list[str] = [sel_060] + list(sbs_070.values())
-        prereq_ids = list(dict.fromkeys(prereq_ids))  # deduplicate, preserve order
-
-        # Apply --require-fresh-intel policy check
-        policy_check_failed = require_fresh_intel and not intel_freshness_ok
-        if policy_check_failed:
-            readiness["policy_check_failed"] = True
-            export["readiness"] = readiness
-            # Re-write export with updated readiness to reflect policy failure
-            try:
-                write_json_atomic(findings_path, export)
-            except OSError as exc:
-                die(f"failed to re-write findings export: {exc}")
-            findings_sha = sha256_file(findings_path)
-
-        fe_entry: dict[str, Any] = {
-            "id": f"findings-v{version}",
-            "kind": "findings_export",
-            "version": version,
-            "path": findings_rel,
-            "sha256": findings_sha,
-            "source_commit": ctx["source_commit"],
-            "toolkit_revision": ctx["toolkit_revision"],
-            "producer": "hermes-vps-artifacts/generate-findings",
-            "created_at_utc": _utcnow(),
-            "completion_status": "complete" if complete else "partial",
-            "prerequisite_artifacts": prereq_ids,
-            "complete": complete,
-            "intel_freshness_ok": intel_freshness_ok,
-            "policy_check_failed": policy_check_failed,
-        }
-
-        manifest["artifacts"].append(fe_entry)
-        manifest["selected_by_phase"]["findings"] = f"findings-v{version}"
-
-        try:
-            write_json_atomic(manifest_path, manifest)
-        except OSError as exc:
-            die(f"failed to update manifest: {exc}")
-
-    _print_findings_handoff_prompt(
-        ctx, findings_path, findings_sha, version, complete, coverage, run_json_path
-    )
-
-    if policy_check_failed:
-        print(
-            "\nPOLICY CHECK FAILED: --require-fresh-intel is set but intelligence is stale.\n"
-            f"  Findings export was written and registered: findings-v{version}\n"
-            "  The export exists and contains valid findings.\n"
-            "  This is a policy gate failure (exit 2), not a JSON write or registration failure.\n"
-            "  To remediate: re-run hermes-vps-collect-intel, revise the phase-040 artifact,\n"
-            "  then re-run generate-findings.",
-            file=sys.stderr,
-        )
-        return 2  # Policy check failure; distinct from error (1)
-
-    return 0
-
-
-def _load_registered_payload(
-    artifact_entry: dict[str, Any],
-    run_root: str,
-    phase: str,
-    subject_id: str | None,
-) -> dict[str, Any]:
-    """Load and return the JSON payload for a registered artifact."""
-    payload_path_rel = artifact_entry.get("payload_path")
-    if not payload_path_rel:
-        raise ValidationError(
-            f"artifact {artifact_entry.get('id')!r} has no registered payload; "
-            f"phase {phase} requires a structured payload registered with --payload-json"
-        )
-    payload_abs = os.path.join(run_root, payload_path_rel)
-    if not os.path.isfile(payload_abs):
-        raise ValidationError(
-            f"registered payload file not found: {payload_abs}"
-        )
-    recorded_sha = artifact_entry.get("payload_sha256", "")
-    if recorded_sha:
-        actual_sha = sha256_file(payload_abs)
-        if actual_sha != recorded_sha:
-            raise ValidationError(
-                f"payload SHA-256 mismatch for {artifact_entry.get('id')!r}: "
-                f"recorded={recorded_sha[:16]}… actual={actual_sha[:16]}…"
-            )
-    try:
-        payload = load_json(payload_abs)
-    except ValidationError as exc:
-        raise ValidationError(f"cannot read payload for {artifact_entry.get('id')!r}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise ValidationError(f"payload for {artifact_entry.get('id')!r} must be a JSON object")
-    return payload
 
 
 _CANONICAL_FIELDS = {
@@ -1908,68 +978,307 @@ _CANONICAL_FIELDS = {
 }
 
 
-def _extract_canonical_fields(proposed: dict[str, Any]) -> dict[str, Any]:
-    """Extract only canonical schema fields from a proposed finding record."""
-    return {k: v for k, v in proposed.items() if k in _CANONICAL_FIELDS}
+def _build_export(  # noqa: C901
+    ctx: dict[str, Any],
+    manifest: dict[str, Any],
+    hours: float,
+    source: str,
+    require_fresh: bool,
+) -> tuple[dict[str, Any], list[str]]:
+    """Return (export document, exact input artifact IDs). Read-only."""
+    run_root = ctx["run_root"]
+    generated_at = _utcnow()
+    intel = _intel_readiness(manifest, run_root, hours, source, generated_at)
+    intel_ok = intel["freshness"].get("ok") is True
+    limitations: list[str] = list(intel["freshness"].get("limitations", []))
+    limitations += intel["coverage"].get("limitations", [])
+
+    sel_060, candidate_ids = triage_candidate_ids(manifest, run_root)
+    triage_problems = artifact_problems(manifest, run_root, sel_060)
+    limitations += [f"phase-060 {sel_060}: {p}" for p in triage_problems]
+
+    sbs_070 = manifest.get("selected_by_subject", {}).get("070", {})
+    sbs_080 = manifest.get("selected_by_subject", {}).get("080", {})
+    missing: list[str] = []
+    stale: list[str] = []
+    incomplete: list[str] = []
+    stale_plans: list[str] = []
+    used_070: dict[str, str] = {}
+    used_080: dict[str, str] = {}
+    findings: list[dict[str, Any]] = []
+    dismissed: list[dict[str, Any]] = []
+
+    for cid in candidate_ids:
+        art_id = sbs_070.get(cid)
+        if not art_id:
+            missing.append(cid)
+            continue
+        entry = find_artifact(manifest, art_id)
+        if entry is not None and entry.get("completion_status") != "complete":
+            incomplete.append(cid)
+            limitations.append(f"candidate {cid}: {art_id} is {entry.get('completion_status')!r}")
+            continue
+        problems = artifact_problems(manifest, run_root, art_id)
+        if problems:
+            stale.append(cid)
+            limitations += [f"candidate {cid}: {art_id}: {p}" for p in problems]
+            continue
+        payload = load_artifact_payload(run_root, entry)
+        used_070[cid] = art_id
+        if payload["assessment_disposition"] == "dismissed":
+            dismissed.append({
+                "candidate_id": cid,
+                "disposition": "dismissed",
+                "rationale": payload.get("assessment_rationale"),
+                "source_artifact": art_id,
+            })
+            continue
+
+        plan_id = sbs_080.get(cid)
+        if plan_id:
+            plan_problems = artifact_problems(manifest, run_root, plan_id)
+            if plan_problems:
+                stale_plans.append(cid)
+                limitations += [f"phase-080 plan {plan_id} for {cid}: {p}" for p in plan_problems]
+                plan_id = None
+            else:
+                used_080[cid] = plan_id
+
+        proposed = payload["proposed_finding"]
+        finding: dict[str, Any] = {
+            "candidate_id": cid,
+            "finding_id": proposed.get("id"),
+            "assessment_disposition": payload["assessment_disposition"],
+            "assessment_rationale": payload.get("assessment_rationale"),
+            "proposed_record": {k: v for k, v in proposed.items() if k in _CANONICAL_FIELDS},
+            "affected_components": payload.get("affected_components", []),
+            "impact": payload.get("impact"),
+            "likelihood": payload.get("likelihood"),
+            "evidence": payload.get("evidence", []),
+            "unknowns": payload.get("unknowns", []),
+            "blockers": payload.get("blockers", []),
+            "source_artifact": art_id,
+            "source_commit": entry["source_commit"],
+            "remediation_plan_artifact": plan_id,
+        }
+        if plan_id and finding["proposed_record"].get("status") == "fixed":
+            finding["proposed_record"]["status"] = "open"
+            finding["_note"] = (
+                "status reset from 'fixed' to 'open': a remediation plan does not "
+                "constitute a fix; status must be updated only after verified remediation"
+            )
+        findings.append(finding)
+
+    for cid, plan_id in sorted(sbs_080.items()):
+        if cid not in candidate_ids:
+            limitations.append(
+                f"phase-080 plan {plan_id} for {cid!r} has no candidate in the current triage inventory"
+            )
+
+    if missing:
+        limitations.append(f"missing assessments for: {', '.join(missing)}")
+    complete = not (missing or stale or incomplete or triage_problems)
+    policy_check_failed = require_fresh and not intel_ok
+
+    coverage = {
+        "total_candidates": len(candidate_ids),
+        "assessed": len(used_070),
+        "missing_assessments": missing,
+        "stale_assessments": stale,
+        "incomplete_assessments": incomplete,
+        "complete": complete,
+        "intel_collected_at_utc": intel["coverage"].get("collected_at_utc"),
+        "intel_freshness_ok": intel["freshness"].get("ok"),
+    }
+    export = {
+        "schema_version": 1,
+        "generated_at_utc": generated_at,
+        "run_id": ctx["run_id"],
+        "source_commit": ctx["source_commit"],
+        "source_identity": ctx["source_identity"],
+        "toolkit_revision": ctx["toolkit_revision"],
+        "complete": complete,
+        "selected_artifact_ids": {"060": sel_060, "070": used_070, "080": used_080},
+        "coverage": coverage,
+        "readiness": {
+            "intel": intel,
+            "assessment": {
+                "complete": complete,
+                "missing_assessments": missing,
+                "stale_assessments": stale,
+                "incomplete_assessments": incomplete,
+            },
+            "provenance_080": {
+                "findings_with_plans": len(used_080),
+                "stale_plans": stale_plans,
+            },
+            "readiness_ok": complete and intel_ok and not stale_plans,
+            "policy_check_failed": policy_check_failed,
+            "limitations": limitations,
+        },
+        "findings": findings,
+        "dismissed_candidates": dismissed,
+    }
+    inputs = [sel_060, *used_070.values(), *used_080.values()]
+    if intel["artifact_id"] and intel["freshness"].get("ok") is not None:
+        inputs.append(intel["artifact_id"])
+    return export, list(dict.fromkeys(inputs))
 
 
-def _validate_against_schema(data: Any, schema_path: str) -> None:
-    """Minimal structural validation against a JSON Schema (stdlib only; no jsonschema dep)."""
+def _write_findings_export(
+    ctx: dict[str, Any],
+    manifest: dict[str, Any],
+    hours: float = 24.0,
+    source: str = "default",
+    require_fresh: bool = False,
+) -> dict[str, Any]:
+    """Build, schema-check, exclusively write, and register a findings export (lock held)."""
+    export, inputs = _build_export(ctx, manifest, hours, source, require_fresh)
+    validate_schema(export, load_schema(ctx["policy_prefix"], "findings-export.schema.json"), "export")
+    version = _next_findings_version(manifest)
+    path = os.path.join(ctx["reports_dir"], f"findings-v{version}.json")
+    _validate_destination_path(path, ctx["reports_dir"], ctx)
+    _write_json_exclusive(path, export)
+    sha = sha256_file(path)
+    manifest["artifacts"].append({
+        "id": f"findings-v{version}",
+        "kind": "findings_export",
+        "version": version,
+        "path": os.path.relpath(path, ctx["run_root"]),
+        "sha256": sha,
+        "source_commit": ctx["source_commit"],
+        "toolkit_revision": ctx["toolkit_revision"],
+        "producer": "hermes-vps-artifacts/generate-findings",
+        "created_at_utc": _utcnow(),
+        "completion_status": "complete" if export["complete"] else "partial",
+        "prerequisite_artifacts": inputs,
+        "prerequisite_hashes": prerequisite_hashes(manifest, inputs),
+        "complete": export["complete"],
+        "intel_freshness_ok": export["coverage"]["intel_freshness_ok"],
+        "policy_check_failed": export["readiness"]["policy_check_failed"],
+    })
+    manifest["selected_by_phase"]["findings"] = f"findings-v{version}"
     try:
-        schema = load_json(schema_path)
+        write_json_atomic(ctx["manifest_path"], manifest)
+    except OSError as exc:
+        raise ValidationError(f"findings export written to {path} but index write failed: {exc}") from exc
+    return {"path": path, "sha": sha, "version": version, "export": export}
+
+
+def _consolidation_due(manifest: dict[str, Any], run_root: str) -> bool:
+    """Defined completion point: every triaged candidate has a complete, current 070."""
+    try:
+        _, candidate_ids = triage_candidate_ids(manifest, run_root)
+    except ValidationError:
+        return False
+    sbs_070 = manifest.get("selected_by_subject", {}).get("070", {})
+    return bool(candidate_ids) and all(
+        sbs_070.get(cid) and not artifact_problems(manifest, run_root, sbs_070[cid])
+        for cid in candidate_ids
+    )
+
+
+def _maybe_consolidate(ctx: dict[str, Any], manifest: dict[str, Any], run_json_path: str) -> int:
+    """Run generate-findings automatically at the completion point (lock held)."""
+    if not _consolidation_due(manifest, ctx["run_root"]):
+        return 0
+    try:
+        _, inputs = _build_export(ctx, manifest, 24.0, "default", False)
+        latest = find_artifact(manifest, manifest["selected_by_phase"].get("findings"))
+        if latest is not None and latest.get("prerequisite_artifacts") == inputs:
+            print(f"(findings already consolidated in {latest['id']}; no new export)", file=sys.stderr)
+            return 0
+        print(
+            "All phase-070 assessments are complete; consolidating findings automatically.",
+            file=sys.stderr,
+        )
+        result = _write_findings_export(ctx, manifest)
     except ValidationError as exc:
-        raise ValidationError(f"cannot read schema {schema_path}: {exc}") from exc
-    if not isinstance(schema, dict):
-        raise ValidationError("schema must be a JSON object")
-    # Check required top-level fields
-    required = schema.get("required", [])
-    if isinstance(required, list) and isinstance(data, dict):
-        missing = [f for f in required if f not in data]
-        if missing:
-            raise ValidationError(f"missing required fields: {missing}")
+        print(
+            f"error: assessment registered, but automatic consolidation failed: {exc}\n"
+            f"Retry: {_recovery_command(ctx, 'generate-findings', ['--run-json', run_json_path])}",
+            file=sys.stderr,
+        )
+        return 1
+    _print_findings_handoff_prompt(ctx, result, run_json_path)
+    return 0
+
+
+def cmd_generate_findings(args: argparse.Namespace, run_json_path: str) -> int:
+    """Consolidate selected phase-070 payloads into a findings export snapshot.
+
+    Exit codes:
+      0  — success (export written and registered)
+      1  — fatal error (nothing written or registered)
+      2  — policy check failed (--require-fresh-intel, export still written and registered)
+    """
+    try:
+        ctx = validate_run(load_json(run_json_path), expected_policy_prefix=None)
+    except ValidationError as exc:
+        die(str(exc))
+    if not os.path.isfile(ctx["manifest_path"]):
+        die("manifest.json does not exist; no artifacts registered yet")
+    hours = args.freshness_hours if args.freshness_hours is not None else 24.0
+    source = "cli" if args.freshness_hours is not None else "default"
+
+    with RunLock(ctx["run_root"]):
+        try:
+            manifest = _load_or_init_manifest(ctx["manifest_path"], ctx)
+            result = _write_findings_export(ctx, manifest, hours, source, args.require_fresh_intel)
+        except ValidationError as exc:
+            die(str(exc))
+
+    readiness = result["export"]["readiness"]
+    if readiness["limitations"]:
+        print("WARNING: readiness limitations:\n" + "\n".join(
+            f"  {lim}" for lim in readiness["limitations"]), file=sys.stderr)
+    _print_findings_handoff_prompt(ctx, result, run_json_path)
+    if readiness["policy_check_failed"]:
+        print(
+            "\nPOLICY CHECK FAILED: --require-fresh-intel is set but intelligence is not fresh.\n"
+            f"  Findings export was written and registered: findings-v{result['version']}\n"
+            "  This is a policy gate failure (exit 2), not a JSON write or registration failure.\n"
+            "  To remediate: re-collect intelligence, revise the phase-040 artifact,\n"
+            "  then re-run generate-findings.",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
 
 
 def _print_findings_handoff_prompt(
-    ctx: dict[str, Any],
-    findings_path: str,
-    findings_sha: str,
-    version: int,
-    complete: bool,
-    coverage: dict[str, Any],
-    run_json_path: str,
+    ctx: dict[str, Any], result: dict[str, Any], run_json_path: str
 ) -> None:
-    completeness = "COMPLETE" if complete else "PARTIAL"
-    missing = coverage.get("missing_assessments", [])
-    stale = coverage.get("stale_assessments", [])
-    coverage_lines = (
-        f"  Total candidates:   {coverage.get('total_candidates', '?')}\n"
-        f"  Assessed:           {coverage.get('assessed', '?')}\n"
-        f"  Missing:            {missing if missing else '(none)'}\n"
-        f"  Stale:              {stale if stale else '(none)'}"
-    )
-
+    export = result["export"]
+    coverage = export["coverage"]
+    completeness = "COMPLETE" if export["complete"] else "PARTIAL"
+    review_bin = os.path.join(ctx["policy_prefix"], "bin", "hermes-vps-review")
     print(f"""\
 ======== hermesVPS FINDINGS HANDOFF PROMPT (generate-findings) ========
 NOTE: Structural/hash checks do not prove factual correctness of findings.
 NOTE: A partial export is NOT a complete remediation handoff.
 
 Assessment status:  {completeness}
-Findings file:      {findings_path}
-Findings SHA-256:   {findings_sha}
-Version:            findings-v{version}
+Findings file:      {result['path']}
+Findings SHA-256:   {result['sha']}
+Version:            findings-v{result['version']}
 Run ID:             {ctx['run_id']}
 Source commit:      {ctx['source_commit']}
 
 Coverage:
-{coverage_lines}
+  Total candidates:   {coverage['total_candidates']}
+  Assessed:           {coverage['assessed']}
+  Missing:            {coverage['missing_assessments'] or '(none)'}
+  Stale:              {coverage['stale_assessments'] or '(none)'}
+  Incomplete/blocked: {coverage['incomplete_assessments'] or '(none)'}
 
 HANDOFF INSTRUCTIONS:
   1. Verify the source commit and findings SHA-256 above are accurate.
   2. Attach or paste the full contents of the findings file to the remediation agent.
-  3. For each open finding, invoke phase 080 separately with the finding_id:
-       hermes-vps-review --phase 080 --run-json {run_json_path} --trigger-input <finding_id>
-  4. If any assessments are missing or stale, resolve them before treating
-     this export as a COMPLETE remediation handoff.
+  3. Phase 080 (optional, one candidate per invocation) is keyed by candidate_id:
+       {review_bin} --phase 080 --run-json {run_json_path} --trigger-input <candidate_id>
+  4. If any assessments are missing, stale, or incomplete, resolve them before
+     treating this export as a COMPLETE remediation handoff.
 
 STOP. Do not start remediation without a separate explicit human request.
 ======== end findings handoff prompt ========
@@ -1981,10 +1290,9 @@ STOP. Do not start remediation without a separate explicit human request.
 # ---------------------------------------------------------------------------
 
 def cmd_validate_findings(args: argparse.Namespace, run_json_path: str) -> int:
-    """Read-only: validate a findings export file against the schema."""
-    data = load_json(run_json_path)
+    """Read-only: validate a findings export against the full schema and run identity."""
     try:
-        ctx = validate_run(data, expected_policy_prefix=None)
+        ctx = validate_run(load_json(run_json_path), expected_policy_prefix=None)
     except ValidationError as exc:
         die(str(exc))
 
@@ -1996,30 +1304,18 @@ def cmd_validate_findings(args: argparse.Namespace, run_json_path: str) -> int:
 
     try:
         export = load_json(findings_file)
-    except ValidationError as exc:
-        die(f"cannot read findings file: {exc}")
-
-    schema_path = os.path.join(ctx["policy_prefix"], "templates", "findings-export.schema.json")
-    if not os.path.isfile(schema_path):
-        die(f"findings-export.schema.json not found at {schema_path}")
-
-    try:
-        _validate_against_schema(export, schema_path)
+        validate_schema(export, load_schema(ctx["policy_prefix"], "findings-export.schema.json"), "export")
     except ValidationError as exc:
         die(f"findings file failed schema validation: {exc}")
-
-    # Check identity fields
-    if isinstance(export, dict):
-        stored_commit = export.get("source_commit", "")
-        if stored_commit and stored_commit != ctx["source_commit"]:
-            print(
-                f"warning: findings source_commit {stored_commit!r} != "
-                f"run.json commit {ctx['source_commit']!r}",
-                file=sys.stderr,
-            )
-        complete = export.get("complete", False)
-        status = "COMPLETE" if complete else "PARTIAL"
-        print(f"findings file validates OK\n  status:  {status}\n  file:    {findings_file}")
+    for key, expected in (
+        ("run_id", ctx["run_id"]),
+        ("source_commit", ctx["source_commit"]),
+        ("source_identity", ctx["source_identity"]),
+    ):
+        if export[key] != expected:
+            die(f"findings {key} {export[key]!r} does not match run.json {expected!r}")
+    status = "COMPLETE" if export["complete"] else "PARTIAL"
+    print(f"findings file validates OK\n  status:  {status}\n  file:    {findings_file}")
     return 0
 
 
@@ -2077,13 +1373,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--subject-id",
         default=None,
         action=_Once,
-        help="Subject identifier (required for phases 070/080: candidate_id or finding_id)",
+        help="Subject identifier (050: priority_area; 070/080: candidate_id from phase-060)",
     )
     p_reg.add_argument(
         "--payload-json",
         default=None,
         action=_Once,
-        help="Absolute path to structured JSON payload sidecar (required for phases 060/070)",
+        help="Absolute path to structured JSON payload sidecar (required for 040/060/070/080)",
     )
 
     # --- accept ---
@@ -2139,7 +1435,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--subject-id",
         default=None,
         action=_Once,
-        help="Subject identifier override (inferred from superseded artifact if omitted)",
+        help="Subject identifier (inferred from the superseded artifact; must match if given)",
     )
     p_rev.add_argument(
         "--payload-json",

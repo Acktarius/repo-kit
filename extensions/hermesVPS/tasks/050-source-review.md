@@ -23,9 +23,9 @@ write report with `blocked`, stop.
 
 ## 4. Perform
 
-Perform only Rule 050, for **one review priority**:
-- the priority named in the trigger message; otherwise
-- the first prioritized review area from the phase-020 report.
+Perform only Rule 050, for **one review priority**: the `<priority_area>`
+named in the trigger message (`--trigger-input`).  It must be one of the
+prioritized review areas from the phase-020 report.
 
 Read-only inspection by default.  Run a scanner only if the human approved
 that exact action in the trigger message.
@@ -41,10 +41,11 @@ Write exactly one Markdown report to `<run_root>/reports/`.
 hermes-vps-artifacts register \
   --run-json <run_json_path> \
   --phase 050 \
+  --subject-id <priority_area> \
   --source-report <absolute-path>
 ```
 
 ## 7. Stop
 
 Stop and wait for human approval.  A separate invocation is required for
-each additional review priority.
+each additional review priority.  Phase 060 uses every selected priority.

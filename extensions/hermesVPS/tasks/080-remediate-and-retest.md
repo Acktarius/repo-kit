@@ -3,9 +3,11 @@
 - Phase: 080 — remediate-and-retest
 - Phase rule: `rules/rules_080-remediate-and-retest.md`
 - Report: `<run_root>/reports/phase-080-hermes-vN.md`
-- Payload: `<run_root>/reports/payload-080-<finding_id>-vN.json` (provenance record)
+- Payload: `<run_root>/reports/payload-080-<candidate_id>-vN.json` (provenance record)
 
-The finding ID is provided in the trigger message (`--trigger-input`).
+The phase-060 candidate ID is provided in the trigger message (`--trigger-input`).
+Phases 070 and 080 share this identity: `--trigger-input`, `--subject-id`, and the
+payload `candidate_id` must all be equal.
 This task implements **gate 1 only** of the five-gate remediation model.
 
 ## 1. Read first
@@ -23,11 +25,12 @@ Approved source path and commit from `run.json`.
 
 Required:
 - Selected phase-060 triage artifact; verify SHA-256.
-- Selected phase-040 vuln-intel artifact (`selected_by_phase["040"]`); record its ID and SHA-256.
-- Selected phase-070 finding-record payload for the named finding_id
-  (`selected_by_subject["070"][finding_id]`); record its ID and SHA-256.
+- Selected phase-040 vuln-intel artifact (`selected_by_phase["040"]`); record its ID and `payload_sha256`.
+- Selected phase-070 finding-record payload for the named candidate
+  (`selected_by_subject["070"][candidate_id]`); record its ID and `payload_sha256`.
 
-The named finding must exist with an `open` status in the phase-070 payload.
+The phase-070 `assessment_disposition` must be `confirmed`, `suspected`, or
+`needs-investigation`; the helper rejects any other disposition.
 
 If any input is missing or stale, write the report with `blocked` and stop.
 Commit change → report and stop.
@@ -47,20 +50,21 @@ If intel is stale, note it prominently in the report. **Do not silently omit it.
 
 ## 5. Build provenance payload
 
-Create `<run_root>/reports/plan-080-<finding_id>.json`:
+Create `<run_root>/reports/plan-080-<candidate_id>.json`:
 
 ```json
 {
   "schema_version": 1,
   "phase": "080",
-  "finding_id": "<finding_id>",
+  "candidate_id": "<candidate_id>",
+  "finding_id": "<phase-070 proposed_finding.id, or null>",
   "source_commit": "<commit>",
   "intel_artifact_id": "<exact phase-040 artifact ID>",
-  "intel_artifact_sha256": "<sha256 from manifest>",
+  "intel_artifact_sha256": "<payload_sha256 of the phase-040 entry>",
   "assessed_finding_artifact_id": "<exact phase-070 artifact ID>",
-  "assessed_finding_sha256": "<sha256 from manifest>",
+  "assessed_finding_sha256": "<payload_sha256 of the phase-070 entry>",
   "intel_freshness_at_plan_time": {
-    "ok": <true|false>,
+    "freshness_ok": <true|false>,
     "evaluated_at_utc": "<now>",
     "effective_threshold_hours": 24.0,
     "threshold_source": "default",
@@ -98,13 +102,14 @@ Include the intel provenance section (artifact ID, freshness, limitations).
 hermes-vps-artifacts register \
   --run-json <run_json_path> \
   --phase 080 \
-  --subject-id <finding_id> \
+  --subject-id <candidate_id> \
   --source-report <absolute-path-to-report.md> \
-  --payload-json <absolute-path-to-plan-080-<finding_id>.json>
+  --payload-json <absolute-path-to-plan-080-<candidate_id>.json>
 ```
 
 `--payload-json` is **required** for phase 080.
-The artifact helper validates the referenced artifact IDs/hashes against the manifest.
+The artifact helper validates the payload against `templates/phase-080-plan.schema.json`
+and requires the referenced IDs/hashes to be the current, complete 040 and 070 selections.
 
 ## 9. Stop
 

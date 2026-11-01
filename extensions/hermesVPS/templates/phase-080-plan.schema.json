@@ -4,7 +4,7 @@
   "description": "Structured provenance record for phase-080 (remediate-and-retest, gate 1: plan only). Records the exact intelligence snapshot and assessment artifact used to draft the plan. Validated by hermes-vps-artifacts at registration; referenced artifact IDs/hashes are added to prerequisite_artifacts. A new 040 selection made after this plan was created causes a downstream stale detection.",
   "type": "object",
   "required": [
-    "schema_version", "phase", "finding_id", "source_commit",
+    "schema_version", "phase", "candidate_id", "source_commit",
     "intel_artifact_id", "intel_artifact_sha256",
     "assessed_finding_artifact_id", "assessed_finding_sha256",
     "intel_freshness_at_plan_time"
@@ -18,14 +18,20 @@
       "type": "string",
       "const": "080"
     },
-    "finding_id": {
+    "candidate_id": {
       "type": "string",
-      "description": "Stable finding/SG-NNN identifier this plan addresses. Must match --subject-id passed to hermes-vps-artifacts register.",
+      "description": "Candidate ID from the selected phase-060 triage payload. Must equal --subject-id and the phase-070 assessment's candidate_id.",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "finding_id": {
+      "type": ["string", "null"],
+      "description": "Optional SG-NNN ID. When non-null it must equal proposed_finding.id of the selected phase-070 assessment for candidate_id.",
+      "pattern": "^SG-[0-9]{3,}$"
     },
     "source_commit": {
       "type": "string",
-      "description": "Full 40-char lowercase hex SHA of the inspected source commit"
+      "description": "Full 40-char lowercase hex SHA of the inspected source commit; must equal run.json source.commit",
+      "pattern": "^[0-9a-f]{40}$"
     },
     "intel_artifact_id": {
       "type": "string",
@@ -34,7 +40,7 @@
     },
     "intel_artifact_sha256": {
       "type": "string",
-      "description": "SHA-256 of the phase-040 artifact file at plan creation time. Validated against manifest at registration.",
+      "description": "payload_sha256 of the phase-040 artifact (the vuln-intel record) at plan creation time. Must match the manifest at registration.",
       "pattern": "^[0-9a-f]{64}$"
     },
     "assessed_finding_artifact_id": {
@@ -44,7 +50,7 @@
     },
     "assessed_finding_sha256": {
       "type": "string",
-      "description": "SHA-256 of the phase-070 artifact file at plan creation time. Validated against manifest at registration.",
+      "description": "payload_sha256 of the phase-070 artifact (the finding record) at plan creation time. Must match the manifest at registration.",
       "pattern": "^[0-9a-f]{64}$"
     },
     "intel_freshness_at_plan_time": {
@@ -52,7 +58,6 @@
       "description": "Freshness evaluation recorded when the plan was drafted. Preserved immutably; not updated when new 040 evidence is collected.",
       "required": ["evaluated_at_utc", "effective_threshold_hours", "threshold_source", "freshness_ok"],
       "properties": {
-        "ok": { "type": "boolean" },
         "freshness_ok": { "type": "boolean" },
         "evaluated_at_utc": { "type": "string" },
         "effective_threshold_hours": { "type": "number" },

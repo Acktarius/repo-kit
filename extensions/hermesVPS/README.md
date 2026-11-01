@@ -67,7 +67,7 @@ Operator reviews consultation prompt → separate explicit request before phase 
 /hermes-vps-020 repoX   # threat model (prereqs: 010)
 /hermes-vps-030 repoX   # scanner plan (prereqs: 010, 020)
 /hermes-vps-040 repoX   # dependency advisories + vuln intel (prereqs: 010, 020, 030)
-/hermes-vps-050 repoX   # source review — one priority per invocation (prereqs: 010, 020)
+/hermes-vps-050 repoX <priority_area>   # source review — one priority per invocation (prereqs: 010, 020)
 ```
 
 Phases 040 and 050 may run in either order, or both, depending on the
@@ -133,8 +133,9 @@ Phase 050 for a second priority:
 /hermes-vps-060 repoX
 ```
 
-Requires at least one of 040 or 050.  When both are selected and valid, both
-are read as input.  Phase 060 produces:
+Requires at least one of 040 or 050.  Every selected input is read: phase 040
+if selected, and every selected phase-050 review priority.  A selected input
+that is incomplete, tampered, or stale blocks phase 060.  Phase 060 produces:
 - A Markdown report
 - A JSON triage payload (`triage-payload.schema.json`) with stable `candidate_id` values
 
@@ -178,7 +179,12 @@ hermes-vps-artifacts register \
   --payload-json /abs/finding-record.json
 ```
 
-### Generate findings export (after all 070 phases complete)
+### Findings export (automatic after the last 070 assessment)
+
+When a phase-070 registration leaves every triaged candidate with a complete,
+current assessment, `hermes-vps-artifacts` consolidates the findings export
+automatically and prints the handoff prompt.  To regenerate later (for
+example after registering 080 plans):
 
 ```bash
 /hermes-vps-remediate repoX
@@ -202,36 +208,40 @@ If any candidates from the triage inventory have no current 070 assessment,
 the export is labeled **PARTIAL**. A partial export is **not** a complete
 remediation handoff.
 
-Enriching with optional 080 plans: run phase 080 for each finding before
-calling `generate-findings`; the helper automatically incorporates available
-080 plans.
+Enriching with optional 080 plans: run phase 080 for each candidate, then
+regenerate the export; current 080 plans are incorporated automatically.
 
 ```bash
-# With 080 plans for SG-001 registered:
+# With an 080 plan for C-001 registered:
 hermes-vps-artifacts generate-findings --run-json /abs/run.json
 # → findings-v1.json includes remediation_plan_artifact: "phase-080-hermes-v1"
 # → finding status remains "open" (plan ≠ fix)
-# → readiness.provenance_080 reports mismatched_intel if 040 changed since 080 plan
+# → readiness.provenance_080.stale_plans lists plans whose 040/070 inputs changed
 ```
 
-### Phase 080 — Remediation plan (one finding per invocation, gate 1 only)
+### Phase 080 — Remediation plan (one candidate per invocation, gate 1 only)
 
 ```bash
-/hermes-vps-080 repoX SG-001   # plan for first finding
-/hermes-vps-080 repoX SG-002   # separate invocation for second finding
+/hermes-vps-080 repoX C-001   # plan for first actionable candidate
+/hermes-vps-080 repoX C-002   # separate invocation for second candidate
 ```
+
+Phases 070 and 080 are keyed by the phase-060 `candidate_id`.  Phase 080 requires
+the candidate's current 070 assessment to be confirmed, suspected, or
+needs-investigation.  The optional payload `finding_id` must equal the 070
+`proposed_finding.id`.
 
 Gate 1 only. Produces a remediation plan **and a provenance payload**.
 Phase 080 now requires `--payload-json` at registration.
-The payload records the exact phase-040 and phase-070 artifact IDs/hashes
-used — resolved at plan creation time, stored immutably.
+The payload records the exact phase-040 and phase-070 artifact IDs and their
+`payload_sha256` values — resolved at plan creation time, stored immutably.
 
 ```bash
 hermes-vps-artifacts register \
   --run-json /abs/run.json --phase 080 \
-  --subject-id SG-001 \
+  --subject-id C-001 \
   --source-report /abs/report.md \
-  --payload-json /abs/plan-080-SG-001.json
+  --payload-json /abs/plan-080-C-001.json
 ```
 
 Gates 2–5 require separate authorization. Does not change finding status.
@@ -240,12 +250,14 @@ Gates 2–5 require separate authorization. Does not change finding status.
 
 ## C. Stale downstream selections
 
-When a phase-050 or phase-040 report is revised and re-registered, the
-phase-060 and all downstream artifacts may reference the old prerequisite.
+Each registration records its prerequisite IDs with their report and payload
+SHA-256 values.  An artifact is stale when any upstream input is no longer the
+current selection, is not complete, or no longer matches the recorded hashes
+(checked recursively).  The runner and the helper refuse stale inputs.
 
-`hermes-vps-artifacts selected` prints the current selections with SHA-256
-verification.  `generate-findings` detects stale assessments and labels the
-export partial.
+`hermes-vps-artifacts selected` prints every current selection with its
+problems and exits 1 if any selection is not usable.  `generate-findings`
+excludes stale assessments and plans and labels the export partial.
 
 ```bash
 hermes-vps-artifacts selected --run-json /abs/run.json
@@ -268,13 +280,17 @@ hermes-vps-artifacts selected --run-json /abs/run.json
 |-------|----------|-------------------|
 | `selected_by_phase` | Phases 010–060, findings | Single-instance phases |
 | `selected_by_subject["070"][candidate_id]` | Phase 070 | Repeated 070 assessments |
-| `selected_by_subject["080"][finding_id]` | Phase 080 | Repeated 080 plans |
+| `selected_by_subject["050"][priority_area]` | Phase 050 | Repeated 050 review priorities |
+| `selected_by_subject["080"][candidate_id]` | Phase 080 | Repeated 080 plans |
 
 ---
 
 ## E. Artifact helper (`hermes-vps-artifacts`)
 
-Sole writer of `manifest.json`.
+Sole writer of `manifest.json`.  Every report must declare exactly one
+completion state (`State: complete|incomplete|blocked`); only `complete`
+artifacts are usable as prerequisites.  Files are created exclusively; if a
+write fails, the printed recovery command repeats the original operation.
 
 ```bash
 # Register a report (single-instance phases)
@@ -327,13 +343,15 @@ hermes-vps-review --phase NNN --run-json PATH
 hermes-vps-review --phase NNN \
   --registry PATH --target-id ID
 
-# Repeated phases (070, 080): provide trigger input
+# Repeated phases: provide trigger input (050: priority_area; 070/080: candidate_id)
+hermes-vps-review --phase 050 --run-json PATH --trigger-input auth-module
 hermes-vps-review --phase 070 --run-json PATH --trigger-input C-001
-hermes-vps-review --phase 080 --run-json PATH --trigger-input SG-001
+hermes-vps-review --phase 080 --run-json PATH --trigger-input C-001
 ```
 
-**`--phase` is required.** The runner prints the operator prompt and exits;
-it never writes any file.
+**`--phase` is required.** The runner resolves every prerequisite (complete,
+intact, current) before printing the operator prompt, and exits non-zero
+without a prompt otherwise; it never writes any file.
 
 ---
 
@@ -371,9 +389,14 @@ determined by the trigger message.
 - NVD (`services.nvd.nist.gov`): CVE IDs for enrichment
 - CISA KEV (`www.cisa.gov`): full feed fetch; local matching only
 
+**Destination policy (live mode):** HTTPS on port 443 only; no embedded
+credentials; every resolved address must be globally routable unicast IPv4/IPv6
+(checked again at connect time and for every redirect target); environment
+proxies are not used.  Unresolvable hosts are refused.
+
 **How to refresh stale evidence:** Revise the phase-040 artifact with a new
-`vuln-intel-record.json`. `generate-findings` detects 080 plans that used the
-old 040 snapshot and reports them in `readiness.provenance_080.mismatched_intel`.
+`vuln-intel-record.json`. `generate-findings` excludes 080 plans built on the
+old 040 snapshot and lists them in `readiness.provenance_080.stale_plans`.
 
 **How to import offline evidence:**
 ```bash

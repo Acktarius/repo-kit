@@ -58,11 +58,11 @@ omitted `--phase` (implying phase 010) must now pass `--phase 010` explicitly.
 /hermes-vps-020 repoX
 /hermes-vps-030 repoX
 /hermes-vps-040 repoX
-/hermes-vps-050 repoX [priority]
+/hermes-vps-050 repoX auth-module ← priority_area required
 /hermes-vps-060 repoX
 /hermes-vps-070 repoX C-001       ← candidate_id required
-/hermes-vps-080 repoX SG-001      ← finding_id required
-/hermes-vps-remediate repoX       ← after all 070 phases complete
+/hermes-vps-080 repoX C-001       ← candidate_id required (actionable 070)
+/hermes-vps-remediate repoX       ← regenerate export (automatic after last 070)
 ```
 
 ## One-line upload fallback (for any phase)

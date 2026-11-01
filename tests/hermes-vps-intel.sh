@@ -9,6 +9,8 @@ EXT="${ROOT}/extensions/hermesVPS"
 COLLECT="${EXT}/bin/hermes-vps-collect-intel"
 ARTIFACTS="${EXT}/bin/hermes-vps-artifacts"
 LIB="${EXT}/lib"
+# Library imports below come straight from the source tree; never leave bytecode there.
+export PYTHONDONTWRITEBYTECODE=1
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
@@ -622,22 +624,22 @@ echo "=== Section J: registration as phase-040 payload ==="
 
 # Register baseline phases 010, 020, 030 first (prerequisite chain)
 RPT_010="${TMP}/phase-010.md"
-printf '# Phase 010\nContent.\n' >"${RPT_010}"
+printf '# Phase 010\nContent.\nState: `complete`\n' >"${RPT_010}"
 "${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 010 --source-report "${RPT_010}" \
     >/dev/null 2>/dev/null || true
 
 RPT_020J="${TMP}/phase-020j.md"
-printf '# Phase 020\nContent.\n' >"${RPT_020J}"
+printf '# Phase 020\nContent.\nState: `complete`\n' >"${RPT_020J}"
 "${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 020 --source-report "${RPT_020J}" \
     >/dev/null 2>/dev/null || true
 
 RPT_030J="${TMP}/phase-030j.md"
-printf '# Phase 030\nContent.\n' >"${RPT_030J}"
+printf '# Phase 030\nContent.\nState: `complete`\n' >"${RPT_030J}"
 "${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 030 --source-report "${RPT_030J}" \
     >/dev/null 2>/dev/null || true
 
 RPT_040="${TMP}/phase-040.md"
-printf '# Phase 040 with vuln-intel\nContent.\n' >"${RPT_040}"
+printf '# Phase 040 with vuln-intel\nContent.\nState: `complete`\n' >"${RPT_040}"
 
 if "${ARTIFACTS}" register \
     --run-json "${RUN_JSON}" \
@@ -668,7 +670,7 @@ PY
 
 # Phase 040 without --payload-json must fail
 RPT_040B="${TMP}/phase-040b.md"
-printf '# Phase 040 no payload\nContent.\n' >"${RPT_040B}"
+printf '# Phase 040 no payload\nContent.\nState: `complete`\n' >"${RPT_040B}"
 if "${ARTIFACTS}" register \
     --run-json "${RUN_JSON}" \
     --phase 040 \
@@ -696,7 +698,7 @@ with open(path, "w") as fh:
 PY
 
 RPT_040C="${TMP}/phase-040c.md"
-printf '# Phase 040\nContent.\n' >"${RPT_040C}"
+printf '# Phase 040\nContent.\nState: `complete`\n' >"${RPT_040C}"
 if "${ARTIFACTS}" register \
     --run-json "${RUN_JSON}" \
     --phase 040 \
@@ -728,7 +730,7 @@ with open(sys.argv[1], "w") as fh:
     fh.write("\n")
 PY
 RPT_060="${TMP}/phase-060.md"
-printf '# Phase 060\nContent.\n' >"${RPT_060}"
+printf '# Phase 060\nContent.\nState: `complete`\n' >"${RPT_060}"
 "${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 060 \
     --source-report "${RPT_060}" --payload-json "${TRIAGE}" \
     >/dev/null 2>/dev/null || true
@@ -746,7 +748,7 @@ with open(sys.argv[1], "w") as fh:
     fh.write("\n")
 PY
 RPT_070="${TMP}/phase-070.md"
-printf '# Phase 070\nContent.\n' >"${RPT_070}"
+printf '# Phase 070\nContent.\nState: `complete`\n' >"${RPT_070}"
 "${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 070 \
     --subject-id C-001 \
     --source-report "${RPT_070}" --payload-json "${FINDING}" \
@@ -819,7 +821,7 @@ PY
 
 # Revise the 040 artifact with the stale record
 RPT_040D="${TMP}/phase-040-stale.md"
-printf '# Phase 040 stale\nContent.\n' >"${RPT_040D}"
+printf '# Phase 040 stale\nContent.\nState: `complete`\n' >"${RPT_040D}"
 ART040_ID="$(python3 -c "
 import json
 with open('${MANIFEST}') as fh:

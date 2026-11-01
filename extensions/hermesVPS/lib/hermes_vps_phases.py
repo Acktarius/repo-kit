@@ -19,8 +19,9 @@ from typing import Any, NamedTuple
 class AllOf:
     """All listed phases must have a valid selected artifact.
 
-    For repeated phases (070, 080) a subject-scoped prerequisite is handled
-    separately; this descriptor covers phase-level requirements only.
+    A repeated prerequisite phase that shares the dependent phase's subject key
+    (070 -> 080, both keyed by candidate_id) resolves to that subject's selection;
+    otherwise every subject-scoped selection of the prerequisite phase is required.
     """
 
     def __init__(self, phases: list[str]) -> None:
@@ -31,11 +32,11 @@ class AllOf:
 
 
 class OneOf:
-    """At least one (possibly all) of the listed phases must have a valid selected artifact.
+    """At least one of the listed phases must have a selected artifact.
 
-    When multiple branches are valid, all valid branches are resolved and
-    reported.  A stale or invalid branch is reported explicitly even if
-    another branch is available.
+    Every selected branch is resolved and used as input.  A selected branch that
+    is stale or invalid fails resolution even if another branch is valid
+    (fail closed: downstream work must not silently drop an input).
     """
 
     def __init__(self, phases: list[str]) -> None:
@@ -54,10 +55,11 @@ class PhaseInfo(NamedTuple):
     phase_name: str          # slug (e.g. "inventory", "threat-model")
     prereqs: AllOf | OneOf   # Prerequisite descriptor
     policy_files: list[str]  # Required relative paths under policy_prefix
-    subject_id_required: bool = False  # True for repeated phases (070, 080)
+    subject_id_required: bool = False  # True for repeated phases (050, 070, 080)
     payload_required: bool = False     # True for phases that need a JSON sidecar
-    repeated: bool = False             # True for phases that run per candidate/finding
-    trigger_label: str = ""            # Human label for --trigger-input (070: "candidate_id"; 080: "finding_id")
+    repeated: bool = False             # True for phases that run per subject
+    trigger_label: str = ""            # Subject key: --trigger-input / --subject-id / payload field
+    payload_schema: str = ""           # templates/<name> enforced for the payload
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +130,7 @@ PHASE_TABLE: dict[str, PhaseInfo] = {
             extra=["templates/vuln-intel-record.schema.json"],
         ),
         payload_required=True,
+        payload_schema="vuln-intel-record.schema.json",
     ),
     "050": PhaseInfo(
         title="Source and configuration review",
@@ -148,7 +151,8 @@ PHASE_TABLE: dict[str, PhaseInfo] = {
     "060": PhaseInfo(
         title="Validate and triage",
         phase_name="validate-and-triage",
-        # at least one of 040 or 050 must be selected; both are used if present
+        # at least one of 040 or 050 must be selected; every selected 050
+        # priority and the selected 040 are all inputs
         prereqs=OneOf(["040", "050"]),
         policy_files=_phase_files(
             "rules/rules_060-validate-and-triage.md",
@@ -157,6 +161,7 @@ PHASE_TABLE: dict[str, PhaseInfo] = {
             extra=["templates/triage-payload.schema.json"],
         ),
         payload_required=True,
+        payload_schema="triage-payload.schema.json",
     ),
     "070": PhaseInfo(
         title="Reviewed findings",
@@ -172,11 +177,12 @@ PHASE_TABLE: dict[str, PhaseInfo] = {
         payload_required=True,
         repeated=True,
         trigger_label="candidate_id",
+        payload_schema="finding-record.schema.json",
     ),
     "080": PhaseInfo(
         title="Remediate and retest (gate 1: plan only)",
         phase_name="remediate-and-retest",
-        # subject-scoped: requires a 070 artifact for the same finding_id
+        # subject-scoped: requires the selected 070 for the same candidate_id
         prereqs=AllOf(["060", "070"]),
         policy_files=_phase_files(
             "rules/rules_080-remediate-and-retest.md",
@@ -187,7 +193,8 @@ PHASE_TABLE: dict[str, PhaseInfo] = {
         subject_id_required=True,
         payload_required=True,
         repeated=True,
-        trigger_label="finding_id",
+        trigger_label="candidate_id",
+        payload_schema="phase-080-plan.schema.json",
     ),
 }
 

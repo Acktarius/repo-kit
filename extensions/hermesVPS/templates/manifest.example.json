@@ -128,12 +128,12 @@
       "reviews": []
     },
     {
-      "$comment": "Phase 080 — repeated phase; subject_id = finding_id",
+      "$comment": "Phase 080 — repeated phase; subject_id = candidate_id (same identity as 070)",
       "id": "phase-080-hermes-v1",
       "kind": "hermes_phase_report",
       "phase": "080",
       "version": 1,
-      "subject_id": "SG-001",
+      "subject_id": "C-001",
       "path": "reports/phase-080-hermes-v1.md",
       "sha256": "001122...",
       "source_commit": "0123456789abcdef0123456789abcdef01234567",
@@ -141,7 +141,7 @@
       "producer": "hermes-vps-artifacts/register",
       "created_at_utc": "2026-10-31T04:00:00Z",
       "completion_status": "complete",
-      "prerequisite_artifacts": ["phase-060-hermes-v1", "phase-070-hermes-v2"],
+      "prerequisite_artifacts": ["phase-060-hermes-v1", "phase-070-hermes-v2", "phase-040-hermes-v1"],
       "supersedes": null,
       "reviews": []
     },
@@ -162,22 +162,20 @@
     }
   ],
   "selected_by_phase": {
-    "$comment": "Authoritative for single-instance phases (010–060). Informational for repeated phases.",
+    "$comment": "Single-instance phases and the findings export. Repeated phases (050, 070, 080) appear only in selected_by_subject.",
     "010": "phase-010-hermes-v1",
     "040": "phase-040-hermes-v1",
     "060": "phase-060-hermes-v1",
-    "070": "phase-070-hermes-v3",
-    "080": "phase-080-hermes-v1",
     "findings": "findings-v1"
   },
   "selected_by_subject": {
-    "$comment": "Authoritative for repeated phases (070, 080). Keyed by phase then subject_id.",
+    "$comment": "Repeated phases (050, 070, 080). Keyed by phase then subject_id.",
     "070": {
       "C-001": "phase-070-hermes-v2",
       "C-002": "phase-070-hermes-v3"
     },
     "080": {
-      "SG-001": "phase-080-hermes-v1"
+      "C-001": "phase-080-hermes-v1"
     }
   }
 }

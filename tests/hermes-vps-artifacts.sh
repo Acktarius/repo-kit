@@ -95,6 +95,7 @@ sha256() { sha256sum "$1" | awk '{print $1}'; }
 make_report() {
   local path="$1" content="${2:-# Phase 010 inventory report\n\nTest content.}"
   printf '%b' "${content}" >"${path}"
+  grep -qiE '^[[:space:]-]*(\*\*)?(completion )?state' "${path}" || printf '\nState: `complete`\n' >>"${path}"
 }
 
 # ============================================================
@@ -587,7 +588,7 @@ fi
 # artifact helper. The helper is the sole writer of manifest.json and accepts any phase in VALID_PHASES.
 # Policy file checks for the requested phase belong to the runner (hermes-vps-review), not the helper.
 REPORT_020="${TMP}/draft-phase-020.md"
-printf '# Phase 020 report\n\nContent.\n' >"${REPORT_020}"
+printf '# Phase 020 report\n\nContent.\nState: `complete`\n' >"${REPORT_020}"
 if "${ARTIFACTS}" register \
     --run-json "${RUN_JSON}" \
     --phase 020 \

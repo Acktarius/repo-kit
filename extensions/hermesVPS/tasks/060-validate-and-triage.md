@@ -20,6 +20,8 @@ Approved source path and commit from `run.json`.
 ## 3. Prior artifacts
 
 Resolve at least one of: selected phase-040 or phase-050 artifacts.
+Use **every** selected input the runner lists under SELECTED PREREQUISITES,
+including every selected phase-050 review priority.
 When both are selected, read both as inputs.
 Verify SHA-256 for each present selected artifact.
 Do not silently use one branch if the other is stale; report stale branches.
@@ -45,6 +47,7 @@ Write:
 1. Exactly one Markdown report to `<run_root>/reports/`.
 2. One JSON triage payload conforming to `templates/triage-payload.schema.json`.
    The payload defines the **in-scope candidate inventory** for `generate-findings`.
+   Its `candidates[].candidate_id` values are the identities used by phases 070 and 080.
 
 ## 6. Register
 

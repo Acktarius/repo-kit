@@ -33,150 +33,38 @@ from lib.hermes_vps_common import (  # noqa: E402
     load_json,
     require_cmd,
     resolve_registry,
+    validate_identifier,
     validate_run,
 )
 from lib.hermes_vps_phases import (  # noqa: E402
     PHASE_TABLE,
     VALID_PHASES,
-    REPEATED_PHASES,
     validate_phase_policy_files,
     abs_policy_files_for_phase,
 )
+from lib.hermes_vps_resolver import find_artifact, resolve_prerequisites  # noqa: E402
 
 
-def _resolve_prereqs(
-    manifest_path: str,
-    run_root: str,
-    phase: str,
-    trigger_input: str | None,
-    ctx: dict[str, Any],
-) -> tuple[list[str], list[str]]:
-    """Resolve selected prerequisite artifacts for the given phase.
-
-    Returns (lines_to_print, warning_lines).
-    """
-    from lib.hermes_vps_common import load_json as _lj, sha256_file  # noqa: PLC0415
-
-    info = PHASE_TABLE[phase]
-    prereq_descriptor = info.prereqs
-    lines: list[str] = []
-    warnings: list[str] = []
-
-    if not os.path.isfile(manifest_path):
-        if prereq_descriptor.__class__.__name__ == "AllOf" and not prereq_descriptor.phases:
-            lines.append("  (no prerequisites; phase 010 starts fresh)")
-        else:
-            warnings.append("manifest.json absent — prerequisite artifacts cannot be verified")
-        return lines, warnings
-
-    try:
-        manifest = _lj(manifest_path)
-    except Exception as exc:  # noqa: BLE001
-        warnings.append(f"cannot read manifest.json: {exc}")
-        return lines, warnings
-
-    sel_phase = manifest.get("selected_by_phase", {})
-    sel_subj = manifest.get("selected_by_subject", {})
-    artifacts_index: dict[str, dict[str, Any]] = {
-        a.get("id", ""): a
-        for a in manifest.get("artifacts", [])
-        if isinstance(a, dict)
-    }
-
-    def _artifact_status(art_id: str) -> str:
-        entry = artifacts_index.get(art_id)
-        if entry is None:
-            return f"{art_id} (NOT FOUND IN MANIFEST)"
-        rel_path = entry.get("path", "")
-        abs_path = os.path.join(run_root, rel_path)
-        sha_rec = entry.get("sha256", "")
-        if not os.path.isfile(abs_path):
-            return f"{art_id} (FILE MISSING: {abs_path})"
-        if sha_rec:
-            try:
-                actual = sha256_file(abs_path)
-                if actual != sha_rec:
-                    return f"{art_id} (SHA-256 MISMATCH)"
-            except OSError:
-                return f"{art_id} (cannot read file)"
-        return f"{art_id} ({rel_path})"
-
-    descriptor_type = prereq_descriptor.__class__.__name__
-
-    if descriptor_type == "AllOf":
-        for prereq_phase in prereq_descriptor.phases:
-            if prereq_phase in REPEATED_PHASES:
-                # For repeated phases, show subject-scoped selections if trigger_input matches
-                subj_map = sel_subj.get(prereq_phase, {})
-                if trigger_input and trigger_input in subj_map:
-                    art_id = subj_map[trigger_input]
-                    lines.append(f"  phase {prereq_phase} [{trigger_input}]: {_artifact_status(art_id)}")
-                elif subj_map:
-                    lines.append(f"  phase {prereq_phase} selections:")
-                    for subj, art in sorted(subj_map.items()):
-                        lines.append(f"    [{subj}]: {_artifact_status(art)}")
-                else:
-                    selected_id = sel_phase.get(prereq_phase)
-                    if selected_id:
-                        lines.append(f"  phase {prereq_phase}: {_artifact_status(selected_id)}")
-                    else:
-                        warnings.append(f"phase {prereq_phase}: no selected artifact")
-            else:
-                selected_id = sel_phase.get(prereq_phase)
-                if selected_id:
-                    lines.append(f"  phase {prereq_phase}: {_artifact_status(selected_id)}")
-                else:
-                    warnings.append(f"phase {prereq_phase}: no selected artifact")
-
-    elif descriptor_type == "OneOf":
-        valid_branches: list[str] = []
-        invalid_branches: list[str] = []
-        for prereq_phase in prereq_descriptor.phases:
-            selected_id = sel_phase.get(prereq_phase)
-            if selected_id:
-                entry = artifacts_index.get(selected_id)
-                if entry:
-                    rel_path = entry.get("path", "")
-                    abs_path = os.path.join(run_root, rel_path)
-                    sha_rec = entry.get("sha256", "")
-                    ok = True
-                    if not os.path.isfile(abs_path):
-                        ok = False
-                    elif sha_rec:
-                        try:
-                            actual = sha256_file(abs_path)
-                            if actual != sha_rec:
-                                ok = False
-                        except OSError:
-                            ok = False
-                    if ok:
-                        valid_branches.append(prereq_phase)
-                    else:
-                        invalid_branches.append(prereq_phase)
-                        warnings.append(
-                            f"phase {prereq_phase}: selected artifact {selected_id!r} is stale or invalid"
-                        )
-                else:
-                    warnings.append(f"phase {prereq_phase}: selected id {selected_id!r} not in manifest")
-                    invalid_branches.append(prereq_phase)
-            # Note: missing selection is not a warning — it's an allowed absent branch
-
-        if valid_branches:
-            for vb in valid_branches:
-                art_id = sel_phase[vb]
-                lines.append(f"  phase {vb}: {_artifact_status(art_id)} (OR-branch; valid)")
-        if not valid_branches and not invalid_branches:
-            warnings.append(
-                f"no selected artifact for any of: {prereq_descriptor.phases}; "
-                f"at least one must be selected before phase {phase}"
-            )
-        elif not valid_branches:
-            warnings.append(
-                "all OR-prerequisite branches are stale or invalid; "
-                f"at least one of {prereq_descriptor.phases} must be valid"
-            )
-
-    return lines, warnings
+def resolve_prereq_lines(
+    ctx: dict[str, Any], phase: str, trigger_input: str | None
+) -> list[str]:
+    """Run the shared fail-closed resolver; return prompt lines or raise ValidationError."""
+    manifest: dict[str, Any] = {}
+    if os.path.isfile(ctx["manifest_path"]):
+        manifest = load_json(ctx["manifest_path"])
+    ids = resolve_prerequisites(manifest, ctx["run_root"], phase, trigger_input)
+    if not ids:
+        return ["  (no prerequisites)"]
+    lines = []
+    for art_id in ids:
+        entry = find_artifact(manifest, art_id) or {}
+        subject = f" [{entry['subject_id']}]" if entry.get("subject_id") else ""
+        payload = f" + {entry['payload_path']}" if entry.get("payload_path") else ""
+        lines.append(
+            f"  phase {entry.get('phase')}{subject}: {art_id} "
+            f"({entry.get('path')}{payload}; sha256 {entry.get('sha256', '')[:16]}…)"
+        )
+    return lines
 
 
 def print_prompt(
@@ -184,23 +72,16 @@ def print_prompt(
     run_json_path: str,
     cli_phase: str,
     trigger_input: str | None,
+    prereq_lines: list[str],
 ) -> None:
     phase_info = PHASE_TABLE[cli_phase]
     pf = abs_policy_files_for_phase(ctx["policy_prefix"], cli_phase)
     artifacts_bin = os.path.join(ctx["policy_prefix"], "bin", "hermes-vps-artifacts")
 
-    # Resolve prerequisites from manifest
-    prereq_lines, prereq_warnings = _resolve_prereqs(
-        ctx["manifest_path"], ctx["run_root"], cli_phase, trigger_input, ctx
+    prereq_block = (
+        "SELECTED PREREQUISITES (verified complete, intact, current; use ALL of them):\n"
+        + "\n".join(prereq_lines) + "\n\n"
     )
-
-    prereq_block = ""
-    if prereq_lines:
-        prereq_block = "SELECTED PREREQUISITES:\n" + "\n".join(prereq_lines) + "\n\n"
-    if prereq_warnings:
-        prereq_block += "PREREQUISITE WARNINGS:\n" + "\n".join(
-            f"  ! {w}" for w in prereq_warnings
-        ) + "\n\n"
 
     trigger_block = ""
     if phase_info.subject_id_required and trigger_input:
@@ -286,8 +167,8 @@ def _phase_instructions(
     next_phase = {
         "010": "020", "020": "030", "030": "040 or 050",
         "040": "060", "050": "060", "060": "070",
-        "070": "080 (per finding) or generate-findings",
-        "080": "generate-findings (after all findings assessed)",
+        "070": "the next candidate (findings are consolidated automatically after the last one)",
+        "080": "the next phase-080 candidate",
     }.get(phase, "next phase")
 
     if phase == "010":
@@ -317,7 +198,7 @@ INSTRUCTIONS FOR THE AGENT:
   - Then STOP. Each candidate requires a separate phase-070 invocation."""
 
     if phase == "080":
-        trigger_line = f"  - Finding ID for this invocation: {trigger_input!r}\n" if trigger_input else ""
+        trigger_line = f"  - Candidate ID for this invocation: {trigger_input!r}\n" if trigger_input else ""
         return f"""\
 INSTRUCTIONS FOR THE AGENT:
   - Execute ONLY phase {phase} gate 1 (remediation plan) for this run, following
@@ -399,7 +280,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action=Once,
         help=(
             "Subject identifier for repeated phases "
-            "(phase 070: candidate_id; phase 080: finding_id)"
+            "(phase 050: priority_area; phases 070 and 080: candidate_id from the "
+            "selected phase-060 triage payload)"
         ),
     )
     return p.parse_args(argv)
@@ -420,6 +302,11 @@ def main(argv: list[str]) -> int:
 
     phase_info = PHASE_TABLE[cli_phase]
     trigger_input: str | None = args.trigger_input
+    if trigger_input is not None:
+        try:
+            validate_identifier(trigger_input, "--trigger-input")
+        except ValidationError as exc:
+            die(str(exc))
 
     if phase_info.subject_id_required and not trigger_input:
         die(
@@ -484,10 +371,12 @@ def main(argv: list[str]) -> int:
                 + "\n  ".join(missing)
             )
 
+        prereq_lines = resolve_prereq_lines(ctx, cli_phase, trigger_input)
+
     except ValidationError as exc:
         die(str(exc))
 
-    print_prompt(ctx, run_json_path, cli_phase, trigger_input)
+    print_prompt(ctx, run_json_path, cli_phase, trigger_input, prereq_lines)
     return 0
 
 

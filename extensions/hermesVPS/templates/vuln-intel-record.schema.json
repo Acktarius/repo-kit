@@ -20,7 +20,8 @@
     },
     "source_commit": {
       "type": "string",
-      "description": "Full 40-char lowercase hex SHA of the inspected source commit"
+      "description": "Full 40-char lowercase hex SHA of the inspected source commit; must equal run.json source.commit",
+      "pattern": "^[0-9a-f]{40}$"
     },
     "collection_mode": {
       "type": "string",
@@ -63,6 +64,26 @@
             "advisory_ids_returned": {
               "type": "array",
               "items": { "type": "string" }
+            },
+            "fetch_failed_ids": {
+              "type": "array",
+              "description": "Advisory IDs returned by querybatch whose full record could not be retrieved. Any entry downgrades status to partial; the package relationship is still recorded in matches with details_fetch_failed=true.",
+              "items": { "type": "string" }
+            },
+            "incomplete_packages": {
+              "type": "array",
+              "description": "Packages whose OSV result was not fully retrieved (e.g. an unfollowed next_page_token). Any entry downgrades status to partial; these packages are never listed as no-match.",
+              "items": {
+                "type": "object",
+                "required": ["package", "version", "ecosystem", "reason"],
+                "properties": {
+                  "package": { "type": "string" },
+                  "version": { "type": "string" },
+                  "ecosystem": { "type": "string" },
+                  "reason": { "type": "string" }
+                },
+                "additionalProperties": false
+              }
             },
             "note": { "type": ["string", "null"] }
           },
@@ -209,6 +230,10 @@
           "candidate_id_suggestion": {
             "type": ["string", "null"],
             "description": "Suggested candidate ID for phase-060 triage (e.g. C-OSV-001). Not authoritative."
+          },
+          "details_fetch_failed": {
+            "type": "boolean",
+            "description": "True when querybatch matched this package but the full advisory record could not be retrieved; ranges, fixed versions, and severity are then unknown."
           }
         },
         "additionalProperties": false

@@ -11,7 +11,7 @@ Usage:
   hermes-vps-collect-intel --run-json PATH --output PATH [options]
 
 Options:
-  --mode live|imported|not-authorized  (default: live)
+  --mode live|imported|not-authorized  (default: not-authorized)
   --packages-json PATH                 JSON: [{ecosystem,name,version},...]
   --import-evidence PATH               Required for --mode imported
   --freshness-hours N                  Override default 24h threshold
@@ -25,12 +25,14 @@ Exit codes:
 import os
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_LIB = os.path.join(_HERE, "..", "lib")
-if _LIB not in sys.path:
-    sys.path.insert(0, _LIB)
+# Prevent __pycache__ writes under the policy tree; must precede the lib import.
+sys.dont_write_bytecode = True
 
-from hermes_vps_intel import main  # noqa: E402
+_EXT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _EXT_ROOT not in sys.path:
+    sys.path.insert(0, _EXT_ROOT)
+
+from lib.hermes_vps_intel import main  # noqa: E402
 
 if __name__ == "__main__":
     sys.exit(main())

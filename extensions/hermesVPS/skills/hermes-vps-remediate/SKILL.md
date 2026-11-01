@@ -1,6 +1,6 @@
 ---
 name: hermes-vps-remediate
-description: "hermesVPS findings export: generate and register the consolidated findings handoff after all phase-070 assessments are complete."
+description: "hermesVPS findings export: regenerate and register the consolidated findings handoff (it is generated automatically after the last phase-070 assessment)."
 ---
 
 # /hermes-vps-remediate — generate findings export (hermesVPS)
@@ -9,8 +9,9 @@ description: "hermesVPS findings export: generate and register the consolidated 
 /hermes-vps-remediate <target-id>
 ```
 
-Use after all phase-070 assessments for the current run are complete and
-human-approved.
+The export is generated automatically when the last phase-070 assessment for
+the current run is registered.  Use this skill to regenerate it afterwards,
+for example to include phase-080 plans registered since then.
 
 ## Steps
 

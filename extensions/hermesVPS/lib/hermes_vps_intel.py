@@ -28,9 +28,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
+import ipaddress
 import json
 import os
 import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -121,45 +124,108 @@ def _parse_dt(ts: str | None) -> datetime | None:
 
 
 # ---------------------------------------------------------------------------
-# URL validation — private network / loopback / link-local rejection
+# Destination policy — HTTPS only, globally routable unicast IPv4/IPv6 only
 # ---------------------------------------------------------------------------
 
-_PRIVATE_PREFIXES = ("127.", "10.", "192.168.", "169.254.")
-_PRIVATE_172_RANGE = tuple(f"172.{i}." for i in range(16, 32))
-_BLOCKED_HOSTS = {"localhost", "metadata.google.internal", "169.254.169.254"}
+def _ip_allowed(ip_text: str) -> bool:
+    """True only for globally routable unicast addresses (IPv4 and IPv6).
+
+    Rejects loopback, RFC 1918, CGNAT, link-local (incl. cloud metadata),
+    unique-local, multicast, reserved, documentation, unspecified, and
+    IPv4-mapped / 6to4 / Teredo IPv6 forms that embed a disallowed IPv4.
+    """
+    try:
+        ip = ipaddress.ip_address(ip_text.split("%", 1)[0])
+    except ValueError:
+        return False
+    embedded = []
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded = [a for a in (ip.ipv4_mapped, ip.sixtofour, ip.teredo and ip.teredo[1]) if a]
+    return all(a.is_global and not a.is_multicast for a in [ip, *embedded])
+
+
+def resolve_allowed(host: str, port: int) -> list[str]:
+    """Resolve host and return its addresses; raise ValueError if any is disallowed.
+
+    Fails closed: an unresolvable host is rejected rather than skipped.
+    """
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, OSError) as exc:
+        raise ValueError(f"cannot resolve {host!r}; refusing request: {exc}") from exc
+    addrs = list(dict.fromkeys(info[4][0] for info in infos))
+    bad = [a for a in addrs if not _ip_allowed(a)]
+    if not addrs or bad:
+        raise ValueError(f"{host!r} resolves to disallowed address(es) {bad or addrs}")
+    return addrs
 
 
 def validate_url(url: str) -> None:
-    """Raise ValueError if the URL targets a disallowed destination.
-
-    Rejects: non-HTTPS schemes, loopback, RFC-1918, link-local,
-    cloud metadata IPs, and known blocked hostnames.
-    """
-    try:
-        parsed = urllib.parse.urlparse(url)
-    except Exception as exc:
-        raise ValueError(f"URL parse error: {exc}") from exc
+    """Raise ValueError if the URL targets a disallowed destination."""
+    parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https":
         raise ValueError(f"only HTTPS URLs allowed; got scheme {parsed.scheme!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("URLs with embedded credentials are not allowed")
     host = (parsed.hostname or "").lower()
     if not host:
         raise ValueError("URL has no hostname")
-    if host in _BLOCKED_HOSTS:
-        raise ValueError(f"blocked hostname: {host!r}")
-    for prefix in _PRIVATE_PREFIXES + _PRIVATE_172_RANGE:
-        if host.startswith(prefix):
-            raise ValueError(f"private/loopback/link-local target rejected: {host!r}")
-    # Best-effort DNS resolution check (offline environments may skip)
+    port = parsed.port or 443
+    if port != 443:
+        raise ValueError(f"only port 443 allowed; got {port}")
     try:
-        for _, _, _, _, sockaddr in socket.getaddrinfo(host, None):
-            ip = sockaddr[0]
-            for prefix in _PRIVATE_PREFIXES + _PRIVATE_172_RANGE:
-                if ip.startswith(prefix):
-                    raise ValueError(f"resolved IP is private: {ip!r} for host {host!r}")
-            if ip.startswith("::1") or ip == "::":
-                raise ValueError(f"resolved to IPv6 loopback: {ip!r}")
-    except (socket.gaierror, OSError):
-        pass  # Cannot resolve — skip; will fail at request time if private
+        ipaddress.ip_address(host.split("%", 1)[0])
+        is_literal = True
+    except ValueError:
+        is_literal = False
+    if is_literal:
+        if not _ip_allowed(host):
+            raise ValueError(f"disallowed IP literal destination: {host!r}")
+    else:
+        resolve_allowed(host, port)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Re-resolve and validate at connect time, then connect to the validated IP.
+
+    Closes the DNS-rebinding gap between validate_url() and the socket connect;
+    TLS still verifies the certificate against the original hostname.
+    """
+
+    def connect(self) -> None:
+        last_exc: OSError | None = None
+        for ip in resolve_allowed(self.host, self.port):
+            try:
+                sock = socket.create_connection((ip, self.port), self.timeout)
+                break
+            except OSError as exc:
+                last_exc = exc
+        else:
+            raise last_exc or OSError(f"cannot connect to {self.host!r}")
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PolicyHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req: urllib.request.Request) -> Any:
+        return self.do_open(_PinnedHTTPSConnection, req, context=ssl.create_default_context())
+
+
+class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Every redirect target must pass the same destination policy."""
+
+    max_redirections = 5
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        validate_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _build_opener() -> urllib.request.OpenerDirector:
+    # ProxyHandler({}) disables environment proxies: the pinned connection must
+    # reach the validated destination directly.
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _PolicyHTTPSHandler(), _PolicyRedirectHandler()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -191,19 +257,22 @@ def _http_request(
 ) -> tuple[int, bytes]:
     """Return (http_status, response_bytes). Retries on 429 with exponential backoff.
 
-    Raises ValueError via validate_url() before making any network request
-    if the URL targets a disallowed destination.
+    Destination policy violations (initial URL, redirect target, or connect-time
+    resolution) return status 0 without contacting the disallowed destination.
     """
-    # URL policy check before any network activity.
-    validate_url(url)
+    try:
+        validate_url(url)
+    except ValueError as exc:
+        return 0, f"destination policy: {exc}".encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if extra_headers:
         headers.update(extra_headers)
+    opener = _build_opener()
     attempt = 0
     while True:
         try:
             req = urllib.request.Request(url, data=body, headers=headers, method=method)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with opener.open(req, timeout=timeout) as resp:
                 return resp.status, resp.read()
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < max_retries:
@@ -211,6 +280,8 @@ def _http_request(
                 attempt += 1
                 continue
             return exc.code, (exc.read() or b"")
+        except ValueError as exc:
+            return 0, f"destination policy: {exc}".encode("utf-8")
         except (urllib.error.URLError, OSError) as exc:
             return 0, str(exc).encode("utf-8")
 
@@ -296,8 +367,11 @@ def _extract_match_from_advisory(
     ranges: list[dict[str, Any]] = []
     fixed_versions: list[str] = []
     for affected in adv.get("affected", []):
-        affected_name = affected.get("package", {}).get("name", "")
-        if affected_name.lower() == pkg_name.lower():
+        affected_pkg = affected.get("package", {})
+        if (
+            affected_pkg.get("name", "").lower() == pkg_name.lower()
+            and affected_pkg.get("ecosystem", "") == pkg_ecosystem
+        ):
             ranges.extend(_extract_osv_ranges(affected))
             for r in affected.get("ranges", []):
                 for evt in r.get("events", []):
@@ -331,6 +405,7 @@ def _extract_match_from_advisory(
         "modified": adv.get("modified"),
         "summary": (adv.get("summary") or adv.get("details") or "")[:300],
         "candidate_id_suggestion": None,  # assigned later
+        "details_fetch_failed": False,
     }
 
 
@@ -386,6 +461,8 @@ def collect_osv(
 
     advisory_ids: list[str] = []
     matches_raw: list[dict[str, Any]] = []
+    answered: list[dict[str, str]] = []
+    incomplete: list[dict[str, str]] = []
     raw_hash_acc = b""
     failed = False
 
@@ -393,22 +470,24 @@ def collect_osv(
         batch_q = queries[batch_start: batch_start + MAX_BATCH_SIZE]
         batch_p = valid_pkgs[batch_start: batch_start + MAX_BATCH_SIZE]
         resp_data, resp_bytes = _osv_querybatch(batch_q, fixture_dir)
-        if "_error" in resp_data:
+        results = resp_data.get("results")
+        if "_error" in resp_data or not isinstance(results, list) or len(results) != len(batch_q):
             failed = True
             break
         raw_hash_acc += resp_bytes
-        for j, result in enumerate(resp_data.get("results", [])):
-            pkg = batch_p[j] if j < len(batch_p) else {}
+        for pkg, result in zip(batch_p, results):
+            key = _pkg_key(pkg)
+            if result.get("next_page_token"):
+                incomplete.append({**key, "reason": "next_page_token not followed; results truncated"})
+            else:
+                answered.append(key)
             for vuln_stub in result.get("vulns", []):
                 vid = vuln_stub.get("id", "")
-                if vid and vid not in advisory_ids:
+                if not vid:
+                    continue
+                if vid not in advisory_ids:
                     advisory_ids.append(vid)
-                    matches_raw.append({
-                        "advisory_id": vid,
-                        "package": pkg.get("name", "unknown"),
-                        "version": pkg.get("version", "unknown"),
-                        "ecosystem": pkg.get("ecosystem", "unknown"),
-                    })
+                matches_raw.append({"advisory_id": vid, **key})
 
     response_sha = _sha256_bytes(raw_hash_acc) if raw_hash_acc else None
 
@@ -416,23 +495,29 @@ def collect_osv(
         return {
             "status": Status.FAILED,
             "endpoint_used": endpoint,
-            "retrieved_at_utc": retrieved_at,
+            "retrieved_at_utc": None,
             "response_sha256": None,
             "packages_queried": len(queries),
             "advisory_ids_returned": [],
-            "note": "querybatch request failed",
+            "note": "querybatch request failed or returned a malformed result list",
             "_matches_raw": [],
+            "_answered": [],
         }
 
+    status = Status.SUCCESS if advisory_ids else Status.NO_MATCH
+    if incomplete:
+        status = Status.PARTIAL
     return {
-        "status": Status.SUCCESS if advisory_ids else Status.NO_MATCH,
+        "status": status,
         "endpoint_used": endpoint,
         "retrieved_at_utc": retrieved_at,
         "response_sha256": response_sha,
         "packages_queried": len(queries),
         "advisory_ids_returned": advisory_ids,
+        "incomplete_packages": incomplete,
         "note": None,
         "_matches_raw": matches_raw,   # internal; stripped before persisting
+        "_answered": answered,         # internal; packages with complete results
     }
 
 
@@ -638,34 +723,52 @@ def collect_cisa_kev(
 # Alias deduplication
 # ---------------------------------------------------------------------------
 
+def _pkg_key(pkg: dict[str, Any]) -> dict[str, str]:
+    """Package identity used throughout collection: ecosystem + name + version."""
+    return {
+        "package": str(pkg.get("name") or pkg.get("package") or "unknown"),
+        "version": str(pkg.get("version") or pkg.get("commit") or "unknown"),
+        "ecosystem": str(pkg.get("ecosystem") or "unknown"),
+    }
+
+
+def _key_tuple(m: dict[str, Any]) -> tuple[str, str, str]:
+    return (m["ecosystem"], m["package"].lower(), m["version"])
+
+
 def _deduplicate_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Merge match entries that share an advisory ID without losing source refs."""
-    primary_to_idx: dict[str, int] = {}
+    """Merge entries for the SAME package+ecosystem+version that share any advisory
+    ID or alias.  Entries for different packages or versions are never merged, so
+    each package/version/advisory relationship survives deduplication.
+    """
     deduped: list[dict[str, Any]] = []
     for m in matches:
-        ids = m.get("advisory_ids", [])
-        primary = ids[0] if ids else None
-        if primary is None:
-            deduped.append(m)
+        ids = set(m.get("advisory_ids", [])) | set(m.get("aliases", []))
+        target = next(
+            (
+                d for d in deduped
+                if _key_tuple(d) == _key_tuple(m)
+                and ids & (set(d["advisory_ids"]) | set(d.get("aliases", [])))
+            ),
+            None,
+        )
+        if target is None:
+            deduped.append({**m, "advisory_ids": list(m["advisory_ids"]), "aliases": list(m.get("aliases", []))})
             continue
-        # Check all IDs of the new entry against known primaries
-        merged = False
-        for aid in ids:
-            if aid in primary_to_idx:
-                existing = deduped[primary_to_idx[aid]]
-                for new_id in ids:
-                    if new_id not in existing["advisory_ids"]:
-                        existing["advisory_ids"].append(new_id)
-                for new_alias in m.get("aliases", []):
-                    if new_alias not in existing["aliases"]:
-                        existing["aliases"].append(new_alias)
-                merged = True
-                break
-        if not merged:
-            primary_to_idx[primary] = len(deduped)
-            for aid in ids:
-                primary_to_idx[aid] = len(deduped)
-            deduped.append(dict(m))
+        for aid in m["advisory_ids"]:
+            if aid not in target["advisory_ids"]:
+                target["advisory_ids"].append(aid)
+        for alias in m.get("aliases", []):
+            if alias not in target["aliases"] and alias not in target["advisory_ids"]:
+                target["aliases"].append(alias)
+        for rng in m.get("affected_ranges", []):
+            if rng not in target["affected_ranges"]:
+                target["affected_ranges"].append(rng)
+        for fv in m.get("fixed_versions", []):
+            if fv not in target["fixed_versions"]:
+                target["fixed_versions"].append(fv)
+        target["kev_membership"] = target["kev_membership"] or m["kev_membership"]
+        target["details_fetch_failed"] = target["details_fetch_failed"] and m["details_fetch_failed"]
     return deduped
 
 
@@ -832,15 +935,14 @@ def run_collection(
             },
             "vendor_advisories": [],
             "matches": [],
-            "no_match_packages": [
-                {"package": p.get("name", ""), "version": p.get("version", "unknown"),
-                 "ecosystem": p.get("ecosystem", "unknown")}
+            "no_match_packages": [],
+            "unsupported_ecosystems": [],
+            "inventory_gaps": [
+                {"package": _pkg_key(p)["package"], "reason": "not-checked: network not authorized"}
                 for p in packages
             ],
-            "unsupported_ecosystems": [],
-            "inventory_gaps": [],
             "coverage": {
-                "total_packages_checked": len(packages),
+                "total_packages_checked": 0,
                 "total_matches": 0,
                 "kev_matches": 0,
                 "packages_with_gaps": len(packages),
@@ -853,6 +955,7 @@ def run_collection(
     osv_result = collect_osv(packages, fixture_dir=fixture_dir)
     advisory_ids = osv_result.get("advisory_ids_returned", [])
     matches_raw: list[dict[str, Any]] = osv_result.pop("_matches_raw", [])
+    answered: list[dict[str, str]] = osv_result.pop("_answered", [])
 
     # Fetch full advisory records and build normalized matches.
     # Each entry in matches_raw carries the exact package/version/ecosystem for
@@ -863,21 +966,19 @@ def run_collection(
     advisory_fetch_failed: list[str] = []
 
     for adv in advisories:
-        if adv.get("_fetch_failed"):
-            advisory_fetch_failed.append(adv.get("id", "?"))
-            continue
         adv_id = adv.get("id", "")
-        # Collect ALL packages that matched this advisory (not just the first).
-        pkg_contexts = [mr for mr in matches_raw if mr["advisory_id"] == adv_id]
-        if not pkg_contexts:
-            pkg_contexts = [{}]
-        for pkg_context in pkg_contexts:
+        fetch_failed = bool(adv.get("_fetch_failed"))
+        if fetch_failed:
+            advisory_fetch_failed.append(adv_id or "?")
+        # One match per package+version+ecosystem that querybatch tied to this advisory.
+        for pkg_context in (mr for mr in matches_raw if mr["advisory_id"] == adv_id):
             m = _extract_match_from_advisory(
-                adv,
-                pkg_context.get("package", "unknown"),
-                pkg_context.get("version", "unknown"),
-                pkg_context.get("ecosystem", "unknown"),
+                {"id": adv_id} if fetch_failed else adv,
+                pkg_context["package"],
+                pkg_context["version"],
+                pkg_context["ecosystem"],
             )
+            m["details_fetch_failed"] = fetch_failed
             matches.append(m)
 
     # Downgrade OSV status if any advisory full-record fetches failed.
@@ -930,16 +1031,10 @@ def run_collection(
     osv_status = osv_result.get("status", Status.NOT_CHECKED)
     osv_collection_complete = osv_status in (Status.SUCCESS, Status.NO_MATCH)
 
-    matched_names_lower = {m["package"].lower() for m in matches}
+    matched_keys = {_key_tuple(m) for m in matches}
     no_match_packages: list[dict[str, Any]] = []
     if osv_collection_complete:
-        no_match_packages = [
-            {"package": p.get("name", ""), "version": p.get("version", "unknown"),
-             "ecosystem": p.get("ecosystem", "unknown")}
-            for p in packages
-            if p.get("name", "").lower() not in matched_names_lower
-            and not (not p.get("version") and not p.get("name"))
-        ]
+        no_match_packages = [k for k in answered if _key_tuple(k) not in matched_keys]
     inventory_gaps = [
         {"package": p.get("name", ""), "reason": "version-unknown"}
         for p in packages
@@ -964,7 +1059,7 @@ def run_collection(
         "unsupported_ecosystems": [],
         "inventory_gaps": inventory_gaps,
         "coverage": {
-            "total_packages_checked": len(packages),
+            "total_packages_checked": len(answered),
             "total_matches": len(matches),
             "kev_matches": len(kev_result.get("matched_cves", [])),
             "packages_with_gaps": len(inventory_gaps),

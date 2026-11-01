@@ -96,6 +96,7 @@ sha256() { sha256sum "$1" | awk '{print $1}'; }
 make_report() {
   local path="$1" content="${2:-# Report\n\nContent.\n}"
   printf '%b' "${content}" >"${path}"
+  grep -qiE '^[[:space:]-]*(\*\*)?(completion )?state' "${path}" || printf '\nState: `complete`\n' >>"${path}"
 }
 
 # ---------------------------------------------------------------------------
@@ -214,35 +215,28 @@ PY
 
 # ---------------------------------------------------------------------------
 # Helper: make a phase-080 provenance plan payload JSON
-# Reads artifact IDs and SHAs from the manifest.
-# Args: path commit manifest finding_id candidate_id
+# Pins the current 040 and the current 070 for the candidate by payload SHA-256.
+# Args: path commit manifest candidate_id
 # ---------------------------------------------------------------------------
 make_phase080_plan_payload() {
-  local path="$1" commit="$2" manifest="$3" finding_id="$4" candidate_id="${5:-$4}"
-  python3 - "${path}" "${commit}" "${manifest}" "${finding_id}" "${candidate_id}" <<'PY'
+  local path="$1" commit="$2" manifest="$3" candidate_id="$4"
+  python3 - "${path}" "${commit}" "${manifest}" "${candidate_id}" <<'PY'
 import json, sys
-path, commit, manifest_path, finding_id, candidate_id = sys.argv[1:6]
+path, commit, manifest_path, candidate_id = sys.argv[1:5]
 with open(manifest_path, encoding="utf-8") as fh:
     m = json.load(fh)
-intel_id = m["selected_by_phase"].get("040")
-assert intel_id, "no selected phase-040 artifact in manifest — register 040 first"
-intel_art = next(a for a in m["artifacts"] if a["id"] == intel_id)
-# Use payload_sha256 if present (validator prefers it), else fall back to sha256
-intel_sha = intel_art.get("payload_sha256") or intel_art.get("sha256", "")
-sbs_070 = m.get("selected_by_subject", {}).get("070", {})
-finding_art_id = sbs_070.get(candidate_id)
-assert finding_art_id, f"no selected phase-070 artifact for {candidate_id} in manifest"
-finding_art = next(a for a in m["artifacts"] if a["id"] == finding_art_id)
-finding_sha = finding_art.get("sha256", "")
+arts = {a["id"]: a for a in m["artifacts"]}
+intel_id = m["selected_by_phase"]["040"]
+finding_art_id = m["selected_by_subject"]["070"][candidate_id]
 data = {
   "schema_version": 1,
   "phase": "080",
-  "finding_id": finding_id,
+  "candidate_id": candidate_id,
   "source_commit": commit,
   "intel_artifact_id": intel_id,
-  "intel_artifact_sha256": intel_sha,
+  "intel_artifact_sha256": arts[intel_id]["payload_sha256"],
   "assessed_finding_artifact_id": finding_art_id,
-  "assessed_finding_sha256": finding_sha,
+  "assessed_finding_sha256": arts[finding_art_id]["payload_sha256"],
   "intel_freshness_at_plan_time": {
     "evaluated_at_utc": "2026-10-30T00:00:00Z",
     "effective_threshold_hours": 24.0,
@@ -265,39 +259,13 @@ PY
 
 echo "=== Section A: Runner phase policy file checks ==="
 
-# Phase 020 runner: should succeed (policy files exist)
-if "${RUNNER}" --phase 020 --run-json "${RUN_JSON}" >"${TMP}/p020-prompt.txt" 2>"${TMP}/p020-err.txt"; then
-  ok "runner: phase 020 validates successfully with policy files present"
+# Fail-closed: runner refuses phase 020 before phase 010 is registered
+if "${RUNNER}" --phase 020 --run-json "${RUN_JSON}" >"${TMP}/p020-nopre.txt" 2>"${TMP}/p020-nopre.err"; then
+  bad "runner: phase 020 without phase 010 should fail"
 else
-  bad "runner: phase 020 unexpected failure: $(cat "${TMP}/p020-err.txt")"
-fi
-
-# Phase 020 prompt contains task path
-if grep -Fq "tasks/020-threat-model.md" "${TMP}/p020-prompt.txt"; then
-  ok "runner: phase 020 prompt includes phase-020 task"
-else
-  bad "runner: phase 020 prompt missing task reference"
-fi
-
-# Phase 020 prompt shows correct phase name
-if grep -qi "threat-model" "${TMP}/p020-prompt.txt"; then
-  ok "runner: phase 020 prompt shows phase name"
-else
-  bad "runner: phase 020 prompt missing phase name"
-fi
-
-# Phase 060: requires at least one of 040 or 050
-if "${RUNNER}" --phase 060 --run-json "${RUN_JSON}" >"${TMP}/p060-prompt.txt" 2>"${TMP}/p060-err.txt"; then
-  ok "runner: phase 060 validates successfully"
-else
-  bad "runner: phase 060 failure: $(cat "${TMP}/p060-err.txt")"
-fi
-
-# Phase 070: requires --trigger-input (candidate_id)
-if "${RUNNER}" --phase 070 --run-json "${RUN_JSON}" --trigger-input C-001 >"${TMP}/p070-prompt.txt" 2>"${TMP}/p070-err.txt"; then
-  ok "runner: phase 070 validates with trigger-input"
-else
-  bad "runner: phase 070 failure: $(cat "${TMP}/p070-err.txt")"
+  grep -q 'phase-010' "${TMP}/p020-nopre.err" && [[ ! -s "${TMP}/p020-nopre.txt" ]] \
+    && ok "runner: phase 020 without phase 010 rejected before any prompt output" \
+    || bad "runner: wrong failure: $(cat "${TMP}/p020-nopre.err")"
 fi
 
 # Phase 070: missing --trigger-input should fail
@@ -307,20 +275,6 @@ else
   grep -qi 'trigger-input\|candidate_id\|subject' "${TMP}/p070-notrig.err" \
     && ok "runner: phase 070 without --trigger-input rejected" \
     || bad "runner: wrong error: $(cat "${TMP}/p070-notrig.err")"
-fi
-
-# Phase 080: requires --trigger-input (finding_id)
-if "${RUNNER}" --phase 080 --run-json "${RUN_JSON}" --trigger-input SG-001 >"${TMP}/p080-prompt.txt" 2>"${TMP}/p080-err.txt"; then
-  ok "runner: phase 080 validates with trigger-input"
-else
-  bad "runner: phase 080 failure: $(cat "${TMP}/p080-err.txt")"
-fi
-
-# Phase 080 prompt contains gate-1-only language
-if grep -qi 'gate 1\|gate1\|plan\|remediate' "${TMP}/p080-prompt.txt"; then
-  ok "runner: phase 080 prompt references gate-1 plan"
-else
-  bad "runner: phase 080 prompt missing gate-1 reference"
 fi
 
 # Invalid phase rejected by runner
@@ -361,6 +315,27 @@ if "${ARTIFACTS}" register \
   ok "register: phase 010 baseline"
 else
   bad "register: phase 010 failed: $(cat "${TMP}/reg010.err")"
+fi
+
+# Phase 020 runner: should succeed (policy files exist)
+if "${RUNNER}" --phase 020 --run-json "${RUN_JSON}" >"${TMP}/p020-prompt.txt" 2>"${TMP}/p020-err.txt"; then
+  ok "runner: phase 020 validates successfully with policy files present"
+else
+  bad "runner: phase 020 unexpected failure: $(cat "${TMP}/p020-err.txt")"
+fi
+
+# Phase 020 prompt contains task path
+if grep -Fq "tasks/020-threat-model.md" "${TMP}/p020-prompt.txt"; then
+  ok "runner: phase 020 prompt includes phase-020 task"
+else
+  bad "runner: phase 020 prompt missing task reference"
+fi
+
+# Phase 020 prompt shows correct phase name
+if grep -qi "threat-model" "${TMP}/p020-prompt.txt"; then
+  ok "runner: phase 020 prompt shows phase name"
+else
+  bad "runner: phase 020 prompt missing phase name"
 fi
 
 # ---------------------------------------------------------------------------
@@ -486,6 +461,13 @@ PY
 [[ $? -eq 0 ]] && ok "register: phase 040 manifest fields correct" \
                || bad "register: phase 040 manifest fields incorrect"
 
+# Phase 060: requires at least one of 040 or 050
+if "${RUNNER}" --phase 060 --run-json "${RUN_JSON}" >"${TMP}/p060-prompt.txt" 2>"${TMP}/p060-err.txt"; then
+  ok "runner: phase 060 validates successfully"
+else
+  bad "runner: phase 060 failure: $(cat "${TMP}/p060-err.txt")"
+fi
+
 # ---------------------------------------------------------------------------
 # Section C: Phase 060 with structured payload (triage inventory)
 # ---------------------------------------------------------------------------
@@ -544,6 +526,13 @@ if ls "${RUN}/reports/payload-060-"* >/dev/null 2>&1; then
   ok "register: phase 060 payload JSON copied to reports/"
 else
   bad "register: phase 060 payload not in reports/"
+fi
+
+# Phase 070: requires --trigger-input (candidate_id)
+if "${RUNNER}" --phase 070 --run-json "${RUN_JSON}" --trigger-input C-001 >"${TMP}/p070-prompt.txt" 2>"${TMP}/p070-err.txt"; then
+  ok "runner: phase 070 validates with trigger-input"
+else
+  bad "runner: phase 070 failure: $(cat "${TMP}/p070-err.txt")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -637,6 +626,26 @@ else
     || bad "register: wrong error: $(cat "${TMP}/nopay070.err")"
 fi
 
+# Phase 080: requires --trigger-input (candidate_id)
+if "${RUNNER}" --phase 080 --run-json "${RUN_JSON}" --trigger-input C-001 >"${TMP}/p080-prompt.txt" 2>"${TMP}/p080-err.txt"; then
+  ok "runner: phase 080 validates with trigger-input"
+else
+  bad "runner: phase 080 failure: $(cat "${TMP}/p080-err.txt")"
+fi
+
+# Phase 080 prompt contains gate-1-only language
+if grep -qi 'gate 1\|gate1\|plan\|remediate' "${TMP}/p080-prompt.txt"; then
+  ok "runner: phase 080 prompt references gate-1 plan"
+else
+  bad "runner: phase 080 prompt missing gate-1 reference"
+fi
+
+if grep -q 'SELECTED PREREQUISITES' "${TMP}/p080-prompt.txt" && grep -q 'phase 070 \[C-001\]\|070.*C-001' "${TMP}/p080-prompt.txt"; then
+  ok "runner: phase 080 prompt lists resolved 070 prerequisite for C-001"
+else
+  bad "runner: phase 080 prompt lacks resolved prerequisites: $(cat "${TMP}/p080-prompt.txt")"
+fi
+
 # ---------------------------------------------------------------------------
 # Section E: Revision of one candidate without affecting another
 # ---------------------------------------------------------------------------
@@ -728,7 +737,6 @@ echo "=== Section F: Phase 080 subject-scoped selection ==="
 
 # Phase 080 subject-id must match the phase-070 candidate subject-id.
 # We use C-001 (already assessed in phase-070) as the subject.
-# The payload's finding_id field still carries SG-001 (the assigned finding ID).
 RPT_080="${TMP}/report-080-c001.md"
 make_report "${RPT_080}" "# Phase 080 C-001 remediation plan\nPlan.\n"
 
@@ -755,9 +763,9 @@ PAYLOAD_080_NOPRE="${TMP}/plan-080-nopre.json"
 python3 - "${PAYLOAD_080_NOPRE}" "${SHA}" <<'PY'
 import json, sys
 path, commit = sys.argv[1], sys.argv[2]
-data = {"schema_version": 1, "phase": "080", "finding_id": "C-NOPRE",
-        "source_commit": commit, "intel_artifact_id": "fake-040",
-        "intel_artifact_sha256": "a"*64, "assessed_finding_artifact_id": "fake-070",
+data = {"schema_version": 1, "phase": "080", "candidate_id": "C-NOPRE",
+        "source_commit": commit, "intel_artifact_id": "phase-040-hermes-v999",
+        "intel_artifact_sha256": "a"*64, "assessed_finding_artifact_id": "phase-070-hermes-v999",
         "assessed_finding_sha256": "b"*64,
         "intel_freshness_at_plan_time": {"evaluated_at_utc": "2026-10-30T00:00:00Z",
             "effective_threshold_hours": 24.0, "threshold_source": "default",
@@ -781,9 +789,9 @@ else
 fi
 
 # Build provenance payload from manifest (040 and 070/C-001 must be registered).
-# finding_id and subject-id must match: use C-001 for both.
+# candidate_id and subject-id must match.
 PAYLOAD_080_C001="${TMP}/plan-080-c001.json"
-make_phase080_plan_payload "${PAYLOAD_080_C001}" "${SHA}" "${MANIFEST}" "C-001" "C-001"
+make_phase080_plan_payload "${PAYLOAD_080_C001}" "${SHA}" "${MANIFEST}" "C-001"
 
 if "${ARTIFACTS}" register \
     --run-json "${RUN_JSON}" \
@@ -952,18 +960,14 @@ make_finding_payload "${PAYLOAD_070_C3}" "${SHA}" "C-003" "dismissed"
     --subject-id "C-003" \
     --source-report "${RPT_070_C3}" \
     --payload-json "${PAYLOAD_070_C3}" \
-    >/dev/null 2>"${TMP}/reg-c3.err" \
+    >"${TMP}/reg-c3.out" 2>"${TMP}/reg-c3.err" \
   && ok "register: C-003 (dismissed) registered" \
   || bad "register: C-003 failed: $(cat "${TMP}/reg-c3.err")"
 
-# Generate findings again — should now be complete
-if "${ARTIFACTS}" generate-findings \
-    --run-json "${RUN_JSON}" \
-    >"${TMP}/gf-complete.out" 2>"${TMP}/gf-complete.err"; then
-  ok "generate-findings: complete export succeeds"
-else
-  bad "generate-findings: complete export failed: $(cat "${TMP}/gf-complete.err")"
-fi
+# Last 070 for the run: consolidation runs automatically (no manual generate-findings)
+grep -q 'consolidating findings automatically' "${TMP}/reg-c3.err" \
+  && ok "register: last phase-070 assessment triggers automatic consolidation" \
+  || bad "register: no automatic consolidation: $(cat "${TMP}/reg-c3.err")"
 
 FINDINGS2="${RUN}/reports/findings-v2.json"
 if [[ -f "${FINDINGS2}" ]]; then
@@ -1078,68 +1082,6 @@ if "${ARTIFACTS}" validate-findings \
   bad "validate-findings: missing file should fail"
 else
   ok "validate-findings: missing file rejected"
-fi
-
-# ---------------------------------------------------------------------------
-# Section L: Phase 060 OR-prerequisite behaviour
-# ---------------------------------------------------------------------------
-
-echo "=== Section L: Phase 060 OR-prerequisite with both branches valid ==="
-
-# Register a phase 040 (v2) and 050 artifact to test OneOf logic
-# Note: 040-v1 is already registered in Section B2; this registers a second version
-RPT_040="${TMP}/report-040-v2.md"
-RPT_050="${TMP}/report-050.md"
-PAYLOAD_040_V2="${TMP}/vuln-intel-record-v2.json"
-make_report "${RPT_040}" "# Phase 040 dep advisories v2\nContent.\n"
-make_report "${RPT_050}" "# Phase 050 source review\nContent.\n"
-make_vuln_intel_payload "${PAYLOAD_040_V2}" "${SHA}"
-
-"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 040 --source-report "${RPT_040}" \
-    --payload-json "${PAYLOAD_040_V2}" \
-    >/dev/null 2>"${TMP}/reg040.err" \
-  && ok "register: phase 040 v2 registered" \
-  || bad "register: phase 040 v2 failed: $(cat "${TMP}/reg040.err")"
-
-# Phase 050 now requires --subject-id (priority_area label); repeated=True
-"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 050 --subject-id "auth-module" \
-    --source-report "${RPT_050}" \
-    >/dev/null 2>"${TMP}/reg050.err" \
-  && ok "register: phase 050 registered (subject-id: auth-module)" \
-  || bad "register: phase 050 failed: $(cat "${TMP}/reg050.err")"
-
-# Multiple 050 priorities must survive — register a second priority area
-RPT_050B="${TMP}/report-050b.md"
-make_report "${RPT_050B}" "# Phase 050 priority 2\nContent.\n"
-"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 050 --subject-id "network-layer" \
-    --source-report "${RPT_050B}" \
-    >/dev/null 2>"${TMP}/reg050b.err" \
-  && ok "register: phase 050 registered second priority (subject-id: network-layer)" \
-  || bad "register: phase 050 second priority failed: $(cat "${TMP}/reg050b.err")"
-
-# Both priorities must be in selected_by_subject
-python3 - "${RUN}/manifest.json" <<'PY'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as fh:
-    m = json.load(fh)
-sbs_050 = m.get("selected_by_subject", {}).get("050", {})
-assert "auth-module" in sbs_050, f"auth-module not in 050 subject map; got {list(sbs_050)}"
-assert "network-layer" in sbs_050, f"network-layer not in 050 subject map; got {list(sbs_050)}"
-print(f"PASS: both priority areas found in selected_by_subject[050]")
-PY
-[[ $? -eq 0 ]] \
-  && ok "register: phase 050 multiple priorities both present in manifest" \
-  || bad "register: phase 050 multiple priorities not both in manifest"
-
-# Runner phase 060 prompt should show BOTH valid branches
-if "${RUNNER}" --phase 060 --run-json "${RUN_JSON}" >"${TMP}/p060-both.txt" 2>"${TMP}/p060-both.err"; then
-  if grep -q 'phase 040' "${TMP}/p060-both.txt" && grep -q 'phase 050' "${TMP}/p060-both.txt"; then
-    ok "runner: phase 060 prompt shows both OR-branches when both valid"
-  else
-    ok "runner: phase 060 prompt generated (OR-branch display may differ)"
-  fi
-else
-  bad "runner: phase 060 with both OR-branches failed: $(cat "${TMP}/p060-both.err")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1268,6 +1210,77 @@ else:
     || bad "generate-findings: tampered payload not detected"
 else
   bad "generate-findings: tampered payload not detected (no error or stale marker)"
+fi
+
+# ---------------------------------------------------------------------------
+# Section L: Phase 060 OR-prerequisite behaviour
+# ---------------------------------------------------------------------------
+
+echo "=== Section L: Phase 060 OR-prerequisite with both branches valid ==="
+
+# Register a phase 040 (v2) and 050 artifact to test OneOf logic
+# Note: 040-v1 is already registered in Section B2; this registers a second version
+RPT_040="${TMP}/report-040-v2.md"
+RPT_050="${TMP}/report-050.md"
+PAYLOAD_040_V2="${TMP}/vuln-intel-record-v2.json"
+make_report "${RPT_040}" "# Phase 040 dep advisories v2\nContent.\n"
+make_report "${RPT_050}" "# Phase 050 source review\nContent.\n"
+make_vuln_intel_payload "${PAYLOAD_040_V2}" "${SHA}"
+
+"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 040 --source-report "${RPT_040}" \
+    --payload-json "${PAYLOAD_040_V2}" \
+    >/dev/null 2>"${TMP}/reg040.err" \
+  && ok "register: phase 040 v2 registered" \
+  || bad "register: phase 040 v2 failed: $(cat "${TMP}/reg040.err")"
+
+# Phase 050 now requires --subject-id (priority_area label); repeated=True
+"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 050 --subject-id "auth-module" \
+    --source-report "${RPT_050}" \
+    >/dev/null 2>"${TMP}/reg050.err" \
+  && ok "register: phase 050 registered (subject-id: auth-module)" \
+  || bad "register: phase 050 failed: $(cat "${TMP}/reg050.err")"
+
+# Multiple 050 priorities must survive — register a second priority area
+RPT_050B="${TMP}/report-050b.md"
+make_report "${RPT_050B}" "# Phase 050 priority 2\nContent.\n"
+"${ARTIFACTS}" register --run-json "${RUN_JSON}" --phase 050 --subject-id "network-layer" \
+    --source-report "${RPT_050B}" \
+    >/dev/null 2>"${TMP}/reg050b.err" \
+  && ok "register: phase 050 registered second priority (subject-id: network-layer)" \
+  || bad "register: phase 050 second priority failed: $(cat "${TMP}/reg050b.err")"
+
+# Both priorities must be in selected_by_subject
+python3 - "${RUN}/manifest.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    m = json.load(fh)
+sbs_050 = m.get("selected_by_subject", {}).get("050", {})
+assert "auth-module" in sbs_050, f"auth-module not in 050 subject map; got {list(sbs_050)}"
+assert "network-layer" in sbs_050, f"network-layer not in 050 subject map; got {list(sbs_050)}"
+print(f"PASS: both priority areas found in selected_by_subject[050]")
+PY
+[[ $? -eq 0 ]] \
+  && ok "register: phase 050 multiple priorities both present in manifest" \
+  || bad "register: phase 050 multiple priorities not both in manifest"
+
+# Runner phase 060 prompt should show BOTH valid branches
+if "${RUNNER}" --phase 060 --run-json "${RUN_JSON}" >"${TMP}/p060-both.txt" 2>"${TMP}/p060-both.err"; then
+  if grep -q 'phase 040' "${TMP}/p060-both.txt" && grep -q 'phase 050' "${TMP}/p060-both.txt"; then
+    ok "runner: phase 060 prompt shows both OR-branches when both valid"
+  else
+    ok "runner: phase 060 prompt generated (OR-branch display may differ)"
+  fi
+else
+  bad "runner: phase 060 with both OR-branches failed: $(cat "${TMP}/p060-both.err")"
+fi
+
+# A newer 040 supersedes the one 060 was built on: 060 and everything downstream is stale
+if "${ARTIFACTS}" selected --run-json "${RUN_JSON}" >"${TMP}/sel-stale.out" 2>&1; then
+  bad "selected: should exit 1 once upstream 040 changed under 060"
+else
+  grep -A6 '^  phase 060' "${TMP}/sel-stale.out" | grep -q 'upstream .*superseded' \
+    && ok "selected: upstream 040 change marks downstream NOT USABLE" \
+    || bad "selected: stale downstream not reported: $(cat "${TMP}/sel-stale.out")"
 fi
 
 # ---------------------------------------------------------------------------

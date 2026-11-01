@@ -15,7 +15,8 @@
     },
     "source_commit": {
       "type": "string",
-      "description": "Full 40-char lowercase hex SHA of the inspected source commit"
+      "description": "Full 40-char lowercase hex SHA of the inspected source commit; must equal run.json source.commit",
+      "pattern": "^[0-9a-f]{40}$"
     },
     "assessed_report_ids": {
       "type": "array",
