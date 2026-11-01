@@ -102,11 +102,15 @@ Read /opt/data/hermes-review/BOOTSTRAP.md and execute only phase NNN for target 
 | 020 | 010 | — |
 | 030 | 010, 020 | — |
 | 040 | 010, 020, 030 | network authorization; `--payload-json vuln-intel-record.json` required |
-| 050 | 010, 020 | review priority |
-| 060 | 040 OR 050 | — |
+| 050 | 010, 020 | priority_area (one per invocation; repeated, selected per priority) |
+| 060 | 040 OR 050 (every selected 050 priority) | `--payload-json triage-payload.json` required |
 | 070 | 060 | candidate_id (one per invocation); `--payload-json finding-record.json` required |
-| 080 | 060, 070 | finding_id (one per invocation); `--payload-json plan-080-*.json` required |
+| 080 | 060, 070 (actionable), 040 | candidate_id (one per invocation); `--payload-json plan-080-*.json` required |
 | generate-findings | 060 + all 070s + 040 (freshness) | `--require-fresh-intel` optional |
+
+Every report starts with the REPORT IDENTITY HEADER line (`<!-- hermes-vps-report: {...} -->`)
+printed by `hermes-vps-review`; it records the exact inputs analyzed.  Registration
+rejects the report if any selected input changed during the phase (see Rule 005).
 
 ## Tools
 

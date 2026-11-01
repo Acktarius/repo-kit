@@ -1,3 +1,4 @@
+<!-- hermes-vps-report: REPLACE THIS LINE WITH THE REPORT IDENTITY HEADER PRINTED BY hermes-vps-review -->
 # Phase 070 — Reviewed Finding: `<candidate_id>`
 
 ## Run identity

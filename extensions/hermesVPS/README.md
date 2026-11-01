@@ -253,7 +253,9 @@ Gates 2–5 require separate authorization. Does not change finding status.
 Each registration records its prerequisite IDs with their report and payload
 SHA-256 values.  An artifact is stale when any upstream input is no longer the
 current selection, is not complete, or no longer matches the recorded hashes
-(checked recursively).  The runner and the helper refuse stale inputs.
+(checked recursively).  The runner and the helper refuse stale inputs, and a
+report whose recorded execution inputs are no longer the current selection is
+not registered (no silent substitution of newer inputs).
 
 `hermes-vps-artifacts selected` prints every current selection with its
 problems and exits 1 if any selection is not usable.  `generate-findings`
@@ -287,10 +289,24 @@ hermes-vps-artifacts selected --run-json /abs/run.json
 
 ## E. Artifact helper (`hermes-vps-artifacts`)
 
-Sole writer of `manifest.json`.  Every report must declare exactly one
-completion state (`State: complete|incomplete|blocked`); only `complete`
-artifacts are usable as prerequisites.  Files are created exclusively; if a
-write fails, the printed recovery command repeats the original operation.
+Sole writer of `manifest.json`.  Every report must start with the REPORT
+IDENTITY HEADER printed by the runner (`<!-- hermes-vps-report: {...} -->`):
+run ID, phase, subject, source identity and commit, completion state, and the
+execution-input snapshot (prerequisite IDs with report `sha256` and
+`payload_sha256`).  Registration rejects the report, and records nothing, if any
+header field disagrees with the run or command, or if the snapshot differs from
+the inputs selected at registration time (an input was revised or added during
+the phase): re-run `hermes-vps-review` and redo the phase.  Only the header and
+payload schemas are machine-validated; report sections are procedural (Rule 005).
+
+Only `complete` artifacts are usable as prerequisites.  Files are created
+exclusively; if a write fails, the printed recovery command repeats the original
+operation.
+
+`register` exit codes: 0 registered; 1 not registered; 3 the phase-070 artifact
+**is** registered but automatic findings consolidation failed — do not re-register;
+run the printed export-only retry (`generate-findings`).  Consolidation runs inside
+the registering lock and never re-acquires it.
 
 ```bash
 # Register a report (single-instance phases)
@@ -407,6 +423,22 @@ Importing does not refresh evidence age; original `retrieved_at_utc` is preserve
 
 **Coverage limitations** appear in `readiness.intel.coverage.limitations` in the
 export and in the phase-040 report's Coverage Limitations section.
+
+**Intelligence scope and evidence retention (current limitations):**
+- OSV pagination is **not implemented**.  When a querybatch result carries a
+  `next_page_token`, the package is listed in `providers.osv.incomplete_packages`,
+  the OSV status is `partial`, and the package is never reported as no-match.
+  Coverage for such packages remains incomplete (unresolved limitation).
+- NVD is queried one CVE at a time (`cveId=`), so no NVD pagination is involved;
+  CISA KEV is fetched as a single full feed.
+- Raw response bodies, request bodies, HTTP status/headers, and per-request
+  timestamps are **not retained**.  The record keeps, per provider, the endpoint,
+  one `retrieved_at_utc`, counts, normalized results, and `response_sha256`.
+- `response_sha256` covers only the raw bodies the collector read: OSV querybatch
+  responses (not the per-advisory `/v1/vulns/{id}` fetches) and NVD CVE responses;
+  in fixture mode it hashes re-serialized fixture JSON.  Because the raw bodies are
+  not kept, the hash cannot be re-verified later; it is an identity marker only.
+
 
 ---
 

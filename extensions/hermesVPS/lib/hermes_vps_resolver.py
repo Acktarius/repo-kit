@@ -16,6 +16,7 @@ Structural/hash checks do not prove factual correctness of report content.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -230,6 +231,10 @@ def resolve_prerequisites(
                 f"inventory {candidates}"
             )
     if phase == "080":
+        sel_040 = current_selection(manifest, "040", None)
+        if not sel_040:
+            raise ValidationError("phase 080 requires a complete phase-040 artifact; none selected")
+        _use("phase-040", sel_040)
         entry_070 = find_artifact(manifest, current_selection(manifest, "070", subject_id))
         disposition = load_artifact_payload(run_root, entry_070).get("assessment_disposition")
         if disposition not in ACTIONABLE_070:
@@ -238,3 +243,92 @@ def resolve_prerequisites(
                 f"assessment {sorted(ACTIONABLE_070)}; selected assessment is {disposition!r}"
             )
     return resolved
+
+
+# ---------------------------------------------------------------------------
+# Execution-input snapshot and machine-checked report identity header
+# ---------------------------------------------------------------------------
+
+REPORT_HEADER_PREFIX = "<!-- hermes-vps-report: "
+REPORT_HEADER_SUFFIX = " -->"
+COMPLETION_STATES = ("complete", "incomplete", "blocked")
+STATE_PLACEHOLDER = "<complete|incomplete|blocked>"
+_HEADER_KEYS = {
+    "schema_version", "run_id", "phase", "subject_id", "source_identity",
+    "source_commit", "completion_state", "execution_inputs",
+}
+_INPUT_KEYS = {"id", "sha256", "payload_sha256"}
+
+
+def execution_inputs(manifest: dict[str, Any], ids: list[str]) -> list[dict[str, Any]]:
+    """Snapshot of the exact inputs: artifact ID plus report and payload SHA-256, sorted by ID."""
+    snap = []
+    for art_id in ids:
+        entry = find_artifact(manifest, art_id) or {}
+        snap.append({"id": art_id, "sha256": entry.get("sha256"),
+                     "payload_sha256": entry.get("payload_sha256")})
+    return sorted(snap, key=lambda s: s["id"])
+
+
+def render_report_header(
+    ctx: dict[str, Any], phase: str, subject_id: str | None, inputs: list[dict[str, Any]]
+) -> str:
+    """The exact first line a report for this invocation must carry."""
+    header = {
+        "schema_version": 1,
+        "run_id": ctx["run_id"],
+        "phase": phase,
+        "subject_id": subject_id,
+        "source_identity": ctx["source_identity"],
+        "source_commit": ctx["source_commit"],
+        "completion_state": STATE_PLACEHOLDER,
+        "execution_inputs": inputs,
+    }
+    return REPORT_HEADER_PREFIX + json.dumps(header, separators=(",", ":")) + REPORT_HEADER_SUFFIX
+
+
+def read_report_header(
+    path: str, ctx: dict[str, Any], phase: str, subject_id: str | None
+) -> dict[str, Any]:
+    """Parse and validate the identity header on the report's first line.
+
+    Checks run ID, phase, subject, source identity, source commit, completion
+    state, and the shape of the execution-input snapshot.  Whether the snapshot
+    still matches the current selection is checked by the caller under the lock.
+    """
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        lines = fh.read().splitlines()
+    first = lines[0] if lines else ""
+    if not (first.startswith(REPORT_HEADER_PREFIX) and first.endswith(REPORT_HEADER_SUFFIX)):
+        raise ValidationError(
+            f"report must start with the identity header printed by hermes-vps-review "
+            f"('{REPORT_HEADER_PREFIX}{{...}}{REPORT_HEADER_SUFFIX}'): {path}"
+        )
+    if sum(line.startswith(REPORT_HEADER_PREFIX) for line in lines) != 1:
+        raise ValidationError(f"report must contain exactly one identity header: {path}")
+    try:
+        header = json.loads(first[len(REPORT_HEADER_PREFIX):-len(REPORT_HEADER_SUFFIX)])
+    except json.JSONDecodeError as exc:
+        raise ValidationError(f"report identity header is not valid JSON: {exc}") from exc
+    if not isinstance(header, dict) or set(header) != _HEADER_KEYS:
+        raise ValidationError(f"report identity header must have exactly the keys {sorted(_HEADER_KEYS)}")
+    expected = {
+        "schema_version": 1, "run_id": ctx["run_id"], "phase": phase, "subject_id": subject_id,
+        "source_identity": ctx["source_identity"], "source_commit": ctx["source_commit"],
+    }
+    for key, want in expected.items():
+        if header[key] != want:
+            raise ValidationError(f"report identity header {key} is {header[key]!r}; expected {want!r}")
+    if header["completion_state"] not in COMPLETION_STATES:
+        raise ValidationError(
+            f"report identity header completion_state must be one of {list(COMPLETION_STATES)}; "
+            f"got {header['completion_state']!r}"
+        )
+    inputs = header["execution_inputs"]
+    if not isinstance(inputs, list) or not all(
+        isinstance(i, dict) and set(i) == _INPUT_KEYS and isinstance(i["id"], str) for i in inputs
+    ):
+        raise ValidationError(
+            "report identity header execution_inputs must be a list of {id, sha256, payload_sha256}"
+        )
+    return header

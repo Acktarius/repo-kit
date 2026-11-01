@@ -51,10 +51,12 @@ from lib.hermes_vps_phases import (  # noqa: E402
 from lib.hermes_vps_resolver import (  # noqa: E402
     artifact_problems,
     current_selection,
+    execution_inputs,
     file_problems,
     find_artifact,
     load_artifact_payload,
     prerequisite_hashes,
+    read_report_header,
     resolve_prerequisites,
     triage_candidate_ids,
 )
@@ -71,13 +73,20 @@ class RunLock:
     against non-cooperating writers.
     """
 
+    _held: set[str] = set()
+
     def __init__(self, run_root: str) -> None:
         self._path = os.path.join(run_root, ".hermes-artifacts.lock")
+        self._key = os.path.realpath(self._path)
         self._fh: Any = None
 
     def __enter__(self) -> "RunLock":
+        # flock on a second descriptor in the same process would self-deadlock.
+        if self._key in RunLock._held:
+            raise RuntimeError(f"recursive RunLock acquisition for {self._path}")
         self._fh = open(self._path, "w", encoding="utf-8")
         fcntl.flock(self._fh, fcntl.LOCK_EX)
+        RunLock._held.add(self._key)
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -87,6 +96,7 @@ class RunLock:
             finally:
                 self._fh.close()
                 self._fh = None
+                RunLock._held.discard(self._key)
 
 
 # ---------------------------------------------------------------------------
@@ -275,13 +285,10 @@ _STATE_LINE_RE = re.compile(
 )
 
 
-def declared_completion(report_path: str) -> str:
-    """Return the single completion state declared in the report.
+def declared_completion(report_path: str, header: dict[str, Any]) -> str:
+    """Return the header's completion state; body 'State:' lines must agree with it.
 
-    Accepts the template forms 'State: `complete`' and
-    '- **Completion state:** `blocked`'.  An unfilled template line
-    ('`complete` | `incomplete` | `blocked`'), a missing declaration, or
-    conflicting declarations are rejected.
+    Accepted body forms: 'State: `complete`' and '- **Completion state:** `blocked`'.
     """
     states: set[str] = set()
     with open(report_path, encoding="utf-8", errors="replace") as fh:
@@ -289,13 +296,13 @@ def declared_completion(report_path: str) -> str:
             m = _STATE_LINE_RE.match(line.replace("*", "").replace("`", ""))
             if m:
                 states.add(m.group(1).lower())
-    if len(states) != 1:
-        found = sorted(states) if states else "none"
+    declared = header["completion_state"]
+    if states - {declared}:
         raise ValidationError(
-            f"report must declare exactly one completion state "
-            f"('State: complete|incomplete|blocked'); found {found}: {report_path}"
+            f"report body declares completion state(s) {sorted(states)} but the identity "
+            f"header declares {declared!r}: {report_path}"
         )
-    return states.pop()
+    return declared
 
 
 def _validate_payload(
@@ -520,7 +527,8 @@ def _commit_bundle(  # noqa: C901
             die(f"{label} not found: {path}")
 
     try:
-        declared = declared_completion(source_report)
+        header = read_report_header(source_report, ctx, phase, subject_id)
+        declared = declared_completion(source_report, header)
         payload = _validate_payload(ctx, phase, subject_id, payload_json_path) if payload_json_path else {}
         completion_status = _completion_status(phase, declared, payload)
     except ValidationError as exc:
@@ -567,7 +575,7 @@ def _commit_bundle(  # noqa: C901
                 ctx, art["id"], os.path.join(run_root, art["path"]), src_sha,
                 manifest_path, run_json_path, phase, art["version"], subject_id=subject_id,
             )
-            return _maybe_consolidate(ctx, manifest, run_json_path) if phase == "070" else 0
+            return _maybe_consolidate(ctx, manifest, run_json_path, art["id"]) if phase == "070" else 0
 
         if supersedes is not None:
             prior = find_artifact(manifest, supersedes)
@@ -592,6 +600,19 @@ def _commit_bundle(  # noqa: C901
             ]
         except ValidationError as exc:
             die(f"prerequisite check failed: {exc}")
+
+        current_inputs = execution_inputs(manifest, prereq_ids)
+        if header["execution_inputs"] != current_inputs:
+            analyzed = [i["id"] for i in header["execution_inputs"]]
+            die(
+                "execution inputs changed since the phase started; this report was not "
+                "produced from the current selection and is NOT registered.\n"
+                f"  analyzed (report header): {json.dumps(header['execution_inputs'])}\n"
+                f"  current selection:        {json.dumps(current_inputs)}\n"
+                f"  analyzed IDs {analyzed} vs current IDs {[i['id'] for i in current_inputs]}\n"
+                f"Re-run hermes-vps-review --phase {phase} and redo the phase against the "
+                "current inputs."
+            )
 
         version = _next_version(manifest, phase)
         artifact_id = f"phase-{phase}-hermes-v{version}"
@@ -671,7 +692,7 @@ def _commit_bundle(  # noqa: C901
                 file=sys.stderr,
             )
         if phase == "070":
-            return _maybe_consolidate(ctx, manifest, run_json_path)
+            return _maybe_consolidate(ctx, manifest, run_json_path, artifact_id)
     return 0
 
 
@@ -1157,11 +1178,16 @@ def _write_findings_export(
         "intel_freshness_ok": export["coverage"]["intel_freshness_ok"],
         "policy_check_failed": export["readiness"]["policy_check_failed"],
     })
+    previous = manifest["selected_by_phase"].get("findings")
     manifest["selected_by_phase"]["findings"] = f"findings-v{version}"
     try:
         write_json_atomic(ctx["manifest_path"], manifest)
     except OSError as exc:
-        raise ValidationError(f"findings export written to {path} but index write failed: {exc}") from exc
+        # Never leave an unregistered export behind: a retry must be able to reuse this version.
+        manifest["artifacts"].pop()
+        manifest["selected_by_phase"]["findings"] = previous
+        os.unlink(path)
+        raise ValidationError(f"index write failed; unregistered export {path} removed: {exc}") from exc
     return {"path": path, "sha": sha, "version": version, "export": export}
 
 
@@ -1178,8 +1204,19 @@ def _consolidation_due(manifest: dict[str, Any], run_root: str) -> bool:
     )
 
 
-def _maybe_consolidate(ctx: dict[str, Any], manifest: dict[str, Any], run_json_path: str) -> int:
-    """Run generate-findings automatically at the completion point (lock held)."""
+EXIT_CONSOLIDATION_FAILED = 3
+
+
+def _maybe_consolidate(
+    ctx: dict[str, Any], manifest: dict[str, Any], run_json_path: str, registered_id: str
+) -> int:
+    """Run generate-findings automatically at the completion point.
+
+    Called by _commit_bundle with the RunLock already held; it does not acquire
+    the lock itself (RunLock refuses nested acquisition).  A failure here never
+    unregisters the phase-070 artifact: it returns EXIT_CONSOLIDATION_FAILED and
+    prints an export-only retry.
+    """
     if not _consolidation_due(manifest, ctx["run_root"]):
         return 0
     try:
@@ -1195,11 +1232,13 @@ def _maybe_consolidate(ctx: dict[str, Any], manifest: dict[str, Any], run_json_p
         result = _write_findings_export(ctx, manifest)
     except ValidationError as exc:
         print(
-            f"error: assessment registered, but automatic consolidation failed: {exc}\n"
-            f"Retry: {_recovery_command(ctx, 'generate-findings', ['--run-json', run_json_path])}",
+            f"error: automatic findings consolidation FAILED: {exc}\n"
+            f"  The phase-070 artifact {registered_id!r} IS registered and selected; do not re-register it.\n"
+            f"  Only the findings export is missing.  Export-only retry:\n"
+            f"  {_recovery_command(ctx, 'generate-findings', ['--run-json', run_json_path])}",
             file=sys.stderr,
         )
-        return 1
+        return EXIT_CONSOLIDATION_FAILED
     _print_findings_handoff_prompt(ctx, result, run_json_path)
     return 0
 
@@ -1360,6 +1399,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p_reg = sub.add_parser(
         "register",
         help="Register a finalized report; auto-selects next version.",
+        description=(
+            "Register a finalized report bundle.  Exit codes: 0 registered; 1 not registered; "
+            "3 phase-070 registered but automatic findings consolidation failed "
+            "(retry generate-findings only)."
+        ),
     )
     _add_run_json(p_reg)
     p_reg.add_argument("--phase", required=True, action=_Once, help="Phase (e.g. 010)")

@@ -33,6 +33,20 @@ need sha256sum
   exit 1
 }
 
+# Reports get the runner's identity header (execution-input snapshot) just before
+# registration, as an agent does at phase start; see tests/hermes_vps_stamp.py.
+REAL_ARTIFACTS="${ARTIFACTS}"
+artifacts_stamped() {
+  PYTHONDONTWRITEBYTECODE=1 python3 "${ROOT}/tests/hermes_vps_stamp.py" "${EXT}/bin/hermes-vps-review" "$@"
+  "${REAL_ARTIFACTS}" "$@"
+}
+ARTIFACTS=artifacts_stamped
+# Stamp now when a test needs the final report SHA before registering.
+stamp_report() {  # run_json report phase
+  python3 "${ROOT}/tests/hermes_vps_stamp.py" "${EXT}/bin/hermes-vps-review" register \
+    --run-json "$1" --source-report "$2" --phase "$3"
+}
+
 # --- fixture layout helpers ---
 POLICY="${TMP}/policy with spaces/hermes-review"
 SRC="${TMP}/repositories/example-repo"
@@ -114,6 +128,7 @@ done
 # ============================================================
 REPORT1="${TMP}/draft-phase-010-v1.md"
 make_report "${REPORT1}" "# Phase 010 inventory\n\nVersion 1 content.\n"
+stamp_report "${RUN_JSON}" "${REPORT1}" 010
 REP1_SHA="$(sha256 "${REPORT1}")"
 
 if "${ARTIFACTS}" register \
@@ -344,6 +359,7 @@ fi
 # ============================================================
 REVISED_SRC="${TMP}/external-revised-report.md"
 make_report "${REVISED_SRC}" "# Phase 010 inventory — corrected\n\nRevised content.\n"
+stamp_report "${RUN_JSON}" "${REVISED_SRC}" 010
 REV_SHA="$(sha256 "${REVISED_SRC}")"
 
 if "${ARTIFACTS}" revise \
@@ -498,6 +514,7 @@ mkdir -p "${RUN4}/reports"
 write_run "${TMP}/run4.json" "${POLICY}" "${SRC}" "${RUN4}" "${SHA}"
 
 make_report "${TMP}/draft-r4.md" "# Run4 report\n"
+stamp_report "${TMP}/run4.json" "${TMP}/draft-r4.md" 010
 R4_SHA="$(sha256 "${TMP}/draft-r4.md")"
 
 # Manually copy to final path to simulate interrupted register

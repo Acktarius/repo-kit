@@ -78,6 +78,12 @@ Distinguish:
 - Failed — provider returned error or was unavailable
 - Not checked — network access not authorized
 
+Known collector limitations (state them in the report; do not claim otherwise):
+OSV pagination is not followed — packages with a `next_page_token` are listed in
+`providers.osv.incomplete_packages` and leave OSV `partial`.  Raw responses and
+request metadata are not retained; `response_sha256` is an identity marker that
+cannot be re-verified later.
+
 ## Networking and privacy
 
 Package names and versions are transmitted to OSV and NVD APIs.

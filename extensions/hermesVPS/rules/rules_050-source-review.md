@@ -7,12 +7,16 @@ priority** per invocation, then stop.
 
 ## Prerequisites
 
-Registered, complete artifacts for phases 010 and 020 must be selected.
-If scanner-assisted, a complete phase-030 artifact must also be selected.
-Verify SHA-256 for all required inputs.  Missing or stale input → `blocked`.
+Registered, complete, current artifacts for phases 010 and 020 must be
+selected; the runner refuses to start otherwise and lists them as the
+execution-input snapshot (Rule 005).  If scanner-assisted, also consult the
+selected phase-030 scan plan (procedural; it is not a resolved input).
 
-The review priority is named in the trigger message.  If none is named, use
-the first prioritized review area from the phase-020 threat-model report.
+The review priority (`<priority_area>`) is required in the trigger message
+(`--trigger-input`) and must be one of the prioritized review areas from the
+phase-020 report.  Register with `--subject-id <priority_area>`.  Each priority
+is selected separately in `selected_by_subject["050"][priority_area]`; phase
+060 uses every selected priority.
 
 ## Scope
 

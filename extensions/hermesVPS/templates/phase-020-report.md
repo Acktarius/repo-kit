@@ -1,3 +1,4 @@
+<!-- hermes-vps-report: REPLACE THIS LINE WITH THE REPORT IDENTITY HEADER PRINTED BY hermes-vps-review -->
 # Phase 020 — Threat Model Report
 
 <!-- hermesVPS report template — fill in each section; delete this comment -->

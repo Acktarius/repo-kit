@@ -1,3 +1,4 @@
+<!-- hermes-vps-report: REPLACE THIS LINE WITH THE REPORT IDENTITY HEADER PRINTED BY hermes-vps-review -->
 # Phase {{NNN}} — {{phase-name}} (Hermes report)
 
 - **Artifact ID:** `phase-{{NNN}}-hermes-v{{N}}`

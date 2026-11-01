@@ -14,9 +14,11 @@ TMP="$(mktemp -d)"
 trap 'chmod -R u+rwX "${TMP}" 2>/dev/null; rm -rf "${TMP}"' EXIT
 
 PYTHONDONTWRITEBYTECODE=1 python3 - "${EXT}" "${TMP}" <<'PY'
-import json, os, shlex, shutil, subprocess, sys, traceback
+import contextlib, io, json, os, shlex, shutil, subprocess, sys, traceback
 
 EXT, TMP = sys.argv[1], sys.argv[2]
+STAMP = os.path.join(os.path.dirname(os.path.dirname(EXT)), "tests", "hermes_vps_stamp.py")
+HDR_PREFIX, HDR_SUFFIX = "<!-- hermes-vps-report: ", " -->"
 ENV = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
 results = []
 
@@ -150,7 +152,14 @@ class Run:
         extra = ["--trigger-input", trigger] if trigger else []
         return self.tool("hermes-vps-review", "--phase", phase, "--run-json", self.run_json, *extra)
 
+    def stamp(self, report, phase, subject=None):
+        """What the agent does at phase start: take the runner's header (input snapshot)."""
+        args = ["register", "--run-json", self.run_json, "--phase", phase, "--source-report", report]
+        subprocess.run([sys.executable, STAMP, os.path.join(EXT, "bin", "hermes-vps-review"), *args,
+                        *(["--subject-id", subject] if subject else [])], check=True, env=ENV)
+
     def register(self, phase, report, payload=None, subject=None, must=True):
+        self.stamp(report, phase, subject)
         args = ["--phase", phase, "--source-report", report]
         if subject:
             args += ["--subject-id", subject]
@@ -162,6 +171,8 @@ class Run:
         return r
 
     def revise(self, supersedes, report, payload=None, subject=None):
+        prior = next((a for a in self.manifest()["artifacts"] if a["id"] == supersedes), {})
+        self.stamp(report, prior.get("phase", "010"), subject or prior.get("subject_id"))
         args = ["--source-report", report, "--supersedes", supersedes, "--reviewer-identity", "reviewer"]
         if subject:
             args += ["--subject-id", subject]
@@ -487,6 +498,173 @@ def reg10():
     assert export["complete"] and not export["coverage"]["missing_assessments"], "auto export not complete"
 
 
+def _header(report):
+    first = open(report, encoding="utf-8").readline().rstrip("\n")
+    return json.loads(first[len(HDR_PREFIX):-len(HDR_SUFFIX)])
+
+
+def _restamp(report, header):
+    body = open(report, encoding="utf-8").read().split("\n", 1)[1]
+    with open(report, "w", encoding="utf-8") as fh:
+        fh.write(HDR_PREFIX + json.dumps(header, separators=(",", ":")) + HDR_SUFFIX + "\n" + body)
+
+
+def reg11():
+    """Input selection changes between phase start and registration: old output is rejected."""
+    r = Run("reg11")
+    r.register("010", r.report("010 v1"))
+    v1 = r.sel("010")
+    rpt = r.report("020 analyzed v1")
+    r.stamp(rpt, "020")                                   # phase start: snapshot names 010 v1
+    assert [i["id"] for i in _header(rpt)["execution_inputs"]] == [v1], "runner snapshot is not 010 v1"
+    res = r.revise(v1, r.report("010 v2"))                # analysis still running; v2 selected
+    assert res.returncode == 0, f"setup revise 010 failed: {res.stderr.strip()[-300:]}"
+    v2 = r.sel("010")
+    before = r.manifest()
+    res = r.register("020", rpt, must=False)              # old output
+    assert res.returncode != 0, "020 registered although its analyzed input (010 v1) is no longer selected"
+    assert "execution inputs changed" in res.stderr, f"unclear rejection: {res.stderr.strip()[-300:]}"
+    assert r.manifest() == before, "rejected registration changed manifest.json"
+    assert not any(a.get("phase") == "020" for a in r.manifest()["artifacts"]), "an 020 entry was recorded"
+    assert not [n for n in os.listdir(os.path.join(r.run_root, "reports")) if "020" in n], \
+        "rejected registration left 020 files in reports/"
+    rpt2 = r.report("020 analyzed v2")                    # redo the phase from a fresh runner snapshot
+    r.register("020", rpt2)
+    entry = r.art(r.sel("020"))
+    assert entry["prerequisite_artifacts"] == [v2], f"020 recorded {entry['prerequisite_artifacts']}, not [{v2}]"
+    # Repeated-phase inputs: a new 050 priority selected mid-analysis also invalidates 060 output.
+    r.register("050", r.report("050 a"), subject="auth-module")
+    rpt060 = r.report("060")
+    r.stamp(rpt060, "060")
+    r.register("050", r.report("050 b"), subject="network-layer")
+    res = r.register("060", rpt060, r.triage(["C-001"]), must=False)
+    assert res.returncode != 0, "060 registered although a 050 priority was added after it started"
+
+
+def reg12():
+    """Report identity header: run, phase, subject, source identity/commit, completion state."""
+    r = Run("reg12")
+    plain = os.path.join(r.work, "plain.md")
+    open(plain, "w").write("# 010\n\nState: `complete`\n")
+    res = r.artifacts("register", "--phase", "010", "--source-report", plain)
+    assert res.returncode != 0, "report without an identity header was registered"
+    good = r.report("010")
+    r.stamp(good, "010")
+    base = _header(good)
+    for key, value in [("run_id", "other-run"), ("phase", "020"), ("subject_id", "x"),
+                       ("source_identity", "someone/else"), ("source_commit", "0" * 40),
+                       ("completion_state", "<complete|incomplete|blocked>"), ("completion_state", "done")]:
+        bad = r.report(f"010 bad {key}")
+        _restamp(bad, {**base, key: value})
+        res = r.artifacts("register", "--phase", "010", "--source-report", bad)
+        assert res.returncode != 0, f"header with {key}={value!r} was accepted"
+    contradict = r.report("010 contradict", state="incomplete")
+    _restamp(contradict, {**base, "completion_state": "complete"})
+    res = r.artifacts("register", "--phase", "010", "--source-report", contradict)
+    assert res.returncode != 0, "body 'State: incomplete' contradicting a 'complete' header was accepted"
+    assert not os.path.exists(os.path.join(r.run_root, "manifest.json")) or not r.manifest()["artifacts"], \
+        "an invalid report was recorded"
+    blocked = r.report("010 blocked", state="blocked")
+    r.register("010", blocked)
+    assert r.art(r.sel("010"))["completion_status"] == "blocked", "header completion_state not recorded"
+
+
+def reg13():
+    """Automatic consolidation runs inside the registering lock without re-acquiring it."""
+    r = Run("reg13")
+    r.chain(cids=["C-001", "C-002"], assess={"C-001": ("confirmed", None)})
+    rpt, pay = r.report("070 C-002"), r.payload(r.finding("C-002", "dismissed"))
+    argv = ["register", "--run-json", r.run_json, "--phase", "070", "--subject-id", "C-002",
+            "--source-report", rpt, "--payload-json", pay]
+    r.stamp(rpt, "070", "C-002")
+    sys.path.insert(0, r.policy)
+    for mod in [m for m in sys.modules if m == "lib" or m.startswith("lib.")]:
+        del sys.modules[mod]
+    from lib import hermes_vps_artifacts as ha
+    depth, peak, entered = [0], [0], [0]
+    real_enter, real_exit = ha.RunLock.__enter__, ha.RunLock.__exit__
+
+    def enter(self):
+        depth[0] += 1
+        entered[0] += 1
+        peak[0] = max(peak[0], depth[0])
+        return real_enter(self)
+
+    def exit_(self, *a):
+        depth[0] -= 1
+        return real_exit(self, *a)
+
+    ha.RunLock.__enter__, ha.RunLock.__exit__ = enter, exit_
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = ha.main(argv)
+    finally:
+        ha.RunLock.__enter__, ha.RunLock.__exit__ = real_enter, real_exit
+    assert rc == 0, f"register returned {rc}"
+    assert r.sel("findings"), "automatic consolidation did not run"
+    assert entered[0] == 1 and peak[0] == 1, f"RunLock entered {entered[0]}x, max depth {peak[0]}"
+    with ha.RunLock(r.run_root):
+        try:
+            with ha.RunLock(r.run_root):
+                raise AssertionError("nested RunLock acquisition was allowed")
+        except RuntimeError:
+            pass
+
+
+def reg14():
+    """070 registered + consolidation failure: 070 stays, failure is explicit, retry is export-only."""
+    r = Run("reg14")
+    r.chain(cids=["C-001", "C-002"], assess={"C-001": ("confirmed", None)})
+    blocker = os.path.join(r.run_root, "reports", "findings-v1.json")
+    open(blocker, "w").write("not an export\n")
+    res = r.register("070", r.report("070 C-002"), r.finding("C-002", "dismissed"), subject="C-002", must=False)
+    assert res.returncode == 3, f"expected exit 3 (registered, consolidation failed); got {res.returncode}"
+    art_070 = r.sel("070", "C-002")
+    assert art_070, "phase-070 C-002 is not registered after consolidation failed"
+    assert "IS registered" in res.stderr and "consolidation FAILED" in res.stderr, \
+        f"failure not explicit:\n{res.stderr}"
+    assert not r.sel("findings"), "a findings export was recorded despite the failure"
+    lines = res.stderr.splitlines()
+    idx = next(i for i, l in enumerate(lines) if "Export-only retry" in l)
+    retry = shlex.split(lines[idx + 1].strip())
+    assert retry[1] == "generate-findings", f"retry is not export-only: {retry}"
+    before = r.manifest()["artifacts"]
+    os.unlink(blocker)
+    rerun = subprocess.run(retry, capture_output=True, text=True, env=ENV)
+    assert rerun.returncode == 0, f"export retry failed: {rerun.stderr.strip()[-300:]}"
+    after = r.manifest()["artifacts"]
+    added = after[len(before):]
+    assert after[:len(before)] == before, "retry modified existing artifacts"
+    assert [a["kind"] for a in added] == ["findings_export"], f"retry added {[a['kind'] for a in added]}"
+    assert r.sel("070", "C-002") == art_070, "retry changed the phase-070 selection"
+
+
+def reg15():
+    """Instructions agree on 080 identity, payload hashes, repeated 050, stale inputs, headers."""
+    docs = {}
+    for sub in ("rules", "tasks", "templates", "skills"):
+        for dirpath, _, files in os.walk(os.path.join(EXT, sub)):
+            for name in files:
+                if name.endswith(".md"):
+                    docs[os.path.relpath(os.path.join(dirpath, name), EXT)] = open(os.path.join(dirpath, name)).read()
+    for name in ("BOOTSTRAP.md", "README.md"):
+        docs[name] = open(os.path.join(EXT, name)).read()
+    stale = ['["080"][finding_id]', '["070"][finding_id]', "<finding_id>", "--subject-id SG-", "080 repoX SG-",
+             '"ok": <true|false>', "If none is named"]
+    hits = [f"{n}: {p}" for n, t in docs.items() for p in stale if p in t]
+    assert not hits, "stale instructions: " + "; ".join(hits)
+    r080 = docs["rules/rules_080-remediate-and-retest.md"]
+    for need in ("candidate_id", "payload_sha256", "finding_id"):
+        assert need in r080, f"rules_080 does not mention {need}"
+    for n in ("rules/rules_005-report-output.md", "README.md", "BOOTSTRAP.md"):
+        assert HDR_PREFIX.strip() in docs[n], f"{n} does not document the report identity header"
+    assert "selected_by_subject[\"050\"]" in docs["README.md"], "README omits repeated 050 selection"
+    for need in ("OSV pagination is **not implemented**", "are **not retained**"):
+        assert need in docs["README.md"], f"README does not state the intelligence limitation {need!r}"
+    for need in ("OSV pagination is **not implemented**", "are **not retained**"):
+        assert need in docs["README.md"], f"README does not state the intelligence limitation {need!r}"
+
+
 for name, fn in [("REG-1 runner fail-closed resolver", reg1),
                  ("REG-2 revise validates like register", reg2),
                  ("REG-3 all 050 priorities feed 060", reg3),
@@ -496,7 +674,12 @@ for name, fn in [("REG-1 runner fail-closed resolver", reg1),
                  ("REG-7 OSV package relationships", reg7),
                  ("REG-8 redirect and IPv4/IPv6 policy", reg8),
                  ("REG-9 exclusive create, retries, recovery", reg9),
-                 ("REG-10 automatic consolidation", reg10)]:
+                 ("REG-10 automatic consolidation", reg10),
+                 ("REG-11 input change during analysis", reg11),
+                 ("REG-12 machine-enforced report identity", reg12),
+                 ("REG-13 consolidation does not re-acquire RunLock", reg13),
+                 ("REG-14 consolidation failure: export-only recovery", reg14),
+                 ("REG-15 instruction consistency", reg15)]:
     check(name, fn)
 
 failed = 0

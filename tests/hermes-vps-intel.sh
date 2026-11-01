@@ -12,6 +12,15 @@ LIB="${EXT}/lib"
 # Library imports below come straight from the source tree; never leave bytecode there.
 export PYTHONDONTWRITEBYTECODE=1
 
+# Reports get the runner's identity header (execution-input snapshot) just before
+# registration, as an agent does at phase start; see tests/hermes_vps_stamp.py.
+REAL_ARTIFACTS="${ARTIFACTS}"
+artifacts_stamped() {
+  PYTHONDONTWRITEBYTECODE=1 python3 "${ROOT}/tests/hermes_vps_stamp.py" "${EXT}/bin/hermes-vps-review" "$@"
+  "${REAL_ARTIFACTS}" "$@"
+}
+ARTIFACTS=artifacts_stamped
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 

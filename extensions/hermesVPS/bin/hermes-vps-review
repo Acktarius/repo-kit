@@ -42,19 +42,29 @@ from lib.hermes_vps_phases import (  # noqa: E402
     validate_phase_policy_files,
     abs_policy_files_for_phase,
 )
-from lib.hermes_vps_resolver import find_artifact, resolve_prerequisites  # noqa: E402
+from lib.hermes_vps_resolver import (  # noqa: E402
+    execution_inputs,
+    find_artifact,
+    render_report_header,
+    resolve_prerequisites,
+)
 
 
 def resolve_prereq_lines(
     ctx: dict[str, Any], phase: str, trigger_input: str | None
-) -> list[str]:
-    """Run the shared fail-closed resolver; return prompt lines or raise ValidationError."""
+) -> tuple[list[str], str]:
+    """Run the shared fail-closed resolver.
+
+    Returns (prompt lines, report identity header carrying the input snapshot);
+    raises ValidationError when any prerequisite is unusable.
+    """
     manifest: dict[str, Any] = {}
     if os.path.isfile(ctx["manifest_path"]):
         manifest = load_json(ctx["manifest_path"])
     ids = resolve_prerequisites(manifest, ctx["run_root"], phase, trigger_input)
+    header = render_report_header(ctx, phase, trigger_input, execution_inputs(manifest, ids))
     if not ids:
-        return ["  (no prerequisites)"]
+        return ["  (no prerequisites)"], header
     lines = []
     for art_id in ids:
         entry = find_artifact(manifest, art_id) or {}
@@ -64,7 +74,7 @@ def resolve_prereq_lines(
             f"  phase {entry.get('phase')}{subject}: {art_id} "
             f"({entry.get('path')}{payload}; sha256 {entry.get('sha256', '')[:16]}…)"
         )
-    return lines
+    return lines, header
 
 
 def print_prompt(
@@ -73,6 +83,7 @@ def print_prompt(
     cli_phase: str,
     trigger_input: str | None,
     prereq_lines: list[str],
+    report_header: str,
 ) -> None:
     phase_info = PHASE_TABLE[cli_phase]
     pf = abs_policy_files_for_phase(ctx["policy_prefix"], cli_phase)
@@ -81,6 +92,11 @@ def print_prompt(
     prereq_block = (
         "SELECTED PREREQUISITES (verified complete, intact, current; use ALL of them):\n"
         + "\n".join(prereq_lines) + "\n\n"
+        "REPORT IDENTITY HEADER (required): make this the FIRST line of the report,\n"
+        "verbatim, replacing only the completion_state placeholder with complete,\n"
+        "incomplete, or blocked.  It records the exact inputs analyzed; registration\n"
+        "fails if the selection changes before then (re-run this command and redo the phase).\n"
+        f"{report_header}\n\n"
     )
 
     trigger_block = ""
@@ -137,7 +153,7 @@ PHASE: {cli_phase} ({phase_info.phase_name}){run_json_note}
     --run-json {run_json_path} \\
     --phase {cli_phase}{subject_flag}{payload_flag} \\
     --source-report <absolute-path-to-your-report-file>
-Version is selected automatically. Idempotent: safe to retry with the same path.
+Version is selected automatically. Idempotent: safe to retry with the same files.
 
 READ THESE POLICY INPUTS (absolute paths):
 {policy_inputs}
@@ -371,12 +387,12 @@ def main(argv: list[str]) -> int:
                 + "\n  ".join(missing)
             )
 
-        prereq_lines = resolve_prereq_lines(ctx, cli_phase, trigger_input)
+        prereq_lines, report_header = resolve_prereq_lines(ctx, cli_phase, trigger_input)
 
     except ValidationError as exc:
         die(str(exc))
 
-    print_prompt(ctx, run_json_path, cli_phase, trigger_input, prereq_lines)
+    print_prompt(ctx, run_json_path, cli_phase, trigger_input, prereq_lines, report_header)
     return 0
 
 

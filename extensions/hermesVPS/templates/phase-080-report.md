@@ -1,10 +1,13 @@
-# Phase 080 — Remediation Plan: `<finding_id>` (Gate 1)
+<!-- hermes-vps-report: REPLACE THIS LINE WITH THE REPORT IDENTITY HEADER PRINTED BY hermes-vps-review -->
+# Phase 080 — Remediation Plan: `<candidate_id>` (Gate 1)
 
 ## Run identity
 
 - Run ID / source commit
-- Finding ID: `<finding_id>`
-- Phase-070 input artifact: `<artifact_id>`
+- Candidate ID: `<candidate_id>`
+- Finding ID (optional, = phase-070 proposed_finding.id): `<SG-NNN or none>`
+- Phase-070 input artifact: `<artifact_id>` (payload_sha256 `<hash>`)
+- Phase-040 input artifact: `<artifact_id>` (payload_sha256 `<hash>`)
 
 ## Gate model status
 

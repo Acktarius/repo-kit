@@ -1,3 +1,4 @@
+<!-- hermes-vps-report: REPLACE THIS LINE WITH THE REPORT IDENTITY HEADER PRINTED BY hermes-vps-review -->
 # Phase 010 — inventory (Hermes report)
 
 - **Artifact ID:** `phase-010-hermes-v{{N}}`

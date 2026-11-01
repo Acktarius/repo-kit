@@ -63,12 +63,40 @@ Example: `phase-010-hermes-v1.md`
 - Never overwrite an existing report.
 - Do not auto-pick "newest" prior reports as prerequisites.
 
+## Report identity header and execution-input snapshot (machine-validated)
+
+`hermes-vps-review` prints a REPORT IDENTITY HEADER line.  It must be the
+**first line** of the report, copied verbatim except that the
+`completion_state` placeholder is replaced with `complete`, `incomplete`, or
+`blocked`:
+
+```text
+<!-- hermes-vps-report: {"schema_version":1,"run_id":"...","phase":"020","subject_id":null,"source_identity":"...","source_commit":"<40 hex>","completion_state":"complete","execution_inputs":[{"id":"phase-010-hermes-v1","sha256":"...","payload_sha256":null}]} -->
+```
+
+`execution_inputs` is the snapshot taken at phase start: every prerequisite
+artifact ID the runner resolved, with its report `sha256` and `payload_sha256`.
+At registration (`register` and `revise`) the helper rejects the report, and
+records nothing, unless:
+
+- the header is the first line, appears exactly once, and is valid JSON with exactly these keys;
+- `run_id`, `phase`, `subject_id`, `source_identity`, and `source_commit` equal the run and the command;
+- `completion_state` is one of the three states, and any body `State:` line agrees with it;
+- `execution_inputs` equals the inputs resolved **now** (same IDs, same report and
+  payload hashes).  If any selection changed during the phase, the output is not
+  registered and nothing is substituted: re-run `hermes-vps-review` and redo the phase.
+
+Machine-validated: the header fields above; for payload phases, the payload
+schema and identity fields.  Procedural (not machine-validated): the report
+sections listed under "Required report contents" and in each phase rule, and
+the factual accuracy of everything in the report.
+
 ## Write-then-register flow
 
 After producing a report:
 
-1. Write the report to any filename under `reports/` (the final versioned
-   name is assigned by the registration helper).
+1. Write the report, starting with the identity header, to any filename under
+   `reports/` (the final versioned name is assigned by the registration helper).
 2. Call `hermes-vps-artifacts register --run-json PATH --phase NNN
    --source-report /abs/path/to/your/report.md`.
 3. The helper: acquires the per-run lock → auto-selects the next version →
@@ -84,17 +112,18 @@ Structural and hash checks do not prove factual correctness of report content.
 
 ## Required report contents
 
-Each report must state:
+Each report must state (items marked * are also machine-validated via the
+identity header; the rest are procedural):
 
-1. phase number and name
+1. phase number and name *
 2. UTC creation time
-3. run ID, approved source, full commit SHA, working-tree state
+3. run ID *, approved source *, full commit SHA *, working-tree state
 4. rules consulted
-5. exact prerequisite artifact IDs used (none for phase 010)
+5. exact prerequisite artifact IDs used (none for phase 010) *
 6. actions actually performed
 7. evidence and paths examined
 8. limitations, failures, and coverage gaps
-9. completion state (`complete` | `blocked` | `incomplete`)
+9. completion state (`complete` | `blocked` | `incomplete`) *
 10. next human gate required
 
 Use `templates/phase-010-report.md` for phase 010 structure when applicable.

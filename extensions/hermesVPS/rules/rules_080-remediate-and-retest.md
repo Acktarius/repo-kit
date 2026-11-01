@@ -2,9 +2,14 @@
 
 ## Activation
 
-Applies when phase 080 is requested for **one finding per invocation**.
-The finding ID is provided in the trigger message (`--trigger-input`).
-Run only phase 080 gate 1 for that one finding, then stop.
+Applies when phase 080 is requested for **one candidate per invocation**.
+The phase-060 `candidate_id` is provided in the trigger message (`--trigger-input`).
+Run only phase 080 gate 1 for that one candidate, then stop.
+
+Identity: phases 070 and 080 are keyed by `candidate_id`.  `--trigger-input`,
+`--subject-id`, and the plan payload's `candidate_id` must all be equal.
+`finding_id` (e.g. `SG-001`) is optional canonical metadata; when present in the
+plan it must equal the phase-070 `proposed_finding.id`.
 
 ## Scope: gate 1 only
 
@@ -24,40 +29,46 @@ separate explicit authorization.
 
 ## Prerequisites
 
-A registered, complete phase-060 triage artifact must be selected.
-A registered, complete phase-070 finding-record payload for this specific
-`finding_id` must be selected in `selected_by_subject["070"][finding_id]`.
+The runner resolves and lists them; all must be complete, intact, and current:
 
-If either prerequisite is missing or stale, write the report with completion
-state `blocked` and stop. The finding must be `open` in the proposed record.
+- the selected phase-060 triage artifact, whose inventory contains the candidate;
+- the selected phase-070 assessment `selected_by_subject["070"][candidate_id]`,
+  with disposition `confirmed`, `suspected`, or `needs-investigation`;
+- the selected phase-040 vuln-intel artifact `selected_by_phase["040"]`.
+
+If any prerequisite is missing or stale the runner refuses to start; if one
+becomes stale during the phase, registration is rejected (see Rule 005,
+execution-input snapshot).  Write the report with completion state `blocked`
+only for blockers the runner cannot detect.
 
 ## Intelligence provenance (mandatory payload)
 
-Phase 080 requires a structured `phase-080-plan.json` payload registered via
-`--payload-json`. This payload records **immutable provenance** at plan creation time:
+Phase 080 requires a structured plan payload (`templates/phase-080-plan.schema.json`)
+registered via `--payload-json`. It records **immutable provenance** at plan creation time:
 
-- `intel_artifact_id`: exact ID of the phase-040 vuln-intel artifact used
-- `intel_artifact_sha256`: SHA-256 of that artifact at plan creation time
-- `assessed_finding_artifact_id`: exact ID of the phase-070 artifact this plan addresses
-- `assessed_finding_sha256`: SHA-256 of the phase-070 artifact
-- `intel_freshness_at_plan_time`: freshness evaluation snapshot (evaluated_at_utc, effective_threshold_hours, freshness_ok, limitations)
+- `candidate_id`: the phase-060 candidate this plan addresses
+- `finding_id` (optional): the phase-070 `proposed_finding.id`
+- `intel_artifact_id` / `intel_artifact_sha256`: the selected phase-040 artifact ID
+  and its manifest `payload_sha256` (not the report `sha256`)
+- `assessed_finding_artifact_id` / `assessed_finding_sha256`: the selected phase-070
+  artifact ID and its manifest `payload_sha256`
+- `intel_freshness_at_plan_time`: freshness evaluation snapshot
+  (`evaluated_at_utc`, `effective_threshold_hours`, `threshold_source`, `freshness_ok`, limitations)
 
 **Resolve these at plan creation time; do not leave floating references.**
-The selected `selected_by_phase["040"]` and `selected_by_subject["070"][finding_id]`
-provide the IDs and hashes. Record them exactly.
+The helper rejects a plan whose IDs or `payload_sha256` values are not the
+current selections.
 
-If a new phase-040 collection has been performed since the phase-070 assessment,
-`generate-findings` will detect the mismatch and report a provenance limitation.
-A stale-intelligence warning must remain visible in the plan and handoff.
-
-Validate the freshness of the current phase-040 intel artifact and record the
-result in `intel_freshness_at_plan_time`.
+If phase 040 or the candidate's phase 070 is revised after the plan is
+registered, the plan becomes stale: `generate-findings` excludes it and lists it
+in `readiness.provenance_080.stale_plans`.  A stale-intelligence warning must
+remain visible in the plan and handoff.
 
 ## Gate 1 required output
 
 The report must include:
 
-1. **Finding identity** — exact finding_id and assessed source commit
+1. **Candidate identity** — exact `candidate_id`, optional `finding_id`, assessed source commit
 2. **Intel provenance** — phase-040 artifact ID, collection mode, freshness status
 3. **Root cause** — from phase-070 evidence; no new speculation
 4. **Proposed changes** — specific code/config modifications with file paths
@@ -67,11 +78,14 @@ The report must include:
 8. **Risks, rollback, unknowns** — implementation risks and rollback guidance
 9. **Gates 2-5** — explicitly marked NOT EXECUTED; separate authorization required
 
+These sections are procedural requirements; only the identity header (Rule 005)
+and the plan payload are machine-validated.
+
 ## Subject-scoped selection
 
-Phase 080 uses `selected_by_subject["080"][finding_id]`.
+Phase 080 uses `selected_by_subject["080"][candidate_id]`.
 Cross-subject supersession is rejected: revising a plan requires the same
-`finding_id` as the superseded artifact.
+`candidate_id` as the superseded artifact.
 
 ## Evidence contract
 
@@ -81,7 +95,7 @@ Preserve unknowns; do not invent solutions where evidence is absent.
 
 ## Completion
 
-Write exactly one Markdown report.
-Call `hermes-vps-artifacts register --subject-id <finding_id> --payload-json <path>`.
+Write exactly one Markdown report starting with the runner's identity header.
+Call `hermes-vps-artifacts register --phase 080 --subject-id <candidate_id> --payload-json <path>`.
 Stop and wait for human approval. The presence of a remediation plan does
 not change the finding status from `open` to `fixed`.
