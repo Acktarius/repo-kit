@@ -48,7 +48,7 @@ class B1StructureValidatedBeforeAbsenceProof(unittest.TestCase):
         for rel in MALFORMED:
             why = inv.absence_unproven(data, {"source": rel})
             self.assertIsNotNone(why, rel)
-            self.assertRegex(why, "unexpected .* document structure|could not be parsed", rel)
+            self.assertRegex(why, "unexpected .* document structure|could not be parsed|unsupported|without a packages", rel)
 
     def test_minimal_valid_documents_prove_absence(self):
         write(self.root, "package-lock.json", json.dumps({"lockfileVersion": 3, "packages": {"": {}}}))
@@ -82,7 +82,7 @@ class B1EndToEnd(Baseline):
         self.assertNotIn(cid, out["auto_decisions"])
         self.assertNotIn(cid, self.state()["assessments"])
         reasons = next(i["queue_reasons"] for i in out["worklist"] if i["candidate_id"] == cid)
-        self.assertTrue(any("unexpected npm-lock document structure" in r for r in reasons), reasons)
+        self.assertTrue(any("absence is not shown: package-lock.json" in r for r in reasons), reasons)
         self.assertEqual(self.state()["stale"][cid]["assessment"]["applicability"], "affected")
 
     def test_empty_object_lockfile_keeps_affected_package_queued(self):

@@ -86,8 +86,10 @@ written to disk.
   code, image contents without an SBOM), or when items remain queued.
 - A component that disappears is recorded as `component_not_present` only when
   its source file was parsed completely without it. A failed, partial,
-  structurally invalid (for example a lockfile containing `{}`), or deleted
-  source leaves the item queued instead.
+  structurally invalid (for example a lockfile containing `{}`), unsupported
+  lockfile version, or deleted source leaves the item queued instead, as does
+  any listed entry without a resolved version (for example
+  `node_modules/lodash: {}`).
 - Fix versions are proposed only from the affected range that contains the
   installed version. If sources disagree, the mitigation stays unknown.
 

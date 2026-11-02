@@ -36,9 +36,9 @@ class Inventory(unittest.TestCase):
             "": {}, "node_modules/a": {"version": "1.0.0"}, "node_modules/b/node_modules/c": {"version": "2.0.0"},
             "node_modules/linked": {"link": True}}}))
         write(self.root, "pnpm-lock.yaml", "lockfileVersion: '9.0'\npackages:\n  '@scope/x@1.2.3':\n    resolution: {}\n  y@4.5.6(peer@1.0.0):\n    resolution: {}\n")
-        write(self.root, "yarn.lock", '"z@^1.0.0", z@~1.0.0:\n  version "1.0.4"\n')
-        write(self.root, "poetry.lock", '[[package]]\nname = "Django"\nversion = "4.2.1"\n\n[metadata]\nx = 1\n')
-        write(self.root, "uv.lock", '[[package]]\nname = "app"\nversion = "0.1.0"\nsource = { editable = "." }\n\n[[package]]\nname = "flask"\nversion = "3.0.0"\nsource = { registry = "https://pypi.org/simple" }\n')
+        write(self.root, "yarn.lock", '# yarn lockfile v1\n\n"z@^1.0.0", z@~1.0.0:\n  version "1.0.4"\n')
+        write(self.root, "poetry.lock", '[[package]]\nname = "Django"\nversion = "4.2.1"\n\n[metadata]\nlock-version = "2.0"\n')
+        write(self.root, "uv.lock", 'version = 1\n\n[[package]]\nname = "app"\nversion = "0.1.0"\nsource = { editable = "." }\n\n[[package]]\nname = "flask"\nversion = "3.0.0"\nsource = { registry = "https://pypi.org/simple" }\n')
         write(self.root, "Cargo.lock", '[[package]]\nname = "serde"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n\n[[package]]\nname = "local"\nversion = "0.1.0"\n')
         write(self.root, "go.mod", "module x\n\ngo 1.22.1\n\nrequire (\n\tgithub.com/a/b v1.2.3 // indirect\n)\nrequire golang.org/x/net v0.20.0\n")
         write(self.root, "Gemfile.lock", "GEM\n  specs:\n    rack (3.0.8)\n\nPLATFORMS\n  ruby\n")

@@ -96,30 +96,54 @@ def component(kind: str, ecosystem: str, name: str, version: str | None, tier: s
 
 
 # ---------------------------------------------------------------------------
-# Lockfile parsers (each returns components; malformed input -> gap)
+# Lockfile parsers. Each returns (components, unresolved entries); an entry that
+# is listed but cannot be resolved to name + version is never silently dropped.
+# Unsupported format versions raise LockfileError.
 # ---------------------------------------------------------------------------
 
-def _npm_lock(text: str, src: str) -> list[dict[str, Any]]:
+class LockfileError(ValueError):
+    pass
+
+
+def _npm_lock(text: str, src: str) -> tuple[list[dict[str, Any]], list[str]]:
     data = json.loads(text)
-    out = []
-    packages = data.get("packages")
-    if isinstance(packages, dict):
+    version = data.get("lockfileVersion")
+    if version not in (1, 2, 3):
+        raise LockfileError(f"unsupported npm lockfileVersion {version!r}")
+    out: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+    if version >= 2:
+        packages = data.get("packages")
+        if not isinstance(packages, dict):
+            raise LockfileError("npm lockfile v2+ without a packages object")
         for path, meta in packages.items():
-            if not path or not isinstance(meta, dict) or meta.get("link") or "node_modules/" not in path:
+            if "node_modules/" not in path:
                 continue
-            name = meta.get("name") or path.rsplit("node_modules/", 1)[1]
-            if meta.get("version"):
-                out.append(component("library", "npm", name, meta["version"], "locked", src))
-        return out
+            if isinstance(meta, dict) and meta.get("link"):
+                continue
+            ver = meta.get("version") if isinstance(meta, dict) else None
+            if not isinstance(ver, str) or not ver:
+                unresolved.append(path)
+                continue
+            out.append(component("library", "npm", meta.get("name") or path.rsplit("node_modules/", 1)[1],
+                                 ver, "locked", src))
+        return out, unresolved
 
-    def walk(deps: dict[str, Any]) -> None:
-        for name, meta in (deps or {}).items():
-            if isinstance(meta, dict) and meta.get("version"):
-                out.append(component("library", "npm", name, meta["version"], "locked", src))
-                walk(meta.get("dependencies") or {})
+    def walk(deps: Any, prefix: str) -> None:
+        if not isinstance(deps, dict):
+            unresolved.append(f"{prefix}dependencies")
+            return
+        for name, meta in deps.items():
+            ver = meta.get("version") if isinstance(meta, dict) else None
+            if not isinstance(ver, str) or not ver:
+                unresolved.append(prefix + name)
+                continue
+            out.append(component("library", "npm", name, ver, "locked", src))
+            if "dependencies" in meta:
+                walk(meta["dependencies"], f"{prefix}{name}>")
 
-    walk(data.get("dependencies") or {})
-    return out
+    walk(data.get("dependencies") or {}, "")
+    return out, unresolved
 
 
 def _split_at_version(spec: str) -> tuple[str, str] | None:
@@ -129,8 +153,11 @@ def _split_at_version(spec: str) -> tuple[str, str] | None:
     return spec[:idx], spec[idx + 1:]
 
 
-def _pnpm_lock(text: str, src: str) -> list[dict[str, Any]]:
-    out, in_packages = [], False
+def _pnpm_lock(text: str, src: str) -> tuple[list[dict[str, Any]], list[str]]:
+    lv = re.search(r"^lockfileVersion:\s*['\"]?(\d+)", text, re.MULTILINE)
+    if not lv or lv.group(1) not in ("5", "6", "9"):
+        raise LockfileError(f"unsupported pnpm lockfileVersion {lv.group(1) if lv else None!r}")
+    out, unresolved, in_packages = [], [], False
     for line in text.splitlines():
         if re.match(r"^(packages|snapshots):\s*$", line):
             in_packages = line.startswith("packages")
@@ -140,56 +167,99 @@ def _pnpm_lock(text: str, src: str) -> list[dict[str, Any]]:
             continue
         if not in_packages:
             continue
-        m = re.match(r"^  ['\"]?(/?[^'\"\s][^'\"]*?)['\"]?:\s*$", line)
-        if not m:
+        key = re.match(r"^  ('[^']+'|\"[^\"]+\"|[^\s'\"#][^\s]*?):(?:\s|$)", line)
+        if not key:
             continue
-        spec = re.sub(r"\(.*$", "", m.group(1)).lstrip("/")
+        raw = key.group(1).strip("'\"")
+        spec = re.sub(r"\(.*$", "", raw).lstrip("/")
         parsed = _split_at_version(spec)
         if parsed is None and spec.count("/") >= 1:
             name, _, ver = spec.rpartition("/")
             parsed = (name, ver) if name else None
         if parsed and re.match(r"^\d", parsed[1]):
             out.append(component("library", "npm", parsed[0], parsed[1], "locked", src))
-    return out
+        else:
+            unresolved.append(raw)
+    return out, unresolved
 
 
-def _yarn_lock(text: str, src: str) -> list[dict[str, Any]]:
-    out, current = [], None
+def _yarn_lock(text: str, src: str) -> tuple[list[dict[str, Any]], list[str]]:
+    classic = re.search(r"^# yarn lockfile v(\d+)", text, re.MULTILINE)
+    if classic:
+        if classic.group(1) != "1":
+            raise LockfileError(f"unsupported yarn lockfile v{classic.group(1)}")
+    else:
+        berry = re.search(r"^__metadata:\s*\n\s+version:\s*(\d+)", text, re.MULTILINE)
+        if not berry or not 4 <= int(berry.group(1)) <= 8:
+            raise LockfileError(f"unsupported yarn lockfile metadata version {berry.group(1) if berry else None!r}")
+    out: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+    current = None
     for line in text.splitlines():
         if line and not line.startswith((" ", "#")) and line.rstrip().endswith(":"):
+            if current:
+                unresolved.append(current)
             first = line.rstrip()[:-1].split(",")[0].strip().strip('"')
+            current = None
+            if first == "__metadata":
+                continue
             parsed = _split_at_version(first)
-            current = parsed[0] if parsed else None
-            if current == "__metadata":
-                current = None
+            if parsed is None:
+                unresolved.append(first)
+            else:
+                current = parsed[0]
             continue
         m = re.match(r'^\s+version:?\s+"?([^"\s]+)"?\s*$', line)
         if current and m:
             out.append(component("library", "npm", current, m.group(1), "locked", src))
             current = None
-    return out
+    if current:
+        unresolved.append(current)
+    return out, unresolved
 
 
-def _toml_packages(text: str, src: str, ecosystem: str, skip_local: bool) -> list[dict[str, Any]]:
-    out = []
+def _toml_format_check(kind: str, text: str) -> None:
+    head = text.split("[[package]]", 1)[0]
+    if kind == "poetry.lock":
+        m = re.search(r'^lock-version\s*=\s*"(\d+)\.', text, re.MULTILINE)
+        if not m or m.group(1) not in ("1", "2"):
+            raise LockfileError(f"unsupported poetry lock-version {m.group(1) if m else None!r}")
+    elif kind == "uv.lock":
+        m = re.search(r"^version\s*=\s*(\d+)", head, re.MULTILINE)
+        if not m or m.group(1) != "1":
+            raise LockfileError(f"unsupported uv.lock version {m.group(1) if m else None!r}")
+    elif kind == "cargo.lock":
+        m = re.search(r"^version\s*=\s*(\d+)", head, re.MULTILINE)
+        if m and int(m.group(1)) > 4:
+            raise LockfileError(f"unsupported Cargo.lock version {m.group(1)}")
+
+
+def _toml_packages(text: str, src: str, ecosystem: str, skip_local: bool) -> tuple[list[dict[str, Any]], list[str]]:
+    out, unresolved = [], []
     for block in re.split(r"^\[\[package\]\]\s*$", text, flags=re.MULTILINE)[1:]:
         block = re.split(r"^\[(?!\[package)", block, maxsplit=1, flags=re.MULTILINE)[0]
         name = re.search(r'^name\s*=\s*"([^"]+)"', block, re.MULTILINE)
         ver = re.search(r'^version\s*=\s*"([^"]+)"', block, re.MULTILINE)
         source = re.search(r"^source\s*=\s*(.+)$", block, re.MULTILINE)
-        if not (name and ver):
-            continue
         if skip_local and (not source or re.search(r"(virtual|editable|path)\s*=", source.group(1))):
             continue
+        if not (name and ver):
+            unresolved.append(name.group(1) if name else "[[package]] without name")
+            continue
         out.append(component("library", ecosystem, name.group(1), ver.group(1), "locked", src))
-    return out
+    return out, unresolved
 
 
 def _requirements(text: str, src: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Pinned requirements, plus unpinned, editable, or URL entries (unresolved)."""
     out, unpinned = [], []
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
-        if not line or line.startswith("-"):
+        if not line:
+            continue
+        if line.startswith("-"):
+            if re.match(r"^(-e|--editable)\b", line):
+                unpinned.append(line[:80])
             continue
         line = line.split(";", 1)[0].strip()
         m = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?\s*===?\s*([A-Za-z0-9._+!-]+)\s*(\\)?$", line)
@@ -197,48 +267,58 @@ def _requirements(text: str, src: str) -> tuple[list[dict[str, Any]], list[str]]
             out.append(component("library", "PyPI", m.group(1), m.group(3), "locked", src))
         else:
             name = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)", line)
-            if name:
-                unpinned.append(name.group(1))
+            unpinned.append(name.group(1) if name else line[:80])
     return out, unpinned
 
 
-def _pipfile_lock(text: str, src: str) -> list[dict[str, Any]]:
+def _pipfile_lock(text: str, src: str) -> tuple[list[dict[str, Any]], list[str]]:
     data = json.loads(text)
-    out = []
+    spec = (data.get("_meta") or {}).get("pipfile-spec")
+    if spec != 6:
+        raise LockfileError(f"unsupported Pipfile.lock pipfile-spec {spec!r}")
+    out, unresolved = [], []
     for section in ("default", "develop"):
         for name, meta in (data.get(section) or {}).items():
-            ver = str((meta or {}).get("version") or "")
+            ver = str((meta or {}).get("version") or "") if isinstance(meta, dict) else ""
             if ver.startswith("=="):
                 out.append(component("library", "PyPI", name, ver[2:], "locked", src))
-    return out
+            else:
+                unresolved.append(name)
+    return out, unresolved
 
 
-def _composer_lock(text: str, src: str) -> list[dict[str, Any]]:
+def _composer_lock(text: str, src: str) -> tuple[list[dict[str, Any]], list[str]]:
     data = json.loads(text)
-    out = []
+    out, unresolved = [], []
     for section in ("packages", "packages-dev"):
         for pkg in data.get(section) or []:
-            if pkg.get("name") and pkg.get("version"):
+            if isinstance(pkg, dict) and pkg.get("name") and pkg.get("version"):
                 out.append(component("library", "Packagist", pkg["name"], str(pkg["version"]).lstrip("v"), "locked", src))
-    return out
+            else:
+                unresolved.append(str(pkg.get("name") if isinstance(pkg, dict) else pkg)[:80])
+    return out, unresolved
 
 
-def _gemfile_lock(text: str, src: str) -> list[dict[str, Any]]:
-    out, in_specs = [], False
+def _gemfile_lock(text: str, src: str) -> tuple[list[dict[str, Any]], list[str]]:
+    out, unresolved, in_specs = [], [], False
     for line in text.splitlines():
         if line.strip() == "specs:":
             in_specs = True
             continue
         if in_specs and line and not line.startswith(" "):
             in_specs = False
+        if not in_specs or not re.match(r"^    \S", line):
+            continue
         m = re.match(r"^    ([A-Za-z0-9._-]+) \(([^)]+)\)\s*$", line)
-        if in_specs and m:
+        if m:
             out.append(component("library", "RubyGems", m.group(1), m.group(2).split("-")[0], "locked", src))
-    return out
+        else:
+            unresolved.append(line.strip()[:80])
+    return out, unresolved
 
 
-def _go_mod(text: str, src: str) -> list[dict[str, Any]]:
-    out = []
+def _go_mod(text: str, src: str) -> tuple[list[dict[str, Any]], list[str]]:
+    out, unresolved = [], []
     in_block = False
     for raw in text.splitlines():
         line = raw.split("//", 1)[0].strip()
@@ -251,6 +331,8 @@ def _go_mod(text: str, src: str) -> list[dict[str, Any]]:
         m = re.match(r"^(?:require\s+)?(\S+)\s+(v\S+)$", line) if (in_block or line.startswith("require ")) else None
         if m:
             out.append(component("library", "Go", m.group(1), m.group(2), "locked", src))
+        elif line and (in_block or line.startswith("require ")):
+            unresolved.append(line[:80])
         go = re.match(r"^go\s+(\d+\.\d+(?:\.\d+)?)$", line)
         if go:
             out.append(component("runtime", "Go", "go", go.group(1), "declared", src, cpe=CPE_PRODUCTS["go"]))
@@ -260,7 +342,7 @@ def _go_mod(text: str, src: str) -> list[dict[str, Any]]:
         if tc:
             out.append(component("runtime", "Go", "go-toolchain", tc.group(1), "declared", src, cpe=CPE_PRODUCTS["go"]))
             out.append(component("library", "Go", "stdlib", tc.group(1), "declared", src))
-    return out
+    return out, unresolved
 
 
 # ---------------------------------------------------------------------------
@@ -336,12 +418,13 @@ def _dockerfile(text: str, src: str) -> tuple[list[dict[str, Any]], list[str]]:
         pm = re.search(r"\b(apt-get|apt|apk)\s+(?:install|add)\b(.*)", s)
         if pm:
             for tok in pm.group(2).split():
-                if tok.startswith("-") or tok in ("&&", "||", ";") or "$" in tok:
-                    if tok in ("&&", "||", ";"):
-                        break
+                if tok in ("&&", "||", ";"):
+                    break
+                if tok.startswith("-"):
                     continue
                 name, _, ver = tok.partition("=")
-                if not re.match(r"^[a-z0-9][a-z0-9.+-]*$", name):
+                if "$" in tok or not re.match(r"^[a-z0-9][a-z0-9.+-]*$", name):
+                    gaps.append(f"{src}:{idx}: OS package entry {tok!r} could not be resolved")
                     continue
                 comp = component("os-package", os_eco or "unknown-os", name, ver or None, "build", src, idx)
                 out.append(comp)
@@ -551,26 +634,25 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
         found: list[dict[str, Any]] = []
         gaps_before = len(gaps)
         try:
+            unresolved: list[str] = []
             if kind == "npm-lock":
-                found = _npm_lock(text, rel)
+                found, unresolved = _npm_lock(text, rel)
             elif kind == "pnpm-lock":
-                found = _pnpm_lock(text, rel)
+                found, unresolved = _pnpm_lock(text, rel)
             elif kind == "yarn-lock":
-                found = _yarn_lock(text, rel)
-            elif kind == "poetry.lock":
-                found = _toml_packages(text, rel, "PyPI", skip_local=False)
-            elif kind == "uv.lock":
-                found = _toml_packages(text, rel, "PyPI", skip_local=True)
-            elif kind == "cargo.lock":
-                found = _toml_packages(text, rel, "crates.io", skip_local=True)
+                found, unresolved = _yarn_lock(text, rel)
+            elif kind in ("poetry.lock", "uv.lock", "cargo.lock"):
+                _toml_format_check(kind, text)
+                found, unresolved = _toml_packages(text, rel, "crates.io" if kind == "cargo.lock" else "PyPI",
+                                                   skip_local=kind != "poetry.lock")
             elif kind == "pipfile.lock":
-                found = _pipfile_lock(text, rel)
+                found, unresolved = _pipfile_lock(text, rel)
             elif kind == "composer.lock":
-                found = _composer_lock(text, rel)
+                found, unresolved = _composer_lock(text, rel)
             elif kind == "gemfile.lock":
-                found = _gemfile_lock(text, rel)
+                found, unresolved = _gemfile_lock(text, rel)
             elif kind == "go.mod":
-                found = _go_mod(text, rel)
+                found, unresolved = _go_mod(text, rel)
             elif kind == "requirements":
                 found, unpinned = _requirements(text, rel)
                 if unpinned:
@@ -616,10 +698,17 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
             elif kind == "compose" or (kind == "yaml" and re.search(r"^\s*apiVersion:", text, re.MULTILINE)):
                 found, g = _image_lines(text, "deploy_config", rel)
                 gaps.extend(g)
+        except LockfileError as exc:
+            incomplete[rel] = str(exc)
+            gaps.append(f"{rel}: {exc}; components unknown")
+            continue
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             incomplete[rel] = f"could not be parsed ({type(exc).__name__})"
             gaps.append(f"{rel}: could not be parsed ({type(exc).__name__}); components unknown")
             continue
+        if unresolved:
+            gaps.append(f"{rel}: {len(unresolved)} listed package entr{'y' if len(unresolved) == 1 else 'ies'} "
+                        f"without a resolved name and version: {', '.join(unresolved[:10])}")
         parsed.add(rel)
         if len(gaps) > gaps_before:
             incomplete[rel] = f"parsed with unresolved entries ({len(gaps) - gaps_before} inventory gap(s))"
