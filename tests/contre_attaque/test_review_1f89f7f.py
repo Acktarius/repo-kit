@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 
-from support import write
+from support import RepoCase, write
 
 import ca_inventory as inv
 from test_review_regressions import LATER, Baseline
@@ -89,6 +89,89 @@ class ListedEntryLosesVersionEndToEnd(Baseline):
             self.assertEqual(code, 0)
             self.assertIn("listed package entry without a resolved name and version: node_modules/lodash", handoff)
             self.assertNotIn("component_not_present", json.dumps(self.state()["assessments"].get(cid)))
+
+
+UV_APP = 'version = 1\nrequires-python = ">=3.11"\n\n[[package]]\nname = "app"\nversion = "0.1.0"\nsource = { editable = "." }\n'
+UV_REQUESTS = '\n[[package]]\nname = "requests"\nversion = "2.28.0"\n'
+
+
+class TomlSourceRules(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="ca-toml-")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_uv_missing_or_unknown_source_is_a_gap(self):
+        write(self.root, "a/uv.lock", UV_APP + UV_REQUESTS)
+        write(self.root, "b/uv.lock", UV_APP + UV_REQUESTS + 'source = { mystery = "x" }\n')
+        data = inv.build_inventory(self.root)
+        for src in ("a/uv.lock", "b/uv.lock"):
+            self.assertRegex(inv.absence_unproven(data, {"source": src}) or "", "unresolved entries", src)
+            self.assertTrue(any(g.startswith(src) and "requests (source unresolved)" in g for g in data["gaps"]))
+        self.assertNotIn("app", {c["name"] for c in data["components"]})
+
+    def test_uv_local_sources_are_skipped_without_a_gap(self):
+        local = "".join(f'\n[[package]]\nname = "l{k}"\nversion = "0.1.0"\nsource = {{ {k} = "." }}\n'
+                        for k in inv.UV_LOCAL_SOURCES)
+        write(self.root, "uv.lock", UV_APP + local + UV_REQUESTS + REGISTRY + "\n")
+        data = inv.build_inventory(self.root)
+        self.assertIsNone(inv.absence_unproven(data, {"source": "uv.lock"}), data["gaps"])
+        self.assertEqual({c["name"] for c in data["components"] if c["kind"] == "library"}, {"requests"})
+
+    def test_cargo_sourceless_workspace_member_is_skipped(self):
+        write(self.root, "Cargo.lock", 'version = 4\n\n[[package]]\nname = "app"\nversion = "0.1.0"\n\n'
+              '[[package]]\nname = "serde"\nversion = "1.0.0"\n'
+              'source = "registry+https://github.com/rust-lang/crates.io-index"\n')
+        data = inv.build_inventory(self.root)
+        self.assertIsNone(inv.absence_unproven(data, {"source": "Cargo.lock"}), data["gaps"])
+        self.assertEqual({c["name"] for c in data["components"] if c["kind"] == "library"}, {"serde"})
+
+    def test_cargo_unknown_source_is_a_gap(self):
+        write(self.root, "Cargo.lock", 'version = 4\n\n[[package]]\nname = "serde"\nversion = "1.0.0"\nsource = "mystery+x"\n')
+        data = inv.build_inventory(self.root)
+        self.assertRegex(inv.absence_unproven(data, {"source": "Cargo.lock"}) or "", "unresolved entries")
+
+
+class UvEntryLosesSourceEndToEnd(RepoCase):
+    def setUp(self):
+        super().setUp()
+        os.remove(os.path.join(self.root, "requirements.txt"))
+        write(self.root, "uv.lock", UV_APP + UV_REQUESTS + REGISTRY + "\n")
+
+    def first_run(self):
+        out = self.start("3days")
+        cids = [i["candidate_id"] for i in out["worklist"] if i["component"]["name"] == "requests"]
+        self.assertTrue(cids)
+        for cid in cids:
+            self.assertEqual(self.decide(out["run_id"], cid, "affected", "--evidence", "uv.lock")[0], 0)
+        self.assertEqual(self.cli("finish", "--run", out["run_id"])[0], 0)
+        return cids
+
+    def test_previously_affected_uv_package_stays_queued(self):
+        cids = self.first_run()
+        write(self.root, "uv.lock", UV_APP + UV_REQUESTS)
+        out = self.start("3days", now=LATER)
+        state = self.state()
+        for cid in cids:
+            self.assertNotIn(cid, out["auto_decisions"])
+            item = next(i for i in out["worklist"] if i["candidate_id"] == cid)
+            self.assertTrue(any("absence is not shown: uv.lock: parsed with unresolved entries" in r
+                                for r in item["queue_reasons"]), item["queue_reasons"])
+            self.assertNotIn(cid, state["assessments"])
+            self.assertEqual(state["stale"][cid]["assessment"]["applicability"], "affected")
+        code, handoff = self.cli("finish", "--run", out["run_id"], now=LATER)
+        self.assertEqual(code, 0)
+        self.assertIn("requests (source unresolved)", handoff)
+        self.assertNotIn("component_not_present", json.dumps(self.state()["assessments"]))
+
+    def test_control_removed_uv_entry_is_shown_absent(self):
+        cids = self.first_run()
+        write(self.root, "uv.lock", UV_APP)
+        out = self.start("3days", now=LATER)
+        for cid in cids:
+            self.assertIn(cid, out["auto_decisions"])
+            self.assertEqual(self.state()["assessments"][cid]["justification"], "component_not_present")
 
 
 if __name__ == "__main__":

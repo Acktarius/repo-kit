@@ -234,14 +234,42 @@ def _toml_format_check(kind: str, text: str) -> None:
             raise LockfileError(f"unsupported Cargo.lock version {m.group(1)}")
 
 
-def _toml_packages(text: str, src: str, ecosystem: str, skip_local: bool) -> tuple[list[dict[str, Any]], list[str]]:
+UV_LOCAL_SOURCES = ("editable", "virtual", "path", "directory")
+UV_REMOTE_SOURCES = ("registry", "git", "url")
+CARGO_REMOTE_SOURCES = ("registry+", "sparse+", "git+")
+
+
+def _toml_source(kind: str, source: str | None) -> str:
+    """Classify a [[package]] source as "local" (skip), "remote" (inventory), or "unresolved"."""
+    if kind == "poetry.lock":
+        return "remote"
+    if kind == "cargo.lock":
+        # Cargo omits source only for workspace members and path dependencies.
+        if source is None:
+            return "local"
+        value = source.strip().strip('"')
+        return "remote" if value.startswith(CARGO_REMOTE_SOURCES) else "unresolved"
+    # uv records a source for every package, so a missing one is not proof of a local package.
+    key = re.match(r"^\{\s*([A-Za-z-]+)\s*=", source.strip()) if source else None
+    if not key:
+        return "unresolved"
+    if key.group(1) in UV_LOCAL_SOURCES:
+        return "local"
+    return "remote" if key.group(1) in UV_REMOTE_SOURCES else "unresolved"
+
+
+def _toml_packages(text: str, src: str, ecosystem: str, kind: str) -> tuple[list[dict[str, Any]], list[str]]:
     out, unresolved = [], []
     for block in re.split(r"^\[\[package\]\]\s*$", text, flags=re.MULTILINE)[1:]:
         block = re.split(r"^\[(?!\[package)", block, maxsplit=1, flags=re.MULTILINE)[0]
         name = re.search(r'^name\s*=\s*"([^"]+)"', block, re.MULTILINE)
         ver = re.search(r'^version\s*=\s*"([^"]+)"', block, re.MULTILINE)
         source = re.search(r"^source\s*=\s*(.+)$", block, re.MULTILINE)
-        if skip_local and (not source or re.search(r"(virtual|editable|path)\s*=", source.group(1))):
+        origin = _toml_source(kind, source.group(1) if source else None)
+        if origin == "local":
+            continue
+        if origin == "unresolved":
+            unresolved.append(f"{name.group(1) if name else '[[package]]'} (source unresolved)")
             continue
         if not (name and ver):
             unresolved.append(name.group(1) if name else "[[package]] without name")
@@ -643,8 +671,7 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
                 found, unresolved = _yarn_lock(text, rel)
             elif kind in ("poetry.lock", "uv.lock", "cargo.lock"):
                 _toml_format_check(kind, text)
-                found, unresolved = _toml_packages(text, rel, "crates.io" if kind == "cargo.lock" else "PyPI",
-                                                   skip_local=kind != "poetry.lock")
+                found, unresolved = _toml_packages(text, rel, "crates.io" if kind == "cargo.lock" else "PyPI", kind)
             elif kind == "pipfile.lock":
                 found, unresolved = _pipfile_lock(text, rel)
             elif kind == "composer.lock":
