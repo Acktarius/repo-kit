@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "contre-attaque state index",
+  "description": "Written only by contre_attaque.py under an exclusive lock with atomic replacement. Do not hand-edit.",
+  "type": "object",
+  "required": ["schema_version", "created_at_utc", "runs", "checkpoints", "candidates", "assessments", "queue", "evidence", "findings"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "created_at_utc": { "type": "string" },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["run_id", "requested", "window", "started_at_utc", "completed_at_utc", "outcome", "pid", "host", "git", "inventory", "collection", "assessment"],
+        "properties": {
+          "run_id": { "type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$" },
+          "requested": { "type": "string" },
+          "window": {
+            "type": "object",
+            "required": ["days", "start_utc", "end_utc"],
+            "properties": {
+              "days": { "type": "integer", "minimum": 1 },
+              "start_utc": { "type": "string" },
+              "end_utc": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "started_at_utc": { "type": "string" },
+          "completed_at_utc": { "type": ["string", "null"] },
+          "interrupted_detected_at_utc": { "type": "string" },
+          "outcome": { "type": "string", "enum": ["running", "completed", "interrupted", "failed"] },
+          "pid": { "type": "integer" },
+          "host": { "type": "string" },
+          "mode": { "type": "string", "enum": ["network", "offline"] },
+          "git": { "type": "object", "required": ["commit", "branch", "dirty_paths", "dirty_fingerprint"] },
+          "inventory": { "type": "object", "required": ["fingerprint", "deployment_fingerprint", "components", "gaps", "sources"] },
+          "collection": {
+            "type": "object",
+            "required": ["status", "providers", "window_gaps"],
+            "properties": {
+              "status": { "type": "string", "enum": ["complete", "partial", "failed"] },
+              "providers": { "type": "object" },
+              "window_gaps": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "assessment": {
+            "type": "object",
+            "required": ["worklist", "reused", "auto", "decided", "pending_after_run"],
+            "properties": {
+              "worklist": { "type": "array", "items": { "type": "string" } },
+              "reused": { "type": "array", "items": { "type": "string" } },
+              "auto": { "type": "array", "items": { "type": "string" } },
+              "decided": { "type": "array", "items": { "type": "string" } },
+              "pending_after_run": { "type": ["integer", "null"] }
+            }
+          },
+          "coverage_complete": { "type": ["boolean", "null"] },
+          "artifacts": { "type": "object" },
+          "findings_sync": { "type": "object" }
+        }
+      }
+    },
+    "checkpoints": {
+      "type": "object",
+      "required": ["osv", "nvd", "kev"],
+      "properties": {
+        "osv": { "type": ["object", "null"] },
+        "nvd": { "type": ["object", "null"] },
+        "kev": { "type": ["object", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "candidates": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["candidate_id", "canonical_id", "aliases", "component", "sources", "advisory_revision", "component_fingerprint", "deployment_fingerprint", "severity", "kev", "window_reasons", "first_seen_utc", "last_seen_run"],
+        "properties": {
+          "candidate_id": { "type": "string", "pattern": "^CA-[0-9a-f]{10}$" },
+          "canonical_id": { "type": "string" },
+          "aliases": { "type": "array", "items": { "type": "string" } },
+          "component": { "type": "object", "required": ["identity", "key", "kind", "name", "tier", "source"] },
+          "sources": { "type": "array" },
+          "advisory_revision": { "type": ["string", "null"] },
+          "component_fingerprint": { "type": "string" },
+          "deployment_fingerprint": { "type": "string" },
+          "severity": { "type": ["string", "null"], "enum": ["low", "medium", "high", "critical", null] },
+          "kev": { "type": ["object", "null"] },
+          "window_reasons": { "type": "array", "items": { "type": "string" } },
+          "match": { "type": ["boolean", "null"] },
+          "fixed_versions": { "type": "array", "items": { "type": "string" } },
+          "summary": { "type": "string" },
+          "status_note": { "type": ["string", "null"] },
+          "first_seen_utc": { "type": "string" },
+          "last_seen_run": { "type": "string" }
+        }
+      }
+    },
+    "assessments": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["candidate_id", "applicability", "rationale", "confidence", "evidence", "decided_at_utc", "decided_by", "run_id", "advisory_revision", "component_fingerprint", "deployment_fingerprint", "kev_listed", "history"],
+        "properties": {
+          "candidate_id": { "type": "string" },
+          "applicability": { "type": "string", "enum": ["affected", "not_affected", "fixed", "under_investigation"] },
+          "justification": { "type": ["string", "null"], "enum": ["component_not_present", "vulnerable_code_not_present", "vulnerable_code_not_in_execute_path", "vulnerable_code_cannot_be_controlled_by_adversary", "inline_mitigations_already_exist", null] },
+          "rationale": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
+          "evidence": { "type": "array", "items": { "type": "object", "required": ["kind"] } },
+          "mitigation": { "type": ["string", "null"] },
+          "mitigation_refs": { "type": "array", "items": { "type": "string" } },
+          "exploit_path": { "type": ["string", "null"] },
+          "unknowns": { "type": "array", "items": { "type": "string" } },
+          "verification": { "type": "array", "items": { "type": "string" } },
+          "acceptance": { "type": "array", "items": { "type": "string" } },
+          "decided_at_utc": { "type": "string" },
+          "decided_by": { "type": "string", "enum": ["agent", "helper"] },
+          "run_id": { "type": "string" },
+          "advisory_revision": { "type": ["string", "null"] },
+          "component_fingerprint": { "type": "string" },
+          "deployment_fingerprint": { "type": "string" },
+          "kev_listed": { "type": "boolean" },
+          "history": { "type": "array" }
+        }
+      }
+    },
+    "queue": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "enqueued_at_utc", "reasons", "attempts"],
+        "properties": {
+          "candidate_id": { "type": "string" },
+          "enqueued_at_utc": { "type": "string" },
+          "reasons": { "type": "array", "items": { "type": "string" } },
+          "attempts": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["url", "provider", "at_utc", "lead", "run_id"],
+        "properties": {
+          "url": { "type": "string" },
+          "provider": { "type": "string" },
+          "at_utc": { "type": "string" },
+          "lead": { "type": "boolean" },
+          "run_id": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "findings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["sg_id", "written_fields_sha256", "run_id", "at_utc"],
+        "properties": {
+          "sg_id": { "type": "string", "pattern": "^SG-[0-9]{3,}$" },
+          "written_fields_sha256": { "type": "string" },
+          "run_id": { "type": "string" },
+          "at_utc": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

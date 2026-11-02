@@ -15,6 +15,7 @@ repo-kit/
     typescript/     # owns package-preferences
     react/
     security/
+    contre-attaque/ # lookback CVE/advisory review (depends on security)
     cpp11/
     rust/
     python/
@@ -34,7 +35,7 @@ repo-kit/
   README.md
 ```
 
-Each module has `files/` (ready to copy) and `manifest.sh` (name, description, depends, conflicts).
+Each module has `files/` (ready to copy) and `manifest.sh` (name, description, depends, conflicts, and optional `MODULE_PRESERVE` paths that are never overwritten, even with `--force`).
 
 ## Usage
 
@@ -52,6 +53,7 @@ Initialize a project (resolves dependencies, detects conflicts):
 ./scripts/init.sh /path/to/project --cpp11
 ./scripts/init.sh /path/to/project --rust --security
 ./scripts/init.sh /path/to/project --python
+./scripts/init.sh /path/to/project --contre-attaque   # also installs security
 ./scripts/init.sh /path/to/project --base --force
 ./scripts/init.sh /path/to/project --ext continue
 ./scripts/init.sh /path/to/project --ext openspec
@@ -71,7 +73,9 @@ Sync only Cursor assets (`.cursor/`) into an existing project (extensions still 
 ./scripts/sync-cursor.sh /path/to/project --ext act
 ```
 
-Existing files are **skipped** unless `--force` is passed.
+Existing files are **skipped** unless `--force` is passed. Preserved paths (reviewed security findings, accepted risks, threat model, contre-attaque state ignore file) are reported as `preserve` and never overwritten; missing ones are created.
+
+Then, in Cursor in the target project: `/contre-attaque 3days` (default 7 days). See `docs/contre-attaque.md` in the target.
 
 ## Versioning
 
@@ -134,6 +138,7 @@ Optional extensions pull in third-party tools with their own licenses:
 | `typescript` | `base` | `cpp11`, `rust` | package-preferences, Biome, tsconfig, CI |
 | `react` | `typescript` | `cpp11`, `rust` | React conventions skill + docs |
 | `security` | `base` | — | Portable hardening plan, review, findings, triage, and CI workflow |
+| `contre-attaque` | `security` | — | `/contre-attaque 3days`: lookback CVE/advisory applicability, agent-generated findings, coding-agent handoff |
 | `cpp11` | `base` | `typescript`, `react`, `rust` | clang-format, CMake |
 | `rust` | `base` | `typescript`, `react`, `cpp11` | rustfmt + Cursor guidance |
 | `python` | `base` | — | Ruff, Pyright, pytest config + Cursor guidance |

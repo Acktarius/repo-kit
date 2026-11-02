@@ -1,0 +1,51 @@
+[
+  {
+    "id": "CVE-2026-1111",
+    "published": "2026-11-01T12:00:00.000",
+    "lastModified": "2026-11-01T12:30:00.000",
+    "vulnStatus": "Analyzed",
+    "descriptions": [{ "lang": "en", "value": "Heap overflow in CPython's tarfile module when extracting crafted archives." }],
+    "metrics": {
+      "cvssMetricV31": [{ "type": "Primary", "cvssData": { "baseScore": 8.1, "baseSeverity": "HIGH" } }]
+    },
+    "configurations": [
+      {
+        "nodes": [
+          {
+            "operator": "OR",
+            "cpeMatch": [
+              {
+                "vulnerable": true,
+                "criteria": "cpe:2.3:a:python:python:*:*:*:*:*:*:*:*",
+                "versionStartIncluding": "3.11.0",
+                "versionEndExcluding": "3.11.9"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "references": [{ "url": "https://www.python.org/security/" }]
+  },
+  {
+    "id": "CVE-2026-2222",
+    "published": "2026-10-31T09:00:00.000",
+    "lastModified": "2026-10-31T09:00:00.000",
+    "vulnStatus": "Analyzed",
+    "descriptions": [{ "lang": "en", "value": "Unrelated widget issue." }],
+    "metrics": {},
+    "configurations": [
+      {
+        "nodes": [
+          {
+            "operator": "OR",
+            "cpeMatch": [
+              { "vulnerable": true, "criteria": "cpe:2.3:a:acme:widget:1.0:*:*:*:*:*:*:*" }
+            ]
+          }
+        ]
+      }
+    ],
+    "references": []
+  }
+]

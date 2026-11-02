@@ -18,6 +18,7 @@ CURSOR_ONLY=0
 ADDED_COUNT=0
 SKIPPED_COUNT=0
 OVERWRITTEN_COUNT=0
+PRESERVED_COUNT=0
 
 # Known extensions (non-module tooling). Expand as new --ext values land.
 KNOWN_EXTENSIONS=("continue" "openspec" "forge" "act" "hermes")
@@ -57,6 +58,8 @@ load_manifest() {
   MODULE_DESC=""
   MODULE_DEPENDS=()
   MODULE_CONFLICTS=()
+  # Project-owned paths (relative to files/): created when missing, never overwritten.
+  MODULE_PRESERVE=()
 
   # shellcheck source=/dev/null
   source "${path}"
@@ -162,12 +165,17 @@ list_modules() {
 }
 
 # Copy one file into target, respecting FORCE_COPY.
+# A third argument of 1 marks a preserved path: existing content is never overwritten.
 _copy_file() {
   local src="$1"
   local dest="$2"
+  local preserve="${3:-0}"
 
   if [[ -e "${dest}" || -L "${dest}" ]]; then
-    if [[ "${FORCE_COPY}" -eq 1 ]]; then
+    if [[ "${preserve}" -eq 1 ]]; then
+      PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
+      echo "  preserve   ${dest#"${TARGET_DIR}"/}"
+    elif [[ "${FORCE_COPY}" -eq 1 ]]; then
       mkdir -p "$(dirname "${dest}")"
       cp -f "${src}" "${dest}"
       OVERWRITTEN_COUNT=$((OVERWRITTEN_COUNT + 1))
@@ -190,10 +198,11 @@ _copy_file() {
 copy_module_files() {
   local name="$1"
   local src_root="${MODULES_DIR}/${name}/files"
-  local rel dest
+  local rel dest preserve
 
   [[ -d "${src_root}" ]] || die "module '${name}' has no files/ directory"
 
+  load_manifest "${name}"
   echo "module: ${name}"
 
   while IFS= read -r -d '' src; do
@@ -203,8 +212,12 @@ copy_module_files() {
       [[ "${rel}" == .cursor/* ]] || continue
     fi
 
+    preserve=0
+    if array_contains "${rel}" "${MODULE_PRESERVE[@]+"${MODULE_PRESERVE[@]}"}"; then
+      preserve=1
+    fi
     dest="${TARGET_DIR}/${rel}"
-    _copy_file "${src}" "${dest}"
+    _copy_file "${src}" "${dest}" "${preserve}"
   done < <(find "${src_root}" -type f -print0 | sort -z)
 }
 
@@ -374,6 +387,7 @@ install_modules() {
   ADDED_COUNT=0
   SKIPPED_COUNT=0
   OVERWRITTEN_COUNT=0
+  PRESERVED_COUNT=0
 
   mkdir -p "${TARGET_DIR}"
 
@@ -396,6 +410,7 @@ install_modules() {
   echo "  added:        ${ADDED_COUNT}"
   echo "  skipped:      ${SKIPPED_COUNT}"
   echo "  overwritten:  ${OVERWRITTEN_COUNT}"
+  echo "  preserved:    ${PRESERVED_COUNT}"
 }
 
 prompt_yn() {

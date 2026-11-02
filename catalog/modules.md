@@ -55,6 +55,23 @@ Human-readable mirror of `modules/*/manifest.sh`.
   - `.cursor/rules/20-security-planner.mdc`, `30-security-reviewer.mdc`, and `40-security-triage.mdc`
   - `.github/workflows/security-check.yml`
   - `security/` threat-model, findings, accepted-risk, schema, and template workflow
+- **Preserves:** `security/findings-reviewed.json`, `security/accepted-risks.md`, `security/threat-model.md`
+  (never overwritten by `init`/`sync`, even with `--force`; recreated when missing)
+
+## contre-attaque
+
+- **Description:** Lookback CVE/advisory applicability review (`/contre-attaque 3days`) with findings and coding-agent handoff
+- **Depends:** `base`, `security`
+- **Conflicts:** —
+- **Provides:**
+  - `.cursor/commands/contre-attaque.md`
+  - `.cursor/skills/contre-attaque/SKILL.md` (plus `references/`, `scripts/` stdlib-only Python helper)
+  - `.cursor/rules/50-contre-attaque.mdc`
+  - `.repo-kit/contre-attaque/.gitignore` (whole state directory is gitignored)
+  - `docs/contre-attaque.md`
+- **Preserves:** `.repo-kit/contre-attaque/.gitignore`
+- **Writes at run time:** agent-generated `open` records in `security/findings-reviewed.json`; state, evidence,
+  and per-run assessment/handoff under `.repo-kit/contre-attaque/`
 
 ## cpp11
 
