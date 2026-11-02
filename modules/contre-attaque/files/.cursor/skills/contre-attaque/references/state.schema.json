@@ -28,7 +28,9 @@
           "started_at_utc": { "type": "string" },
           "completed_at_utc": { "type": ["string", "null"] },
           "interrupted_detected_at_utc": { "type": "string" },
+          "interrupted_reason": { "type": "string" },
           "outcome": { "type": "string", "enum": ["running", "completed", "interrupted", "failed"] },
+          "phase": { "type": "string", "enum": ["collecting", "assessing"] },
           "pid": { "type": "integer" },
           "host": { "type": "string" },
           "mode": { "type": "string", "enum": ["network", "offline"] },
@@ -120,9 +122,26 @@
           "advisory_revision": { "type": ["string", "null"] },
           "component_fingerprint": { "type": "string" },
           "deployment_fingerprint": { "type": "string" },
+          "source_fingerprint": { "type": ["string", "null"] },
+          "inventory_fingerprint": { "type": ["string", "null"] },
           "kev_listed": { "type": "boolean" },
           "history": { "type": "array" }
         }
+      }
+    },
+    "stale": {
+      "description": "Invalidated decisions, kept as history only. Never used as current reasoning.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["assessment", "reasons", "invalidated_at_utc", "run_id"],
+        "properties": {
+          "assessment": { "type": "object" },
+          "reasons": { "type": "array", "items": { "type": "string" } },
+          "invalidated_at_utc": { "type": "string" },
+          "run_id": { "type": "string" }
+        },
+        "additionalProperties": false
       }
     },
     "queue": {

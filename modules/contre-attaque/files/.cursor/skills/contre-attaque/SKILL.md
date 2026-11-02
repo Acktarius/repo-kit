@@ -33,13 +33,20 @@ access to those providers (in Cursor, request network permission for this call
 only).
 
 - Exit 2 (`invalid_period`): show the error and stop.
+- Exit 1 with `run_in_progress`: another run is active. Only one run may be
+  active. Tell the user, and run `$H abandon --run <id>` only if they confirm
+  that run will not be finished.
 - Exit 3 (`consent_required`): show the user what each provider receives
   (`providers[*].transmits`). Ask which of `osv`, `nvd`, `kev`, and `vendor`
   may be contacted. Run `$H consent --grant <comma-list>` (an empty list means
   no network), then rerun `start`. If the user wants no network at all,
   run `$H start <period> --offline`, which uses `.repo-kit/contre-attaque/imports/`.
-- Exit 0: keep the JSON. Note `run_id`, `collection`, `inventory.gaps`, and
-  `worklist`.
+- Exit 0: keep the JSON. Note `run_id`, `collection`, `inventory.gaps`,
+  `inventory.limitations`, and `worklist`.
+
+Do not modify any repository file while the run is active. `decide` and
+`finish` verify the source and inventory snapshot taken at `start`; any change
+interrupts the run (exit 2), and you must start a new one.
 
 ## 2. Investigate each worklist item (read-only)
 
@@ -51,9 +58,12 @@ items stay queued for the next run. For each item:
    only CI, and `sbom` reflects one observed deployment or build at
    `sbom_observed_at`, not what is running now.
 2. Check the affected versions or builds, and vendor backports (distro or image
-   rebuilds). Use `fixed_versions` and the cited sources. To read an official
-   advisory, run `$H fetch-evidence --run <id> <https-url>`. For news or blog
-   leads, add `--lead`: leads help discovery but are never sufficient evidence.
+   rebuilds). `fixed_versions` holds only the fix for the affected range that
+   contains the installed version; more than one value means the sources
+   disagree. The collected provider records are listed in `evidence_refs`; cite
+   them as `--evidence evidence:<sha256>`. To read an official advisory, run
+   `$H fetch-evidence --run <id> <https-url>`. For news or blog leads, add
+   `--lead`: leads help discovery but are never sufficient evidence.
 3. Check the features, configuration, and attack prerequisites the advisory
    requires.
 4. Search the code (Grep/Read) for use of the vulnerable API, module, or feature.
@@ -72,6 +82,9 @@ $H decide --run <id> --candidate CA-xxxxxxxxxx --status <affected|not_affected|f
 ```
 
 Rules:
+- Decide only candidates in this run's worklist.
+- `prior_decision` is historical: it was invalidated for the listed reasons.
+  Re-derive the decision from current evidence; never copy it.
 - `not_affected` requires `--justification` (`component_not_present`,
   `vulnerable_code_not_present`, `vulnerable_code_not_in_execute_path`,
   `vulnerable_code_cannot_be_controlled_by_adversary`, or
@@ -105,8 +118,12 @@ Then stop. Do not start remediation.
 
 ## Recovery
 
-- An interrupted run is detected and marked `interrupted` by the next `start`.
-  Queued work and successful collection checkpoints are kept.
+- A `start` that died before issuing its worklist is marked `interrupted` by
+  the next `start`. A run with an issued worklist stays active until `finish`,
+  `abandon`, or 24 hours have passed. Queued work and successful collection
+  checkpoints are always kept.
+- Exit 2 from `decide` or `finish` saying the run was interrupted because inputs
+  changed: report it and start a new run. No findings were synced.
 - A lock timeout means another run is mutating state. Report it and stop.
 - A corrupt `state.json` is reported, not repaired. Ask the user to restore it
   or move it aside (a new state is then created, and the next run is a baseline).

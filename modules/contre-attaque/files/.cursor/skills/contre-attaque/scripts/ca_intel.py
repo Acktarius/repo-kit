@@ -617,16 +617,26 @@ def _osv_intervals(events: list[dict[str, Any]]) -> list[tuple[str | None, str |
 
 
 def osv_fixed_versions(record: dict[str, Any], component: dict[str, Any]) -> list[str]:
+    """Fixed versions of the affected interval that contains the component's version.
+
+    Fixes for other maintenance branches are never returned; if the version
+    cannot be placed in an interval, nothing is returned.
+    """
     name = str(component.get("name") or "").lower()
+    eco = str(component.get("ecosystem") or "")
+    version = str(component.get("version") or "")
     out: list[str] = []
     for aff in record.get("affected") or []:
         pkg = aff.get("package") or {}
-        if str(pkg.get("name", "")).lower() != name:
+        if str(pkg.get("name", "")).lower() != name or str(pkg.get("ecosystem", "")) != eco:
             continue
         for rng in aff.get("ranges") or []:
-            for evt in rng.get("events") or []:
-                if evt.get("fixed") and evt["fixed"] not in out:
-                    out.append(str(evt["fixed"]))
+            if rng.get("type") not in ("SEMVER", "ECOSYSTEM"):
+                continue
+            for start, end, end_incl in _osv_intervals(rng.get("events") or []):
+                if end and not end_incl and range_relation(version, start, True, end, False, precise_parts=1) is True:
+                    if end not in out:
+                        out.append(str(end))
     return out
 
 

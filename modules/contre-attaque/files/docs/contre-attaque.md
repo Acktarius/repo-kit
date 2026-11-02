@@ -64,7 +64,9 @@ written to disk.
   agent-generated `open` records. These are marked
   `contre-attaque (agent-generated, not human-approved)` and have
   `lastReviewed: null`.
-- The helper refreshes only records it wrote and nobody has edited since. It
+- The helper refreshes only records it wrote and nobody has edited since. Any
+  edit to such a record, including `lastReviewed` or `source`, makes it
+  human-owned. It
   never changes status, never marks anything fixed, never reopens accepted
   risks, and never recreates records a human deleted. It reports conflicts in
   the handoff instead.
@@ -80,15 +82,33 @@ written to disk.
   describes one deployment or build at its recorded observation time.
 - Each run reports incomplete coverage when a provider is not live and
   complete, when the window has a gap since the last successful collection,
-  or when items remain queued.
+  when the inventory has gaps (unparsed or partially resolved files, vendored
+  code, image contents without an SBOM), or when items remain queued.
+- A component that disappears is recorded as `component_not_present` only when
+  its source file was parsed completely without it. A failed, partial, or
+  deleted source leaves the item queued instead.
+- Fix versions are proposed only from the affected range that contains the
+  installed version. If sources disagree, the mitigation stays unknown.
+
+## Runs
+
+Only one run is active at a time. A run's worklist is fixed at `start`, and
+`decide` accepts only those candidates. `decide` and `finish` re-check the
+source fingerprint (all tracked and untracked non-ignored files, excluding
+`.repo-kit/` and the security review records) and the inventory; any change
+interrupts the run, and no findings are synced. To give up on an unfinished
+run, use `abandon --run <id>`.
 
 ## Reruns and reuse
 
 A decision is reused only when all of these are unchanged: the advisory
 revision, KEV status, component version and tier, runtime/image/SBOM/deployment
-configuration, and every cited evidence file. It must also be at most 30 days
-old. Any change re-queues the item immediately. `under_investigation` is never
-reused.
+configuration, and every cited evidence file. Decisions that depend on code
+(`affected`, and `not_affected` with a code-based justification) also require
+an unchanged repository source fingerprint. A decision must also be at most 30
+days old. Any change re-queues the item immediately and moves the old decision
+to history: it is shown as invalidated in the handoff and is never used for
+findings. `under_investigation` is never reused.
 
 Each run assesses at most 25 queued items. The rest stay queued and are picked
 up by the next run, with KEV items, least-attempted items, and in-window items
@@ -97,9 +117,10 @@ and only after a complete live collection.
 
 ## Recovery
 
-- If a run is interrupted (crash, closed chat), the next `/contre-attaque`
-  marks it `interrupted`. Its queue and completed collection checkpoints
-  survive.
+- If `start` crashes before issuing its worklist, the next `/contre-attaque`
+  marks it `interrupted`. An unfinished run with a worklist blocks new runs
+  until it is finished, abandoned, or 24 hours old. Queues and completed
+  collection checkpoints always survive.
 - A lock timeout means another run is writing. Retry after it finishes.
 - If `state.json` is corrupt, the helper refuses to continue. Restore it or move
   it aside; the next run then rebuilds a baseline, and existing canonical

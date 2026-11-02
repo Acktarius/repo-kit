@@ -50,11 +50,11 @@ class Concurrency(RepoCase):
         self.assertEqual({c for c in cids if state["assessments"][c]["applicability"] == "affected"}, set(cids))
         self.assertEqual(sorted(state["runs"][-1]["assessment"]["decided"]), sorted(cids))
 
-    def test_overlapping_starts_keep_both_runs_and_one_queue(self):
+    def test_overlapping_starts_admit_exactly_one_run(self):
         codes = _run_all(_start_worker, [(self.root,), (self.root,)])
-        self.assertEqual(codes, [0, 0])
+        self.assertEqual(codes, [0, 1])
         state = self.state()
-        self.assertEqual(len(state["runs"]), 2)
+        self.assertEqual(len(state["runs"]), 1)
         ids = [q["candidate_id"] for q in state["queue"]]
         self.assertEqual(len(ids), len(set(ids)), "queue has no duplicates")
         self.assertEqual(set(ids), set(state["candidates"]))
@@ -69,13 +69,14 @@ class Concurrency(RepoCase):
 
 
 class Recovery(RepoCase):
-    def test_interrupted_run_is_detected_and_queue_and_checkpoints_survive(self):
+    def test_start_that_died_while_collecting_is_recovered_and_queue_and_checkpoints_survive(self):
         out = self.start("3days")
         before = self.state()
         dead = subprocess.Popen(["true"])
         dead.wait()
         path = os.path.join(self.root, ".repo-kit", "contre-attaque", "state.json")
         before["runs"][-1]["pid"] = dead.pid
+        before["runs"][-1]["phase"] = "collecting"
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(before, fh)
         out2 = self.start("3days", transport=standard_transport(fail={"osv", "nvd", "kev"}),
@@ -89,15 +90,23 @@ class Recovery(RepoCase):
         self.assertEqual(code, 2)
         self.assertIn("interrupted", err["error"])
 
-    def test_stale_run_from_another_host_is_interrupted_after_24h(self):
+    def test_unfinished_assessing_run_blocks_new_runs_until_finished_abandoned_or_24h(self):
         out = self.start("3days")
-        state = self.state()
-        state["runs"][-1]["host"] = "elsewhere"
-        with open(os.path.join(self.root, ".repo-kit", "contre-attaque", "state.json"), "w", encoding="utf-8") as fh:
-            json.dump(state, fh)
-        self.assertEqual(self.start("3days", now="2026-11-02T20:00:00Z")["recovered_interrupted_runs"], [])
+        code, busy = self.cli("start", "3days", transport=standard_transport(), now="2026-11-02T20:00:00Z")
+        self.assertEqual(code, 1)
+        self.assertEqual((busy["status"], busy["run_id"]), ("run_in_progress", out["run_id"]))
         self.assertEqual(self.start("3days", now="2026-11-03T18:00:00Z")["recovered_interrupted_runs"],
                          [out["run_id"]])
+
+    def test_abandon_releases_the_run_and_blocks_its_further_use(self):
+        out = self.start("3days")
+        cid = self.item(out, "lodash")["candidate_id"]
+        code, _ = self.cli("abandon", "--run", out["run_id"])
+        self.assertEqual(code, 0)
+        code, err = self.decide(out["run_id"], cid, "affected", "--evidence", "package-lock.json")
+        self.assertEqual(code, 2)
+        self.assertIn("interrupted", err["error"])
+        self.start("3days", now="2026-11-02T18:00:00Z")
 
     def test_corrupt_or_duplicate_key_state_fails_closed(self):
         path = os.path.join(self.root, ".repo-kit", "contre-attaque", "state.json")

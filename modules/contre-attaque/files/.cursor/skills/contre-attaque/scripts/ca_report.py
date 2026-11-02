@@ -15,14 +15,25 @@ FINDINGS_REL = os.path.join("security", "findings-reviewed.json")
 SCHEMA_REL = os.path.join("security", "findings.schema.json")
 ACCEPTED_RISKS_REL = os.path.join("security", "accepted-risks.md")
 SOURCE_PREFIX = "contre-attaque (agent-generated, not human-approved)"
-AGENT_FIELDS = ("title", "status", "severity", "confidence", "files", "summary",
-                "exploitPath", "remediation", "duplicateOf", "acceptedRiskId", "notes")
 UNKNOWN_MITIGATION = "unknown: no fix or mitigation identified in collected sources"
 
 
 def _fields_hash(record: dict[str, Any]) -> str:
-    material = {k: record.get(k) for k in AGENT_FIELDS}
-    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+    """Hash of the whole record: any human change (including lastReviewed or source) transfers ownership."""
+    return hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()
+
+
+def _single_fix(cand: dict[str, Any]) -> str | None:
+    fixed = cand.get("fixed_versions") or []
+    return fixed[0] if len(fixed) == 1 else None
+
+
+def _fix_conflict(cand: dict[str, Any]) -> str | None:
+    fixed = cand.get("fixed_versions") or []
+    if len(fixed) > 1:
+        return (f"advisory sources list different fixed versions for the range containing "
+                f"{cand['component'].get('version')}: {', '.join(fixed)}; verify before choosing a target")
+    return None
 
 
 def _sg_number(sg_id: str) -> int:
@@ -41,9 +52,9 @@ def _verification(cand: dict[str, Any], a: dict[str, Any]) -> list[str]:
         return list(a["verification"])
     comp = cand["component"]
     steps = []
-    if cand.get("fixed_versions"):
-        steps.append(f"{comp['source']} resolves {comp['name']} to a version outside the advisory's affected "
-                     f"ranges (advisory-listed fixes: {', '.join(cand['fixed_versions'])}).")
+    fix = _single_fix(cand)
+    steps.append(f"{comp['source']} resolves {comp['name']} to a version outside every affected range of "
+                 f"{cand['canonical_id']}" + (f" (the fix for the installed range is {fix})." if fix else "."))
     steps.append(f"Rerun /contre-attaque at the new commit; {cand['candidate_id']} must be reported as "
                  f"`fixed` or `not_affected` with recorded evidence.")
     steps.append("Run the project's existing test suite for the affected area.")
@@ -65,8 +76,10 @@ def _mitigation(cand: dict[str, Any], a: dict[str, Any]) -> str | None:
     if a.get("mitigation"):
         return a["mitigation"]
     comp = cand["component"]
-    if cand.get("fixed_versions") and comp["kind"] == "library":
-        return f"Upgrade {comp['name']} to an advisory-listed fixed version ({', '.join(cand['fixed_versions'])})."
+    fix = _single_fix(cand)
+    if fix and comp["kind"] == "library":
+        return (f"Upgrade {comp['name']} to {fix}, the advisory's fixed version for the affected range "
+                f"containing {comp.get('version')}.")
     return None
 
 
@@ -104,6 +117,8 @@ def build_record(cand: dict[str, Any], a: dict[str, Any], run: dict[str, Any], s
     limitations = list(a.get("unknowns") or []) + [
         f"Version evidence tier: {comp['tier']} ({comp['source']}); the deployed runtime was not observed.",
     ]
+    if _fix_conflict(cand):
+        limitations.append(_fix_conflict(cand))
     if comp.get("sbom_observed_at"):
         limitations.append(f"SBOM {comp.get('sbom_subject')} observed at {comp['sbom_observed_at']}; "
                            "not proof of current exposure.")
@@ -154,7 +169,12 @@ def sync_findings(root: str, state: dict[str, Any], run: dict[str, Any], now: da
     modified; disagreements are returned as conflicts.
     """
     result: dict[str, Any] = {"written": False, "added": [], "updated": [], "unchanged": [],
-                              "linked": [], "blocked": [], "conflicts": [], "errors": []}
+                              "linked": [], "blocked": [], "conflicts": [], "stale": [], "errors": []}
+    for cid, s in sorted(state["stale"].items()):
+        link = state["findings"].get(cid)
+        if link:
+            result["stale"].append(f"{cid}: {link['sg_id']} not refreshed; its decision was invalidated "
+                                   f"({'; '.join(s['reasons'])}) and is pending reassessment")
     fpath, spath = os.path.join(root, FINDINGS_REL), os.path.join(root, SCHEMA_REL)
     if not (os.path.isfile(fpath) and os.path.isfile(spath)):
         result["errors"].append(f"{FINDINGS_REL} or {SCHEMA_REL} missing; install the repo-kit security module. "
@@ -212,7 +232,6 @@ def sync_findings(root: str, state: dict[str, Any], run: dict[str, Any], now: da
                 continue
             proposed = build_record(cand, a, run, record["id"])
             proposed["firstSeen"] = record.get("firstSeen") or proposed["firstSeen"]
-            proposed["lastReviewed"] = record.get("lastReviewed")
             if human_touched:
                 if _fields_hash(proposed) != _fields_hash(record):
                     result["conflicts"].append(f"{cid}: {record['id']} was edited by a human; agent update "
@@ -273,6 +292,7 @@ def incomplete_reasons(state: dict[str, Any], run: dict[str, Any]) -> list[str]:
         if p.get("status") not in ("success", "no_match") or p.get("mode") != "live":
             reasons.append(f"{name}: {p.get('status')} ({p.get('mode')})")
     reasons.extend(run["collection"]["window_gaps"])
+    reasons.extend(f"inventory: {g}" for g in run["inventory"]["gaps"])
     pending = run["assessment"]["pending_after_run"] or 0
     if pending:
         reasons.append(f"{pending} candidate(s) still queued for assessment (resume with the next /contre-attaque)")
@@ -300,7 +320,7 @@ def _item_block(state: dict[str, Any], cid: str, sync: dict[str, Any]) -> list[s
         "- Verification: " + " ".join(_verification(cand, a)),
         "- Acceptance criteria: " + " ".join(_acceptance(cand, a, link["sg_id"] if link else None)),
     ]
-    unknowns = list(a.get("unknowns") or []) + blockers
+    unknowns = list(a.get("unknowns") or []) + ([_fix_conflict(cand)] if _fix_conflict(cand) else []) + blockers
     lines.append("- Blockers/unknowns: " + ("; ".join(unknowns) if unknowns else "none recorded"))
     return lines
 
@@ -334,8 +354,11 @@ def render_assessment(state: dict[str, Any], run: dict[str, Any], sync: dict[str
         "## Incomplete coverage",
         *([f"- {r}" for r in incomplete] or ["- none"]),
         "",
-        "## Inventory gaps and limitations",
-        *[f"- {g}" for g in inv["gaps"]],
+        "## Inventory gaps",
+        *([f"- {g}" for g in inv["gaps"]] or ["- none"]),
+        "",
+        "## Limitations",
+        *[f"- {g}" for g in inv.get("limitations") or []],
         "",
         "## Decisions",
     ]
@@ -381,6 +404,17 @@ def render_handoff(state: dict[str, Any], run: dict[str, Any], sync: dict[str, A
         out += _item_block(state, cid, sync) + [""]
     if not affected:
         out += ["No component is currently assessed as affected.", ""]
+    out += ["## Invalidated decisions (historical; pending reassessment, not current)"]
+    for cid, s in sorted(state["stale"].items()):
+        cand, link = state["candidates"].get(cid), state["findings"].get(cid)
+        if cand is None:
+            continue
+        out.append(f"- {cid} {cand['canonical_id']} × {cand['component']['name']}"
+                   f"{' (' + link['sg_id'] + ' not refreshed)' if link else ''}: was "
+                   f"{s['assessment']['applicability']}; invalidated because {'; '.join(s['reasons'])}")
+    if not state["stale"]:
+        out.append("- none")
+    out.append("")
     out += ["## Conflicts with human-owned records", *([f"- {c}" for c in sync.get("conflicts", [])] or ["- none"]), ""]
     out += ["## Blockers", *([f"- {b}" for b in sync.get("blocked", []) + sync.get("errors", [])] or ["- none"]), ""]
     out += ["## Incomplete coverage", *([f"- {r}" for r in incomplete] or ["- none"])]

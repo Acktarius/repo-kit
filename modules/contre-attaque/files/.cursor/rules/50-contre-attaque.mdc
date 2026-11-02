@@ -22,6 +22,9 @@ alwaysApply: false
   human-approved. The helper never changes status, never marks anything fixed,
   never reopens accepted risks, and never overwrites human-edited records;
   it reports conflicts instead.
-- Unknown mitigation stays unknown. Do not invent fixes, versions, or impact.
+- Invalidated (historical) decisions are never current reasoning; re-derive them.
+- Do not modify repository files during an active run; the helper interrupts it.
+- Unknown mitigation stays unknown. Do not invent fixes, versions, or impact,
+  and never take a fixed version from a different release line.
 - The handoff proposes work only; it authorizes no edits, installs, execution,
   commits, pushes, or pull requests.

@@ -188,6 +188,7 @@ def empty_state(now: datetime) -> dict[str, Any]:
         "checkpoints": {"osv": None, "nvd": None, "kev": None},
         "candidates": {},
         "assessments": {},
+        "stale": {},
         "queue": [],
         "evidence": {},
         "findings": {},
@@ -206,8 +207,9 @@ def load_state(root: str, now: datetime) -> dict[str, Any]:
         state = load_json(path)
     except (OSError, ValueError) as exc:
         raise StateError(f"cannot read {path}: {exc}; restore it or move it aside") from exc
-    if state.get("schema_version") != STATE_SCHEMA_VERSION:
+    if not isinstance(state, dict) or state.get("schema_version") != STATE_SCHEMA_VERSION:
         raise StateError(f"{path}: unsupported schema_version {state.get('schema_version')!r}")
+    state.setdefault("stale", {})
     validate_schema(state, state_schema(), "state")
     return state
 
@@ -234,8 +236,19 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def interrupt(run: dict[str, Any], now: datetime, reason: str) -> None:
+    run["outcome"] = "interrupted"
+    run["completed_at_utc"] = None
+    run["interrupted_detected_at_utc"] = iso(now)
+    run["interrupted_reason"] = reason
+
+
 def recover_interrupted(state: dict[str, Any], now: datetime) -> list[str]:
-    """Mark runs that died mid-flight as interrupted. Their queue items stay queued."""
+    """Mark runs that died mid-flight as interrupted. Their queue items stay queued.
+
+    A run spans many helper invocations, so after its worklist is issued it stays
+    active until finish/abandon; only the collecting phase is tied to a process.
+    """
     host = socket.gethostname()
     recovered = []
     for run in state["runs"]:
@@ -243,47 +256,82 @@ def recover_interrupted(state: dict[str, Any], now: datetime) -> list[str]:
             continue
         started = parse_ts(run["started_at_utc"])
         too_old = started is not None and now - started > timedelta(hours=STALE_RUN_HOURS)
-        dead = run.get("host") == host and not _pid_alive(int(run.get("pid") or 0))
+        dead = (run.get("phase") != "assessing" and run.get("host") == host
+                and not _pid_alive(int(run.get("pid") or 0)))
         if dead or too_old:
-            run["outcome"] = "interrupted"
-            run["completed_at_utc"] = None
-            run["interrupted_detected_at_utc"] = iso(now)
+            interrupt(run, now, "start process exited before issuing a worklist" if dead
+                      else f"no finish within {STALE_RUN_HOURS} hours")
             recovered.append(run["run_id"])
     return recovered
+
+
+def active_run(state: dict[str, Any]) -> dict[str, Any] | None:
+    return next((r for r in state["runs"] if r["outcome"] == "running"), None)
 
 
 # ---------------------------------------------------------------------------
 # Git and file evidence
 # ---------------------------------------------------------------------------
 
+TOOL_OWNED_FILES = ("security/findings-reviewed.json", "security/accepted-risks.md", "security/threat-model.md")
+
+
+def tool_owned(path: str) -> bool:
+    """Review records and repo-kit working data; edits to them are not source changes."""
+    return path.startswith(".repo-kit/") or path in TOOL_OWNED_FILES
+
+
 def _git(root: str, *args: str) -> str | None:
     try:
-        proc = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=30, check=False)
+        proc = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=60, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return proc.stdout.strip() if proc.returncode == 0 else None
+    return proc.stdout if proc.returncode == 0 else None
 
 
 def git_info(root: str) -> dict[str, Any]:
-    commit = _git(root, "rev-parse", "HEAD")
-    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
-    porcelain = _git(root, "status", "--porcelain", "--untracked-files=all")
+    """Commit, dirty paths, and a source fingerprint covering every tracked and
+    untracked (non-ignored) file outside tool-owned paths. None when git is unavailable."""
+    commit = (_git(root, "rev-parse", "HEAD") or "").strip() or None
+    branch = (_git(root, "rev-parse", "--abbrev-ref", "HEAD") or "").strip() or None
+    porcelain = _git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+    index = _git(root, "ls-files", "-s", "-z")
     dirty: list[str] = []
-    if porcelain:
-        for line in porcelain.splitlines():
-            path = line[3:].split(" -> ")[-1].strip('"')
-            if not path.startswith(STATE_REL.replace(os.sep, "/")):
-                dirty.append(path)
+    entries = (porcelain or "").split("\0")
+    i = 0
+    while i < len(entries):
+        rec = entries[i]
+        i += 1
+        if len(rec) < 4:
+            continue
+        if rec[0] in "RC":
+            i += 1
+        if not tool_owned(rec[3:]):
+            dirty.append(rec[3:])
+    dirty.sort()
     h = hashlib.sha256()
-    for path in sorted(dirty):
-        h.update(path.encode())
-        h.update((file_sha256(root, path) or "absent").encode())
+    for path in dirty:
+        h.update(f"{path}\0{file_sha256(root, path) or 'absent'}\0".encode())
+    source_fp = None
+    if porcelain is not None and index is not None:
+        blobs: dict[str, str] = {}
+        for rec in index.split("\0"):
+            if "\t" in rec:
+                meta, path = rec.split("\t", 1)
+                blobs[path] = meta.split()[1]
+        for path in dirty:
+            blobs[path] = "worktree:" + (file_sha256(root, path) or "absent")
+        s = hashlib.sha256()
+        for path in sorted(p for p in blobs if not tool_owned(p)):
+            s.update(f"{path}\0{blobs[path]}\0".encode())
+        source_fp = s.hexdigest()
     return {
         "commit": commit,
         "branch": branch,
-        "dirty_paths": sorted(dirty)[:200],
+        "dirty_paths": dirty[:200],
         "dirty_count": len(dirty),
         "dirty_fingerprint": h.hexdigest() if dirty else None,
+        "source_fingerprint": source_fp,
         "note": None if commit else "not a git checkout or git unavailable; source commit unknown",
     }
 
@@ -377,22 +425,35 @@ def evidence_exists(root: str, sha: str) -> bool:
 # Reuse policy and assessment queue
 # ---------------------------------------------------------------------------
 
+def code_dependent(assessment: dict[str, Any]) -> bool:
+    """Decisions whose reasoning depends on repository code, not only on versions."""
+    if assessment["applicability"] == "affected":
+        return True
+    return assessment["applicability"] == "not_affected" and assessment.get("justification") != "component_not_present"
+
+
 def reuse_check(
     assessment: dict[str, Any] | None,
     candidate: dict[str, Any],
     root: str,
     now: datetime,
     kev_known: bool,
+    source_fingerprint: str | None,
 ) -> list[str]:
     """Return reasons the stored decision cannot be reused; [] means reusable.
 
-    Any change to the advisory, exploitation status, cited code/config, the
-    component, or deployment evidence invalidates immediately. Age is only an
-    upper bound.
+    Any change to the advisory, exploitation status, cited code/config, any
+    source file (for code-dependent decisions), the component, or deployment
+    evidence invalidates immediately. Age is only an upper bound.
     """
     if assessment is None:
         return ["not assessed yet"]
     reasons = []
+    if code_dependent(assessment):
+        if source_fingerprint is None or assessment.get("source_fingerprint") is None:
+            reasons.append("source snapshot unavailable; code-dependent decision cannot be reused")
+        elif assessment["source_fingerprint"] != source_fingerprint:
+            reasons.append("repository source changed since this code-dependent decision")
     if assessment["applicability"] == "under_investigation":
         reasons.append("under_investigation is never cached")
     if candidate.get("advisory_revision") and assessment.get("advisory_revision") != candidate["advisory_revision"]:
@@ -427,6 +488,14 @@ def queue_priority(candidate: dict[str, Any], attempts: int) -> list[Any]:
         candidate.get("first_seen_utc") or "",
         candidate["candidate_id"],
     ]
+
+
+def invalidate(state: dict[str, Any], cid: str, reasons: list[str], run_id: str, now: datetime) -> None:
+    """Move a decision out of the current set; it is kept only as history."""
+    a = state["assessments"].pop(cid, None)
+    if a is not None:
+        state["stale"][cid] = {"assessment": a, "reasons": sorted(set(reasons)),
+                               "invalidated_at_utc": iso(now), "run_id": run_id}
 
 
 def enqueue(state: dict[str, Any], cid: str, reasons: list[str], now: datetime) -> None:

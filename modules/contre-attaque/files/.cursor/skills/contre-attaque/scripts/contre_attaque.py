@@ -6,9 +6,11 @@
   decide          record one applicability decision for a candidate
   fetch-evidence  fetch a vendor advisory / disclosure URL as hashed evidence
   finish          close the run: canonical findings sync, assessment, handoff
+  abandon         mark an active run interrupted (queue and checkpoints are kept)
   status          print queue, checkpoints, and recent runs
 
-Exit codes: 0 ok, 1 error, 2 invalid input, 3 consent required.
+Exit codes: 0 ok, 1 error (including another run in progress), 2 invalid input
+or run interrupted by a repository change, 3 consent required.
 """
 from __future__ import annotations
 
@@ -358,7 +360,7 @@ def _norm(text: Any) -> str:
     return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
 
 
-def _auto_assessment(cand: dict[str, Any], run_id: str, now: datetime, applicability: str, rationale: str,
+def _auto_assessment(cand: dict[str, Any], run: dict[str, Any], now: datetime, applicability: str, rationale: str,
                      evidence: list[dict[str, Any]], justification: str | None = None) -> dict[str, Any]:
     return {
         "candidate_id": cand["candidate_id"], "applicability": applicability, "justification": justification,
@@ -366,16 +368,25 @@ def _auto_assessment(cand: dict[str, Any], run_id: str, now: datetime, applicabi
         "mitigation_refs": [], "exploit_path": None, "unknowns": [
             "decided from version/inventory evidence only; deployed runtime not observed"],
         "verification": [], "acceptance": [], "decided_at_utc": intel.iso(now), "decided_by": "helper",
-        "run_id": run_id, "advisory_revision": cand.get("advisory_revision"),
+        **_decision_context(cand, run),
+    }
+
+
+def _decision_context(cand: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+    """Inputs a decision was made against; any change makes it non-reusable."""
+    return {
+        "run_id": run["run_id"], "advisory_revision": cand.get("advisory_revision"),
         "component_fingerprint": cand["component_fingerprint"],
         "deployment_fingerprint": cand["deployment_fingerprint"], "kev_listed": bool(cand.get("kev")),
-        "history": [],
+        "source_fingerprint": run["git"].get("source_fingerprint"),
+        "inventory_fingerprint": run["inventory"]["fingerprint"], "history": [],
     }
 
 
 def _record(state: dict[str, Any], assessment: dict[str, Any]) -> None:
     cid = assessment["candidate_id"]
-    prior = state["assessments"].get(cid)
+    stale = state["stale"].pop(cid, None)
+    prior = state["assessments"].get(cid) or (stale or {}).get("assessment")
     if prior:
         assessment["history"] = (prior.get("history") or [])[-9:] + [
             {k: prior.get(k) for k in ("applicability", "justification", "confidence", "decided_at_utc", "run_id", "decided_by")}]
@@ -393,6 +404,7 @@ def _reconcile(root: str, state: dict[str, Any], run: dict[str, Any], new: dict[
     kev_entries = results["kev"].get("entries") or {}
     rid = run["run_id"]
     absent: set[str] = set()
+    unproven: dict[str, str] = {}
 
     for cid, c in new.items():
         prior = state["candidates"].get(cid)
@@ -409,14 +421,21 @@ def _reconcile(root: str, state: dict[str, Any], run: dict[str, Any], new: dict[
         cand["deployment_fingerprint"] = deploy_fp
         a = state["assessments"].get(cid)
         if comp is None:
+            why = inv.absence_unproven(inventory, cand["component"])
+            if why is not None:
+                unproven[cid] = f"component not found in inventory, but absence is not shown: {why}"
+                continue
             absent.add(cid)
             st.dequeue(state, cid)
             if a is None or a["applicability"] != "not_affected" or a.get("justification") != "component_not_present":
+                src = cand["component"]["source"]
                 _record(state, _auto_assessment(
-                    cand, rid, now, "not_affected",
-                    f"{cand['component']['name']} ({cand['component']['source']}) is no longer in the inventory.",
+                    cand, run, now, "not_affected",
+                    f"{cand['component']['name']} is no longer listed in {src}, which was parsed completely.",
                     [{"kind": "inventory", "description": f"inventory {inventory['fingerprint'][:12]} at run {rid} "
-                      "has no component with this identity", "fingerprint": inventory["fingerprint"]}],
+                      "has no component with this identity", "fingerprint": inventory["fingerprint"]},
+                     {"kind": "file", "path": src, "line_start": None, "line_end": None,
+                      "sha256": st.file_sha256(root, src), "excerpt": None}],
                     justification="component_not_present"))
                 run["assessment"]["auto"].append(cid)
             continue
@@ -451,7 +470,7 @@ def _reconcile(root: str, state: dict[str, Any], run: dict[str, Any], new: dict[
             evidence.append({"kind": "file", "path": comp["source"], "line_start": comp.get("line"),
                              "line_end": comp.get("line"), "sha256": sha, "excerpt": None})
             _record(state, _auto_assessment(
-                cand, rid, now, "fixed",
+                cand, run, now, "fixed",
                 f"{comp['name']} now resolves to {comp['version']} ({comp['tier']}), outside the advisory's "
                 "affected versions according to provider data.", evidence))
             run["assessment"]["auto"].append(cid)
@@ -459,8 +478,12 @@ def _reconcile(root: str, state: dict[str, Any], run: dict[str, Any], new: dict[
     for cid, cand in state["candidates"].items():
         if cid in run["assessment"]["auto"] or cid in absent:
             continue
-        reasons = st.reuse_check(state["assessments"].get(cid), cand, root, now, kev_known)
+        a = state["assessments"].get(cid)
+        reasons = st.reuse_check(a, cand, root, now, kev_known, run["git"].get("source_fingerprint"))
+        if cid in unproven and (a is None or a.get("justification") != "component_not_present"):
+            reasons.append(unproven[cid])
         if reasons:
+            st.invalidate(state, cid, reasons, rid, now)
             st.enqueue(state, cid, reasons, now)
         else:
             st.dequeue(state, cid)
@@ -534,11 +557,11 @@ def cmd_start(args: argparse.Namespace, transport: intel.Transport | None = None
     run_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(3)}"
     run = {
         "run_id": run_id, "requested": requested, "window": window.as_dict(), "started_at_utc": intel.iso(now),
-        "completed_at_utc": None, "outcome": "running", "pid": os.getpid(), "host": socket.gethostname(),
-        "mode": "offline" if args.offline else "network", "git": git,
+        "completed_at_utc": None, "outcome": "running", "phase": "collecting", "pid": os.getpid(),
+        "host": socket.gethostname(), "mode": "offline" if args.offline else "network", "git": git,
         "inventory": {"fingerprint": inventory["fingerprint"], "deployment_fingerprint": deploy_fp,
                       "components": len(inventory["components"]), "gaps": inventory["gaps"],
-                      "sources": inventory["sources"]},
+                      "limitations": inventory["limitations"], "sources": inventory["sources"]},
         "collection": {"status": "failed", "providers": {}, "window_gaps": []},
         "assessment": {"worklist": [], "reused": [], "auto": [], "decided": [], "pending_after_run": None},
         "coverage_complete": None,
@@ -546,6 +569,14 @@ def cmd_start(args: argparse.Namespace, transport: intel.Transport | None = None
     with st.locked(root):
         state = st.load_state(root, now)
         recovered = st.recover_interrupted(state, now)
+        active = st.active_run(state)
+        if active is not None:
+            if recovered:
+                st.save_state(root, state)
+            _out({"status": "run_in_progress", "run_id": active["run_id"], "started_at_utc": active["started_at_utc"],
+                  "message": "Another assessment run is active. Finish it, or run "
+                             f"`abandon --run {active['run_id']}` if it will not be completed."})
+            return 1
         cached = _cached_osv(root, state)
         state["runs"].append(run)
         st.save_state(root, state)
@@ -565,6 +596,9 @@ def cmd_start(args: argparse.Namespace, transport: intel.Transport | None = None
     with st.locked(root):
         state = st.load_state(root, now)
         run = st.find_run(state, run_id)
+        if run["outcome"] != "running":
+            _out({"status": "error", "error": f"run {run_id} was marked {run['outcome']} during collection"})
+            return 1
         statuses = [results[p]["status"] for p in ("osv", "nvd", "kev")]
         live_complete = [results[p]["mode"] == "live" and results[p]["status"] in intel.Status.COMPLETE
                          for p in ("osv", "nvd", "kev")]
@@ -579,12 +613,14 @@ def cmd_start(args: argparse.Namespace, transport: intel.Transport | None = None
             if item["candidate_id"] in worklist:
                 item["attempts"] += 1
         run["assessment"]["worklist"] = worklist
+        run["phase"] = "assessing"
         st.save_state(root, state)
         queue_len = len(state["queue"])
         items = []
         for cid in worklist:
             c = state["candidates"][cid]
-            prior = state["assessments"].get(cid)
+            stale = state["stale"].get(cid)
+            prior = stale["assessment"] if stale else None
             q = next(q for q in state["queue"] if q["candidate_id"] == cid)
             items.append({
                 "candidate_id": cid, "advisory": c["canonical_id"], "aliases": c["aliases"],
@@ -594,13 +630,17 @@ def cmd_start(args: argparse.Namespace, transport: intel.Transport | None = None
                 "window_reasons": c["window_reasons"] or ["baseline"], "fixed_versions": c["fixed_versions"],
                 "advisory_text_untrusted": c["summary"], "status_note": c["status_note"],
                 "sources": c["sources"], "queue_reasons": q["reasons"],
-                "prior_decision": {k: prior.get(k) for k in ("applicability", "justification", "rationale",
-                                                             "decided_at_utc")} if prior else None,
+                "evidence_refs": sorted({f"evidence:{s['evidence']}" for s in c["sources"] if s.get("evidence")}),
+                "prior_decision": {**{k: prior.get(k) for k in ("applicability", "justification", "rationale",
+                                                                "decided_at_utc")},
+                                   "invalidated_because": stale["reasons"],
+                                   "note": "historical only; not a current decision"} if prior else None,
             })
     _out({
         "status": "started", "run_id": run_id, "window": window.as_dict(), "recovered_interrupted_runs": recovered,
         "git": {k: git[k] for k in ("branch", "commit", "dirty_count", "note")},
-        "inventory": {"components": len(inventory["components"]), "gaps": inventory["gaps"]},
+        "inventory": {"components": len(inventory["components"]), "gaps": inventory["gaps"],
+                      "limitations": inventory["limitations"]},
         "collection": {"status": run["collection"]["status"],
                        "providers": {p: {k: v for k, v in s.items() if k != "request_log"}
                                      for p, s in run["collection"]["providers"].items()},
@@ -620,7 +660,42 @@ def _running(state: dict[str, Any], run_id: str) -> dict[str, Any]:
     run = st.find_run(state, run_id)
     if run["outcome"] != "running":
         raise UsageError(f"run {run_id} is {run['outcome']}; start a new run")
+    if run.get("phase") != "assessing":
+        raise UsageError(f"run {run_id} has not issued its worklist yet")
     return run
+
+
+def _snapshot(root: str) -> dict[str, Any]:
+    git = st.git_info(root)
+    return {"commit": git["commit"], "source_fingerprint": git["source_fingerprint"],
+            "inventory_fingerprint": inv.build_inventory(root, _imports(root))["fingerprint"]}
+
+
+def _check_snapshot(root: str, state: dict[str, Any], run: dict[str, Any], snap: dict[str, Any],
+                    now: datetime) -> None:
+    """Interrupt the run if the repository it assessed changed; caller holds the lock."""
+    changed = []
+    if snap["commit"] != run["git"]["commit"]:
+        changed.append(f"commit {run['git']['commit']} -> {snap['commit']}")
+    if snap["source_fingerprint"] != run["git"].get("source_fingerprint"):
+        changed.append("repository source files")
+    if snap["inventory_fingerprint"] != run["inventory"]["fingerprint"]:
+        changed.append("component inventory")
+    if changed:
+        st.interrupt(run, now, "inputs changed during the run: " + "; ".join(changed))
+        st.save_state(root, state)
+        raise UsageError(f"run {run['run_id']} interrupted: {'; '.join(changed)} changed since start. "
+                         "Recorded decisions were made against the old snapshot; start a new run.")
+
+
+def _provider_evidence(root: str, sha: str) -> dict[str, Any] | None:
+    """Metadata for evidence collected from OSV/NVD/KEV (live or imported), else None."""
+    if not st.evidence_exists(root, sha):
+        return None
+    req = st.load_json(os.path.join(st.state_dir(root), "evidence", f"{sha}.json")).get("request") or {}
+    if req.get("provider") not in ("osv", "nvd", "kev"):
+        return None
+    return {"url": req.get("url") or "", "provider": req["provider"], "at_utc": req.get("at_utc") or "", "lead": False}
 
 
 def cmd_decide(args: argparse.Namespace, **_: Any) -> int:
@@ -634,22 +709,26 @@ def cmd_decide(args: argparse.Namespace, **_: Any) -> int:
         raise UsageError(f"{args.status} requires at least one --evidence reference")
     if args.status == "under_investigation" and not args.unknown:
         raise UsageError("under_investigation requires at least one --unknown describing what is missing")
+    snap = _snapshot(root)
     with st.locked(root):
         state = st.load_state(root, now)
         run = _running(state, args.run)
-        cand = state["candidates"].get(args.candidate)
-        if cand is None:
-            raise UsageError(f"unknown candidate {args.candidate}")
+        _check_snapshot(root, state, run, snap, now)
+        if args.candidate not in run["assessment"]["worklist"]:
+            raise UsageError(f"{args.candidate} is not in run {args.run}'s worklist")
+        cand = state["candidates"][args.candidate]
         evidence = []
         for ref in args.evidence or []:
             if ref.startswith("evidence:") or ref.startswith("https://"):
                 sha = ref.split(":", 1)[1] if ref.startswith("evidence:") else next(
                     (s for s, e in state["evidence"].items() if e["url"] == intel.redact_url(ref)), "")
-                meta = state["evidence"].get(sha)
-                if not meta or not st.evidence_exists(root, sha):
-                    raise UsageError(f"{ref}: not fetched evidence; use fetch-evidence first")
+                meta = state["evidence"].get(sha) if st.evidence_exists(root, sha) else None
+                meta = meta or _provider_evidence(root, sha)
+                if not meta:
+                    raise UsageError(f"{ref}: not stored evidence; cite evidence_refs from the worklist "
+                                     "or use fetch-evidence first")
                 evidence.append({"kind": "url", "url": meta["url"], "evidence": sha, "lead": meta["lead"],
-                                 "at_utc": meta["at_utc"]})
+                                 "at_utc": meta["at_utc"], "provider": meta["provider"]})
             else:
                 evidence.append(st.file_evidence(root, ref))
         if args.status != "under_investigation" and evidence and all(e.get("lead") for e in evidence):
@@ -662,10 +741,7 @@ def cmd_decide(args: argparse.Namespace, **_: Any) -> int:
             "mitigation_refs": args.mitigation_ref or [], "exploit_path": args.exploit_path,
             "unknowns": [st.redact(u) for u in args.unknown or []], "verification": args.verification or [],
             "acceptance": args.acceptance or [], "decided_at_utc": intel.iso(now), "decided_by": "agent",
-            "run_id": run["run_id"], "advisory_revision": cand.get("advisory_revision"),
-            "component_fingerprint": cand["component_fingerprint"],
-            "deployment_fingerprint": cand["deployment_fingerprint"], "kev_listed": bool(cand.get("kev")),
-            "history": [],
+            **_decision_context(cand, run),
         }
         _record(state, assessment)
         if cand["candidate_id"] not in run["assessment"]["decided"]:
@@ -711,9 +787,11 @@ def cmd_fetch_evidence(args: argparse.Namespace, transport: intel.Transport | No
 def cmd_finish(args: argparse.Namespace, **_: Any) -> int:
     root = _repo_root(args.root)
     now = _now(args.now)
+    snap = _snapshot(root)
     with st.locked(root):
         state = st.load_state(root, now)
         run = _running(state, args.run)
+        _check_snapshot(root, state, run, snap, now)
         run["assessment"]["pending_after_run"] = len(state["queue"])
         sync = rep.sync_findings(root, state, run, now)
         run["outcome"] = "completed"
@@ -721,11 +799,27 @@ def cmd_finish(args: argparse.Namespace, **_: Any) -> int:
         run["coverage_complete"] = not rep.incomplete_reasons(state, run)
         paths = rep.write_artifacts(root, state, run, sync)
         run["artifacts"] = paths
-        run["findings_sync"] = {k: sync[k] for k in ("written", "added", "updated", "blocked", "conflicts", "errors")}
+        run["findings_sync"] = {k: sync[k] for k in ("written", "added", "updated", "blocked", "conflicts", "stale",
+                                                     "errors")}
         st.save_state(root, state)
         handoff = os.path.join(root, paths["handoff"])
     with open(handoff, encoding="utf-8") as fh:
         sys.stdout.write(fh.read())
+    return 0
+
+
+def cmd_abandon(args: argparse.Namespace, **_: Any) -> int:
+    root = _repo_root(args.root)
+    now = _now(args.now)
+    with st.locked(root):
+        state = st.load_state(root, now)
+        run = st.find_run(state, args.run)
+        if run["outcome"] != "running":
+            raise UsageError(f"run {args.run} is {run['outcome']}; nothing to abandon")
+        st.interrupt(run, now, "abandoned on request")
+        st.save_state(root, state)
+    _out({"status": "abandoned", "run_id": args.run, "queued": len(state["queue"]),
+          "note": "queue and checkpoints are kept; decisions already recorded stay subject to the reuse checks"})
     return 0
 
 
@@ -736,7 +830,8 @@ def cmd_status(args: argparse.Namespace, **_: Any) -> int:
         state = st.load_state(root, now)
     _out({
         "runs": [{k: r.get(k) for k in ("run_id", "requested", "outcome", "started_at_utc", "completed_at_utc",
-                                        "coverage_complete")} for r in state["runs"][-5:]],
+                                        "coverage_complete", "interrupted_reason")} for r in state["runs"][-5:]],
+        "stale_decisions": len(state["stale"]),
         "checkpoints": state["checkpoints"],
         "queued": len(state["queue"]),
         "applicability": {a: sum(1 for x in state["assessments"].values() if x["applicability"] == a)
@@ -783,12 +878,16 @@ def _parser() -> argparse.ArgumentParser:
     fin = sub.add_parser("finish")
     fin.add_argument("--run", required=True)
 
+    ab = sub.add_parser("abandon")
+    ab.add_argument("--run", required=True)
+
     sub.add_parser("status")
     return p
 
 
 COMMANDS = {"consent": cmd_consent, "start": cmd_start, "decide": cmd_decide,
-            "fetch-evidence": cmd_fetch_evidence, "finish": cmd_finish, "status": cmd_status}
+            "fetch-evidence": cmd_fetch_evidence, "finish": cmd_finish, "abandon": cmd_abandon,
+            "status": cmd_status}
 
 
 def main(argv: list[str] | None = None, transport: intel.Transport | None = None,

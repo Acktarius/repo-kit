@@ -82,7 +82,8 @@ class Inventory(unittest.TestCase):
         self.assertFalse(any(c["name"] == "base" for c in comps))
         self.assertTrue(any("nginx" in g and "no version tag" in g for g in data["gaps"]))
         self.assertTrue(any("libpq5" in g for g in data["gaps"]))
-        self.assertTrue(any("production runtime is not observed" in g for g in data["gaps"]))
+        self.assertTrue(any("production runtime is not observed" in g for g in data["limitations"]))
+        self.assertTrue(any("container image contents" in g for g in data["gaps"]))
 
     def test_sbom_requires_subject_and_observation_time(self):
         imports = os.path.join(self.root, ".repo-kit", "contre-attaque", "imports")

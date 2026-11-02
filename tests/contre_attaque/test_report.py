@@ -36,7 +36,8 @@ class FindingsSync(RepoCase):
         self.assertTrue(rec["source"].startswith("contre-attaque (agent-generated, not human-approved): " + cid))
         self.assertIn("not human-approved", rec["notes"])
         self.assertEqual(rec["severity"], "medium")
-        self.assertEqual(rec["remediation"], "Upgrade lodash to an advisory-listed fixed version (4.17.21).")
+        self.assertEqual(rec["remediation"], "Upgrade lodash to 4.17.21, the advisory's fixed version for the "
+                                             "affected range containing 4.17.20.")
         out = self.start("3days", now=LATER)
         self.assertNotIn(cid, [i["candidate_id"] for i in out["worklist"]])
         self.cli("finish", "--run", out["run_id"], now=LATER)
@@ -142,7 +143,7 @@ class Handoff(RepoCase):
             f"### {python['candidate_id']} → SG-002",
             "package-lock.json (sha256 ",
             "Dockerfile:1 (sha256 ",
-            "Proposed mitigation: Upgrade lodash to an advisory-listed fixed version (4.17.21).",
+            "Proposed mitigation: Upgrade lodash to 4.17.21, the advisory's fixed version",
             f"Proposed mitigation: {ca_report.UNKNOWN_MITIGATION}",
             "Blockers/unknowns: deployed image digest not observed",
             "Verification: ",

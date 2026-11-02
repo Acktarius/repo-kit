@@ -488,6 +488,8 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
     sources: dict[str, str] = {}
     locked_dirs: set[str] = set()
     declared_manifests: list[tuple[str, str]] = []
+    parsed: set[str] = set()
+    incomplete: dict[str, str] = {}
 
     def add_source(rel: str) -> None:
         sources[rel] = sha256_file(os.path.join(root, rel))
@@ -498,9 +500,11 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
             continue
         text = _read(root, rel)
         if text is None:
+            incomplete[rel] = f"larger than {MAX_FILE_BYTES} bytes"
             gaps.append(f"{rel}: larger than {MAX_FILE_BYTES} bytes; not parsed")
             continue
         found: list[dict[str, Any]] = []
+        gaps_before = len(gaps)
         try:
             if kind == "npm-lock":
                 found = _npm_lock(text, rel)
@@ -568,8 +572,12 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
                 found, g = _image_lines(text, "deploy_config", rel)
                 gaps.extend(g)
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            incomplete[rel] = f"could not be parsed ({type(exc).__name__})"
             gaps.append(f"{rel}: could not be parsed ({type(exc).__name__}); components unknown")
             continue
+        parsed.add(rel)
+        if len(gaps) > gaps_before:
+            incomplete[rel] = f"parsed with unresolved entries ({len(gaps) - gaps_before} inventory gap(s))"
         if found:
             add_source(rel)
             comps.extend(found)
@@ -592,11 +600,14 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
                 with open(full, encoding="utf-8") as fh:
                     found = _sbom(fh.read(), rel)
             except SbomError as exc:
+                incomplete[rel] = f"rejected: {exc}"
                 gaps.append(f"{rel}: rejected: {exc}")
                 continue
             except (ValueError, OSError) as exc:
+                incomplete[rel] = f"not a readable JSON import ({type(exc).__name__})"
                 gaps.append(f"{rel}: not a readable JSON import ({type(exc).__name__})")
                 continue
+            parsed.add(rel)
             if found:
                 add_source(rel)
                 comps.extend(found)
@@ -605,10 +616,14 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
         gaps.append(f"{d}/: bundled or vendored code present; components not inventoried automatically")
     if truncated:
         gaps.append(f"inventory stopped after {MAX_FILES} files; coverage incomplete")
-    gaps.append("current production runtime is not observed; repository, CI, and SBOM evidence "
-                "do not prove what is deployed now")
+    limitations = ["current production runtime is not observed; repository, CI, and SBOM evidence "
+                   "do not prove what is deployed now"]
     if not any(c["tier"] == "sbom" for c in comps):
-        gaps.append("no deployment/build SBOM imported (.repo-kit/contre-attaque/imports/*.json, CycloneDX)")
+        note = "no deployment/build SBOM imported (.repo-kit/contre-attaque/imports/*.json, CycloneDX)"
+        if any(c["kind"] == "image" for c in comps):
+            gaps.append(f"container image contents (OS packages, bundled runtimes) not inventoried: {note}")
+        else:
+            limitations.append(note)
 
     unique: dict[str, dict[str, Any]] = {}
     for c in comps:
@@ -617,13 +632,35 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
     for c in comps:
         if not c.get("version") and c["kind"] != "os-package":
             gaps.append(f"{c['source']}: {c['kind']} {c['name']} has no resolved version")
-    fp_material = json.dumps([[c["key"], c["tier"]] for c in comps] + sorted(sources.items()), sort_keys=True)
+    parsed_hashes = {rel: sha256_file(os.path.join(root, rel)) for rel in parsed}
+    fp_material = json.dumps([[[c["key"], c["tier"]] for c in comps], sorted(parsed_hashes.items()),
+                              sorted(incomplete.items()), sorted(set(gaps)), truncated], sort_keys=True)
     return {
         "components": comps,
         "gaps": sorted(set(gaps)),
+        "limitations": limitations,
         "sources": sources,
+        "parsed": sorted(parsed),
+        "incomplete": incomplete,
+        "truncated": truncated,
         "fingerprint": hashlib.sha256(fp_material.encode()).hexdigest(),
     }
+
+
+def absence_unproven(inventory: dict[str, Any], comp: dict[str, Any]) -> str | None:
+    """Why a component missing from this inventory may still be present; None if absence is shown.
+
+    Absence is shown only when the walk completed and the component's own source
+    file was read and parsed successfully without it.
+    """
+    src = comp["source"]
+    if inventory.get("truncated"):
+        return f"inventory stopped after {MAX_FILES} files"
+    if src in (inventory.get("incomplete") or {}):
+        return f"{src}: {inventory['incomplete'][src]}"
+    if src not in (inventory.get("parsed") or []):
+        return f"{src} is no longer present or readable; removal of the component itself is not shown"
+    return None
 
 
 def component_fingerprint(comp: dict[str, Any]) -> str:
