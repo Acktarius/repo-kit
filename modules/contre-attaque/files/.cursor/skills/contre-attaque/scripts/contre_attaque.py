@@ -552,6 +552,11 @@ def cmd_start(args: argparse.Namespace, transport: intel.Transport | None = None
         return 3
     allowed = {p: (not args.offline) and bool((config or {}).get("network", {}).get(p)) for p in PROVIDERS}
     git = st.git_info(root)
+    if git["source_fingerprint"] is None:
+        _out({"status": "source_snapshot_unavailable",
+              "error": "cannot fingerprint repository source (not a git checkout, or git failed); "
+                       "decisions could not be verified, so no run was started"})
+        return 1
     inventory = inv.build_inventory(root, _imports(root))
     deploy_fp = inv.deployment_fingerprint(inventory)
     run_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(3)}"
@@ -674,6 +679,11 @@ def _snapshot(root: str) -> dict[str, Any]:
 def _check_snapshot(root: str, state: dict[str, Any], run: dict[str, Any], snap: dict[str, Any],
                     now: datetime) -> None:
     """Interrupt the run if the repository it assessed changed; caller holds the lock."""
+    if snap["source_fingerprint"] is None or run["git"].get("source_fingerprint") is None:
+        st.interrupt(run, now, "source snapshot unavailable; decisions cannot be verified")
+        st.save_state(root, state)
+        raise UsageError(f"run {run['run_id']} interrupted: the repository source snapshot is unavailable "
+                         "(git missing or failing), so decisions and findings writes cannot be verified.")
     changed = []
     if snap["commit"] != run["git"]["commit"]:
         changed.append(f"commit {run['git']['commit']} -> {snap['commit']}")

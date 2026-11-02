@@ -85,8 +85,9 @@ written to disk.
   when the inventory has gaps (unparsed or partially resolved files, vendored
   code, image contents without an SBOM), or when items remain queued.
 - A component that disappears is recorded as `component_not_present` only when
-  its source file was parsed completely without it. A failed, partial, or
-  deleted source leaves the item queued instead.
+  its source file was parsed completely without it. A failed, partial,
+  structurally invalid (for example a lockfile containing `{}`), or deleted
+  source leaves the item queued instead.
 - Fix versions are proposed only from the affected range that contains the
   installed version. If sources disagree, the mitigation stays unknown.
 
@@ -96,7 +97,9 @@ Only one run is active at a time. A run's worklist is fixed at `start`, and
 `decide` accepts only those candidates. `decide` and `finish` re-check the
 source fingerprint (all tracked and untracked non-ignored files, excluding
 `.repo-kit/` and the security review records) and the inventory; any change
-interrupts the run, and no findings are synced. To give up on an unfinished
+interrupts the run, and no findings are synced. Without a working git checkout
+the source fingerprint is unavailable, so `start` refuses to open a run and
+`decide`/`finish` refuse to proceed. To give up on an unfinished
 run, use `abandon --run <id>`.
 
 ## Reruns and reuse

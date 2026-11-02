@@ -378,10 +378,13 @@ class SbomError(ValueError):
     pass
 
 
-def _sbom(text: str, src: str) -> list[dict[str, Any]]:
+def _sbom(text: str, src: str) -> tuple[list[dict[str, Any]], int]:
+    """Components plus the count of entries that could not be resolved to a package."""
     data = json.loads(text)
-    if data.get("bomFormat") != "CycloneDX":
-        return []
+    if not isinstance(data, dict) or data.get("bomFormat") != "CycloneDX":
+        raise SbomError("not a CycloneDX JSON document")
+    if not isinstance(data.get("components"), list):
+        raise SbomError("CycloneDX import has no components list")
     meta = data.get("metadata") or {}
     subject = meta.get("component") or {}
     observed_at = meta.get("timestamp")
@@ -393,10 +396,12 @@ def _sbom(text: str, src: str) -> list[dict[str, Any]]:
         )
     sbom_meta = {"sbom_subject": subject_id, "sbom_observed_at": observed_at}
     out = []
-    for comp in data.get("components") or []:
-        purl = comp.get("purl") or ""
+    unresolved = 0
+    for comp in data["components"]:
+        purl = (comp.get("purl") if isinstance(comp, dict) else None) or ""
         m = re.match(r"^pkg:([^/]+)/(.+?)@([^?#]+)(\?[^#]*)?", purl)
         if not m:
+            unresolved += 1
             continue
         ptype, path, version = m.group(1).lower(), m.group(2), m.group(3)
         quals = dict(q.split("=", 1) for q in (m.group(4) or "?")[1:].split("&") if "=" in q)
@@ -413,7 +418,9 @@ def _sbom(text: str, src: str) -> list[dict[str, Any]]:
             if ptype == "maven":
                 name = name.replace("/", ":")
             out.append(component("library", PURL_ECOSYSTEMS[ptype], name, version, "sbom", src, **sbom_meta))
-    return out
+        else:
+            unresolved += 1
+    return out, unresolved
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +485,44 @@ def _read(root: str, rel: str) -> str | None:
         return None
     with open(full, encoding="utf-8", errors="replace") as fh:
         return fh.read()
+
+
+def _json_dict(text: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _structure_problem(kind: str, text: str) -> str | None:
+    """Required markers of each format; a document without them is never proof of absence."""
+    if kind == "npm-lock":
+        d = _json_dict(text) or {}
+        ok = isinstance(d.get("lockfileVersion"), int) and (
+            isinstance(d.get("packages"), dict) or (d["lockfileVersion"] == 1 and isinstance(d.get("dependencies"), dict)))
+    elif kind == "pipfile.lock":
+        d = _json_dict(text) or {}
+        ok = isinstance(d.get("_meta"), dict) and isinstance(d.get("default"), dict)
+    elif kind == "composer.lock":
+        ok = isinstance((_json_dict(text) or {}).get("packages"), list)
+    elif kind == "package.json":
+        ok = _json_dict(text) is not None
+    else:
+        markers = {
+            "pnpm-lock": r"^lockfileVersion:",
+            "yarn-lock": r"^# yarn lockfile v1|^__metadata:",
+            "poetry.lock": r"^\[metadata\]",
+            "uv.lock": r"^\[\[package\]\]",
+            "cargo.lock": r"^\[\[package\]\]",
+            "gemfile.lock": r"^\s+specs:\s*$",
+            "go.mod": r"^module\s+\S",
+            "dockerfile": r"(?i)^\s*FROM\s+\S",
+            "workflow": r"^jobs:",
+            "compose": r"^services:",
+        }
+        ok = kind not in markers or re.search(markers[kind], text, re.MULTILINE) is not None
+    return None if ok else f"unexpected {kind} document structure"
 
 
 def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]:
@@ -578,6 +623,10 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
         parsed.add(rel)
         if len(gaps) > gaps_before:
             incomplete[rel] = f"parsed with unresolved entries ({len(gaps) - gaps_before} inventory gap(s))"
+        problem = _structure_problem(kind, text)
+        if problem:
+            incomplete[rel] = problem
+            gaps.append(f"{rel}: {problem}; contents not trusted as complete")
         if found:
             add_source(rel)
             comps.extend(found)
@@ -598,16 +647,19 @@ def build_inventory(root: str, imports_dir: str | None = None) -> dict[str, Any]
             rel = os.path.relpath(full, root)
             try:
                 with open(full, encoding="utf-8") as fh:
-                    found = _sbom(fh.read(), rel)
+                    found, unresolved = _sbom(fh.read(), rel)
             except SbomError as exc:
                 incomplete[rel] = f"rejected: {exc}"
                 gaps.append(f"{rel}: rejected: {exc}")
                 continue
-            except (ValueError, OSError) as exc:
+            except (ValueError, OSError, AttributeError, TypeError) as exc:
                 incomplete[rel] = f"not a readable JSON import ({type(exc).__name__})"
                 gaps.append(f"{rel}: not a readable JSON import ({type(exc).__name__})")
                 continue
             parsed.add(rel)
+            if unresolved:
+                incomplete[rel] = f"{unresolved} SBOM component(s) without a recognized package URL"
+                gaps.append(f"{rel}: {unresolved} SBOM component(s) without a recognized package URL; not inventoried")
             if found:
                 add_source(rel)
                 comps.extend(found)
