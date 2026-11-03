@@ -6,6 +6,8 @@ Copy selected **modules** into a target repo. repo-kit is the source of truth; t
 
 Optional **extensions** (via `--ext`) install non-module tooling such as Continue, OpenSpec, and Forgekit.
 
+Optional **tools** (via `--tool`) install copy-based local tooling under `.repo-kit/tools/` (for example `py-indexer`).
+
 ## Layout
 
 ```text
@@ -24,6 +26,8 @@ repo-kit/
     openspec/       # OpenSpec CLI + project init
     forge/          # Forgekit (depends on openspec)
     act/            # nektos/act + local workflow runner script
+  tools/
+    py-indexer/     # local cross-repo lexical retrieval (CLI + stdio MCP)
   scripts/
     init.sh
     list-modules.sh
@@ -32,14 +36,17 @@ repo-kit/
   VERSION
   catalog/
     modules.md
+    tools.md
   README.md
 ```
 
 Each module has `files/` (ready to copy) and `manifest.sh` (name, description, depends, conflicts, and optional `MODULE_PRESERVE` paths that are never overwritten, even with `--force`).
 
+Each tool has `files/` and `manifest.sh` (`TOOL_NAME`, `TOOL_DESC`, optional `TOOL_DEPENDS` / `TOOL_PRESERVE`). Tools are discovered from `tools/*/manifest.sh`.
+
 ## Usage
 
-List modules and extensions:
+List modules, extensions, and tools:
 
 ```bash
 ./scripts/list-modules.sh
@@ -59,10 +66,11 @@ Initialize a project (resolves dependencies, detects conflicts):
 ./scripts/init.sh /path/to/project --ext openspec
 ./scripts/init.sh /path/to/project --ext forge
 ./scripts/init.sh /path/to/project --ext act
-./scripts/init.sh /path/to/project --typescript --ext continue
+./scripts/init.sh /path/to/project --tool py-indexer
+./scripts/init.sh /path/to/project --typescript --ext continue --tool py-indexer
 ```
 
-Sync only Cursor assets (`.cursor/`) into an existing project (extensions still install fully when `--ext` is passed):
+Sync only Cursor assets (`.cursor/`) into an existing project (extensions and tools still install fully when `--ext` / `--tool` is passed):
 
 ```bash
 ./scripts/sync-cursor.sh /path/to/project --typescript --security
@@ -71,6 +79,7 @@ Sync only Cursor assets (`.cursor/`) into an existing project (extensions still 
 ./scripts/sync-cursor.sh /path/to/project --ext continue
 ./scripts/sync-cursor.sh /path/to/project --ext forge
 ./scripts/sync-cursor.sh /path/to/project --ext act
+./scripts/sync-cursor.sh /path/to/project --tool py-indexer
 ```
 
 Existing files are **skipped** unless `--force` is passed. Preserved paths (reviewed security findings, accepted risks, threat model, contre-attaque state ignore file) are reported as `preserve` and never overwritten; missing ones are created.
@@ -152,6 +161,21 @@ Optional extensions pull in third-party tools with their own licenses:
 3. Commit copied files in each target repo.
 4. Update the `.npmrc` placeholder (from `typescript`) with your exact policy before broad reuse.
 
+## Tools
+
+| Tool | Notes |
+|------|-------|
+| `py-indexer` | Local SQLite FTS5 lexical retrieval across explicitly configured related checkouts; CLI + read-only stdio MCP. Installs under `.repo-kit/tools/py-indexer/`. Does not require the `python` module. |
+
+```bash
+./scripts/init.sh /path/to/project --tool py-indexer
+# then in the target:
+.repo-kit/tools/py-indexer/bin/py-indexer index --all
+.repo-kit/tools/py-indexer/bin/py-indexer search 'symbol' --json
+```
+
+See [catalog/tools.md](catalog/tools.md) and `tools/py-indexer/README.md`.
+
 ## Catalog
 
-See [catalog/modules.md](catalog/modules.md).
+See [catalog/modules.md](catalog/modules.md) and [catalog/tools.md](catalog/tools.md).

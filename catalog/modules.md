@@ -106,6 +106,10 @@ Human-readable mirror of `modules/*/manifest.sh`.
   - `.cursor/rules/python-engineering.mdc`, `sensitive-code-changes.mdc`
   - `pyproject.toml` (Ruff, Pyright, pytest defaults)
 
+## Tools
+
+See [tools.md](tools.md). Not modules — install with `--tool <name>`.
+
 ## Extensions
 
 Not modules — install with `--ext <name>` on `init.sh` / `sync-cursor.sh`.

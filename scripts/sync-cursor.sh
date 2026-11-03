@@ -9,17 +9,20 @@ source "${SCRIPT_DIR}/_lib.sh"
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/sync-cursor.sh <target> --<module> [--<module> ...] [--ext <name>] [--force]
+  ./scripts/sync-cursor.sh <target> --<module> [--<module> ...] [--ext <name>] [--tool <name>] [--force]
   ./scripts/sync-cursor.sh <target> --ext continue
   ./scripts/sync-cursor.sh <target> --ext openspec
   ./scripts/sync-cursor.sh <target> --ext forge
   ./scripts/sync-cursor.sh <target> --ext act
   ./scripts/sync-cursor.sh <target> --ext hermes
+  ./scripts/sync-cursor.sh <target> --tool py-indexer
   ./scripts/sync-cursor.sh --list
   ./scripts/sync-cursor.sh --help
 
 Copy only files under each selected module's files/.cursor/ into <target>/.cursor/.
 Optionally install extensions with --ext (continue, openspec, forge, act, hermes).
+Optionally install tools with --tool (repeatable). Explicitly requested tools install
+fully (same treatment as --ext), not Cursor-assets-only.
 --ext forge always installs openspec first.
 Dependencies and conflicts are resolved the same way as init.sh.
 Existing files are skipped unless --force is passed.
@@ -33,6 +36,7 @@ Examples:
   ./scripts/sync-cursor.sh /path/to/project --ext forge
   ./scripts/sync-cursor.sh /path/to/project --ext act
   ./scripts/sync-cursor.sh /path/to/project --ext hermes
+  ./scripts/sync-cursor.sh /path/to/project --tool py-indexer
   ./scripts/sync-cursor.sh /path/to/project --base --ext continue --force
   ./scripts/sync-cursor.sh --list
 EOF
@@ -54,9 +58,9 @@ fi
   usage >&2
   die "missing target path"
 }
-if [[ ${#SELECTED_MODULES[@]} -eq 0 && ${#SELECTED_EXTENSIONS[@]} -eq 0 ]]; then
+if [[ ${#SELECTED_MODULES[@]} -eq 0 && ${#SELECTED_EXTENSIONS[@]} -eq 0 && ${#SELECTED_TOOLS[@]} -eq 0 ]]; then
   usage >&2
-  die "select at least one module (e.g. --typescript) or --ext (continue|openspec|forge|act|hermes)"
+  die "select at least one module (e.g. --typescript), --ext (continue|openspec|forge|act|hermes), or --tool (e.g. py-indexer)"
 fi
 
 mkdir -p "${TARGET_DIR}"
@@ -77,3 +81,5 @@ else
 fi
 
 install_extensions
+# Explicit tools install fully (like --ext), not Cursor-only.
+install_tools

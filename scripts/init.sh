@@ -9,18 +9,21 @@ source "${SCRIPT_DIR}/_lib.sh"
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/init.sh <target> --<module> [--<module> ...] [--ext <name>] [--force]
+  ./scripts/init.sh <target> --<module> [--<module> ...] [--ext <name>] [--tool <name>] [--force]
   ./scripts/init.sh <target> --ext continue
   ./scripts/init.sh <target> --ext openspec
   ./scripts/init.sh <target> --ext forge
   ./scripts/init.sh <target> --ext act
   ./scripts/init.sh <target> --ext hermes
+  ./scripts/init.sh <target> --tool py-indexer
   ./scripts/init.sh --list
   ./scripts/init.sh --help
 
 Copy selected modules (and their dependencies) into <target>.
 Optionally install extensions with --ext (continue, openspec, forge, act, hermes).
+Optionally install tools with --tool (repeatable; discovered from tools/*/manifest.sh).
 --ext forge always installs openspec first.
+--tool may be combined with modules and extensions; tool-only installs are allowed.
 Existing files are skipped unless --force is passed.
 
 Examples:
@@ -35,7 +38,8 @@ Examples:
   ./scripts/init.sh /path/to/project --ext forge
   ./scripts/init.sh /path/to/project --ext act
   ./scripts/init.sh /path/to/project --ext hermes
-  ./scripts/init.sh /path/to/project --typescript --ext continue
+  ./scripts/init.sh /path/to/project --tool py-indexer
+  ./scripts/init.sh /path/to/project --typescript --ext continue --tool py-indexer
   ./scripts/init.sh --list
 EOF
 }
@@ -57,9 +61,9 @@ fi
   usage >&2
   die "missing target path"
 }
-if [[ ${#SELECTED_MODULES[@]} -eq 0 && ${#SELECTED_EXTENSIONS[@]} -eq 0 ]]; then
+if [[ ${#SELECTED_MODULES[@]} -eq 0 && ${#SELECTED_EXTENSIONS[@]} -eq 0 && ${#SELECTED_TOOLS[@]} -eq 0 ]]; then
   usage >&2
-  die "select at least one module (e.g. --typescript) or --ext (continue|openspec|forge|act|hermes)"
+  die "select at least one module (e.g. --typescript), --ext (continue|openspec|forge|act|hermes), or --tool (e.g. py-indexer)"
 fi
 
 # Resolve absolute target for cleaner summary paths
@@ -83,3 +87,4 @@ else
 fi
 
 install_extensions
+install_tools

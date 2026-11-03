@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "active_repo": "@TARGET_REPO_ID@",
+  "defaults": {
+    "max_results": 12,
+    "max_snippet_chars": 1200,
+    "max_total_chars": 12000,
+    "chunk_lines": 80,
+    "chunk_overlap_lines": 10,
+    "max_file_bytes": 524288
+  },
+  "repositories": [
+    {
+      "id": "@TARGET_REPO_ID@",
+      "root": ".",
+      "role": "working",
+      "related": [],
+      "include": [],
+      "exclude": []
+    }
+  ]
+}

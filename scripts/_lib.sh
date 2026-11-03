@@ -7,12 +7,16 @@ set -euo pipefail
 REPO_KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULES_DIR="${REPO_KIT_ROOT}/modules"
 EXTENSIONS_DIR="${REPO_KIT_ROOT}/extensions"
+TOOLS_DIR="${REPO_KIT_ROOT}/tools"
 
 # Globals set by loaders / resolvers
 DECLARED_MODULES=()
 SELECTED_MODULES=()
 RESOLVED_MODULES=()
 SELECTED_EXTENSIONS=()
+DECLARED_TOOLS=()
+SELECTED_TOOLS=()
+RESOLVED_TOOLS=()
 FORCE_COPY=0
 CURSOR_ONLY=0
 ADDED_COUNT=0
@@ -136,8 +140,88 @@ detect_conflicts() {
   done
 }
 
+# Discover tool names from tools/*/manifest.sh
+discover_tools() {
+  DECLARED_TOOLS=()
+  local manifest dir name
+  shopt -s nullglob
+  for manifest in "${TOOLS_DIR}"/*/manifest.sh; do
+    dir="$(dirname "${manifest}")"
+    name="$(basename "${dir}")"
+    DECLARED_TOOLS+=("${name}")
+  done
+  shopt -u nullglob
+}
+
+# Load one tool's manifest into TOOL_* variables (caller scope).
+load_tool_manifest() {
+  local name="$1"
+  local path="${TOOLS_DIR}/${name}/manifest.sh"
+  [[ -f "${path}" ]] || die "tool '${name}' has no manifest.sh"
+
+  TOOL_NAME=""
+  TOOL_DESC=""
+  TOOL_DEPENDS=()
+  # Project-owned paths (relative to files/): created when missing, never overwritten.
+  TOOL_PRESERVE=()
+
+  # shellcheck source=/dev/null
+  source "${path}"
+
+  [[ -n "${TOOL_NAME}" ]] || die "tool '${name}' did not set TOOL_NAME"
+  [[ "${TOOL_NAME}" == "${name}" ]] || die "tool '${name}' TOOL_NAME='${TOOL_NAME}' does not match directory"
+}
+
+tool_exists() {
+  local needle="$1" t
+  for t in "${DECLARED_TOOLS[@]+"${DECLARED_TOOLS[@]}"}"; do
+    [[ "${t}" == "${needle}" ]] && return 0
+  done
+  return 1
+}
+
+# Resolve SELECTED_TOOLS -> RESOLVED_TOOLS (deps first, topo order).
+resolve_tool_dependencies() {
+  RESOLVED_TOOLS=()
+  [[ ${#SELECTED_TOOLS[@]} -gt 0 ]] || return 0
+
+  local visiting=()
+  local visited=()
+
+  _resolve_tool_one() {
+    local name="$1"
+    local dep
+
+    tool_exists "${name}" || die "unknown tool '${name}'"
+
+    if array_contains "${name}" "${visited[@]+"${visited[@]}"}"; then
+      return 0
+    fi
+    if array_contains "${name}" "${visiting[@]+"${visiting[@]}"}"; then
+      die "circular tool dependency involving '${name}'"
+    fi
+
+    visiting+=("${name}")
+    load_tool_manifest "${name}"
+    for dep in "${TOOL_DEPENDS[@]+"${TOOL_DEPENDS[@]}"}"; do
+      _resolve_tool_one "${dep}"
+    done
+    if [[ ${#visiting[@]} -gt 0 ]]; then
+      visiting=("${visiting[@]:0:$((${#visiting[@]} - 1))}")
+    fi
+    visited+=("${name}")
+    RESOLVED_TOOLS+=("${name}")
+  }
+
+  local sel
+  for sel in "${SELECTED_TOOLS[@]+"${SELECTED_TOOLS[@]}"}"; do
+    _resolve_tool_one "${sel}"
+  done
+}
+
 list_modules() {
   discover_modules
+  discover_tools
   local name depends conflicts
   printf "%-12s  %-60s  %-20s  %s\n" "NAME" "DESCRIPTION" "DEPENDS" "CONFLICTS"
   printf "%-12s  %-60s  %-20s  %s\n" "----" "-----------" "-------" "---------"
@@ -153,7 +237,7 @@ list_modules() {
   echo
   printf "%-12s  %-50s  %s\n" "EXTENSION" "DESCRIPTION" "DEPENDS"
   printf "%-12s  %-50s  %s\n" "---------" "-----------" "-------"
-  local ext_dir ext_name ext_desc ext_depends
+  local ext_name ext_desc ext_depends
   for name in "${KNOWN_EXTENSIONS[@]}"; do
     load_ext_manifest "${name}"
     ext_name="${EXT_NAME:-${name}}"
@@ -162,6 +246,23 @@ list_modules() {
     [[ -n "${ext_depends}" ]] || ext_depends="-"
     printf "%-12s  %-50s  %s\n" "${ext_name}" "${ext_desc}" "${ext_depends}"
   done
+
+  echo
+  printf "%-12s  %-50s  %s\n" "TOOL" "DESCRIPTION" "DEPENDS"
+  printf "%-12s  %-50s  %s\n" "----" "-----------" "-------"
+  local tool_name tool_desc tool_depends
+  if [[ ${#DECLARED_TOOLS[@]} -eq 0 ]]; then
+    printf "%-12s  %-50s  %s\n" "(none)" "-" "-"
+  else
+    for name in "${DECLARED_TOOLS[@]}"; do
+      load_tool_manifest "${name}"
+      tool_name="${TOOL_NAME:-${name}}"
+      tool_desc="${TOOL_DESC:-}"
+      tool_depends="${TOOL_DEPENDS[*]:-}"
+      [[ -n "${tool_depends}" ]] || tool_depends="-"
+      printf "%-12s  %-50s  %s\n" "${tool_name}" "${tool_desc}" "${tool_depends}"
+    done
+  fi
 }
 
 # Copy one file into target, respecting FORCE_COPY.
@@ -903,19 +1004,361 @@ install_extensions() {
   done
 }
 
-# Parse common CLI: [target] [--module ...] [--ext <name>] [--force] [--list] [--help]
-# Sets: TARGET_DIR, SELECTED_MODULES, SELECTED_EXTENSIONS, FORCE_COPY, DO_LIST
+# Copy files/ from a tool into TARGET_DIR (full install; sync-cursor does not strip tools).
+copy_tool_files() {
+  local name="$1"
+  local src_root="${TOOLS_DIR}/${name}/files"
+  local rel dest preserve
+
+  [[ -d "${src_root}" ]] || die "tool '${name}' has no files/ directory"
+
+  load_tool_manifest "${name}"
+  echo "tool: ${name}"
+
+  while IFS= read -r -d '' src; do
+    rel="${src#"${src_root}"/}"
+    # Never distribute bytecode / caches from the kit checkout.
+    case "${rel}" in
+      *__pycache__*|*.pyc|*.pyo) continue ;;
+    esac
+    preserve=0
+    if array_contains "${rel}" "${TOOL_PRESERVE[@]+"${TOOL_PRESERVE[@]}"}"; then
+      preserve=1
+    fi
+    dest="${TARGET_DIR}/${rel}"
+    _copy_file "${src}" "${dest}" "${preserve}"
+  done < <(find "${src_root}" -type f -print0 | sort -z)
+}
+
+# Prompt that refuses on EOF / non-interactive (unlike prompt_yn, which treats EOF as Yes).
+prompt_yn_interactive() {
+  local prompt="$1"
+  local reply
+
+  if [[ ! -t 0 ]]; then
+    if [[ "${REPO_KIT_TOOL_ASSUME_YES:-0}" == "1" ]]; then
+      echo "${prompt} [Y/n] Y (REPO_KIT_TOOL_ASSUME_YES=1)"
+      return 0
+    fi
+    echo "${prompt} [Y/n]" >&2
+    echo "error: non-interactive stdin; refuse network install without consent (set REPO_KIT_TOOL_ASSUME_YES=1 to allow in CI/tests)" >&2
+    return 1
+  fi
+
+  if ! read -r -p "${prompt} [Y/n] " reply; then
+    echo "error: no response; refuse network install without consent" >&2
+    return 1
+  fi
+  case "${reply}" in
+    ""|Y|y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Seed repos.json from example when missing; never overwrite an existing file.
+_seed_py_indexer_repos_json() {
+  local tool_root="$1"
+  local example="${tool_root}/repos.example.json"
+  local dest="${tool_root}/repos.json"
+  local target_name
+
+  [[ -f "${example}" ]] || die "py-indexer missing repos.example.json"
+  if [[ -e "${dest}" || -L "${dest}" ]]; then
+    echo "  preserve   ${dest#"${TARGET_DIR}"/}"
+    PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
+    return 0
+  fi
+
+  # Safe default id from basename (fallback when basename is not a valid repo id).
+  target_name="$(basename "${TARGET_DIR}" | tr -c 'A-Za-z0-9._-' '_' | sed 's/^_//;s/_$//')"
+  [[ -n "${target_name}" ]] || target_name="active"
+  case "${target_name}" in
+    [A-Za-z0-9]*) ;;
+    *) target_name="r_${target_name}" ;;
+  esac
+  # shellcheck disable=SC2016
+  sed \
+    -e "s|@TARGET_REPO_ID@|${target_name}|g" \
+    "${example}" >"${dest}"
+  ADDED_COUNT=$((ADDED_COUNT + 1))
+  echo "  add        ${dest#"${TARGET_DIR}"/}"
+}
+
+# Idempotently append py-indexer ignore entries without wiping unrelated lines.
+_ensure_py_indexer_gitignore() {
+  local gitignore="${TARGET_DIR}/.gitignore"
+  local marker="# repo-kit py-indexer"
+  local entries=(
+    ".repo-kit/tools/py-indexer/index/"
+    ".repo-kit/tools/py-indexer/.venv/"
+    ".repo-kit/tools/py-indexer/**/__pycache__/"
+    ".repo-kit/tools/py-indexer/**/*.py[cod]"
+    ".repo-kit/tools/py-indexer/repos.json"
+  )
+  local entry tmp existing=0
+
+  if [[ -f "${gitignore}" ]] && grep -Fqx "${marker}" "${gitignore}" 2>/dev/null; then
+    existing=1
+  fi
+
+  if [[ ! -f "${gitignore}" ]]; then
+    {
+      echo "${marker}"
+      for entry in "${entries[@]}"; do
+        echo "${entry}"
+      done
+    } >"${gitignore}"
+    echo "  added     .gitignore py-indexer block"
+    return 0
+  fi
+
+  if [[ "${existing}" -eq 1 ]]; then
+    # Ensure each entry exists somewhere in the file (idempotent).
+    for entry in "${entries[@]}"; do
+      if ! grep -Fqx "${entry}" "${gitignore}" 2>/dev/null; then
+        printf '%s\n' "${entry}" >>"${gitignore}"
+        echo "  added     .gitignore: ${entry}"
+      fi
+    done
+    return 0
+  fi
+
+  {
+    echo ""
+    echo "${marker}"
+    for entry in "${entries[@]}"; do
+      echo "${entry}"
+    done
+  } >>"${gitignore}"
+  echo "  added     .gitignore py-indexer block"
+}
+
+# Merge only the py-indexer MCP server entry into .cursor/mcp.json.
+# Never overwrite a divergent existing py-indexer entry; never rewrite unrelated servers.
+_merge_py_indexer_mcp_json() {
+  local mcp_path="${TARGET_DIR}/.cursor/mcp.json"
+  local fragment_path="${TARGET_DIR}/.repo-kit/tools/py-indexer/mcp.fragment.json"
+  local example="${TARGET_DIR}/.repo-kit/tools/py-indexer/mcp.example.json"
+  local python_bin='${workspaceFolder}/.repo-kit/tools/py-indexer/.venv/bin/python'
+  local script_path='${workspaceFolder}/.repo-kit/tools/py-indexer/bin/py-indexer'
+  local desired tmp rc
+
+  [[ -f "${example}" ]] || die "py-indexer missing mcp.example.json"
+  mkdir -p "$(dirname "${mcp_path}")" "$(dirname "${fragment_path}")"
+
+  desired="$(python3 - "${python_bin}" "${script_path}" <<'PY'
+import json, sys
+command, script = sys.argv[1], sys.argv[2]
+print(json.dumps({
+    "type": "stdio",
+    "command": command,
+    "args": [script, "serve"],
+}, indent=2, sort_keys=True))
+PY
+)"
+
+  # Write standalone fragment always (useful when merge is refused).
+  python3 - "${fragment_path}" "${desired}" <<'PY'
+import json, sys
+path, desired = sys.argv[1], json.loads(sys.argv[2])
+doc = {"mcpServers": {"py-indexer": desired}}
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+import os
+os.replace(tmp, path)
+PY
+  echo "  wrote     ${fragment_path#"${TARGET_DIR}"/}"
+
+  if [[ ! -f "${mcp_path}" ]]; then
+    python3 - "${mcp_path}" "${desired}" <<'PY'
+import json, os, sys
+path, desired = sys.argv[1], json.loads(sys.argv[2])
+doc = {"mcpServers": {"py-indexer": desired}}
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, path)
+PY
+    echo "  add        .cursor/mcp.json (py-indexer)"
+    return 0
+  fi
+
+  set +e
+  python3 - "${mcp_path}" "${desired}" <<'PY'
+import json, os, sys
+
+path, desired = sys.argv[1], json.loads(sys.argv[2])
+
+try:
+    with open(path, encoding="utf-8") as fh:
+        raw = fh.read()
+    doc = json.loads(raw) if raw.strip() else {}
+except Exception as exc:  # noqa: BLE001 — report and leave file untouched
+    print(f"UNPARSEABLE:{exc}")
+    sys.exit(2)
+
+if not isinstance(doc, dict):
+    print("UNPARSEABLE:top-level JSON must be an object")
+    sys.exit(2)
+
+servers = doc.get("mcpServers")
+if servers is None:
+    servers = {}
+    doc["mcpServers"] = servers
+if not isinstance(servers, dict):
+    print("UNPARSEABLE:mcpServers must be an object")
+    sys.exit(2)
+
+existing = servers.get("py-indexer")
+if existing is not None:
+    # Compare semantically (ignore key order / whitespace).
+    if json.loads(json.dumps(existing, sort_keys=True)) == json.loads(json.dumps(desired, sort_keys=True)):
+        print("UNCHANGED")
+        sys.exit(0)
+    print("DIVERGENT")
+    sys.exit(3)
+
+servers["py-indexer"] = desired
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, path)
+print("MERGED")
+PY
+  rc=$?
+  set -e
+
+  case "${rc}" in
+    0)
+      # UNCHANGED or MERGED printed by python
+      :
+      ;;
+    2)
+      warn "could not parse ${mcp_path}; left untouched"
+      echo "  use fragment: ${fragment_path#"${TARGET_DIR}"/}"
+      echo "  merge the py-indexer entry manually, then validate JSON"
+      ;;
+    3)
+      warn "existing .cursor/mcp.json py-indexer entry differs; left untouched (even with --force)"
+      echo "  reconcile manually with: ${fragment_path#"${TARGET_DIR}"/}"
+      ;;
+    *)
+      die "mcp.json merge failed (exit ${rc})"
+      ;;
+  esac
+}
+
+_setup_py_indexer_venv() {
+  local tool_root="$1"
+  local venv="${tool_root}/.venv"
+  local req="${tool_root}/requirements.txt"
+  local py
+
+  cmd_exists python3 || die "python3 is required for py-indexer"
+
+  if ! python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then
+    die "python3 venv support missing (install python3-venv / ensurepip), then re-run"
+  fi
+
+  if ! python3 - <<'PY'
+import sqlite3
+c = sqlite3.connect(":memory:")
+c.execute("CREATE VIRTUAL TABLE t USING fts5(x)")
+print("ok")
+PY
+  then
+    die "SQLite FTS5 is unavailable in this python3 build"
+  fi
+
+  if [[ ! -x "${venv}/bin/python" ]]; then
+    echo "  creating project-local venv at ${venv#"${TARGET_DIR}"/} ..."
+    python3 -m venv "${venv}"
+  else
+    echo "  reuse     ${venv#"${TARGET_DIR}"/}"
+  fi
+
+  py="${venv}/bin/python"
+  [[ -x "${py}" ]] || die "venv python missing at ${py}"
+
+  # Indexing/search work without mcp; only install requirements when consented.
+  if [[ -f "${req}" ]]; then
+    if ! prompt_yn_interactive "Install py-indexer Python deps into .venv from requirements.txt (network)?"; then
+      warn "skipped dependency install; indexing/search work without mcp; run: ${py} -m pip install -r ${req}"
+      return 0
+    fi
+    echo "  pip install -r requirements.txt ..."
+    "${py}" -m pip install -r "${req}"
+  fi
+}
+
+install_py_indexer_tool() {
+  local tool_root="${TARGET_DIR}/.repo-kit/tools/py-indexer"
+  local bin_path="${tool_root}/bin/py-indexer"
+
+  copy_tool_files "py-indexer"
+
+  mkdir -p "${tool_root}/index"
+  echo "  ensure     ${tool_root#"${TARGET_DIR}"/}/index/"
+
+  _seed_py_indexer_repos_json "${tool_root}"
+  _ensure_py_indexer_gitignore
+  _setup_py_indexer_venv "${tool_root}"
+
+  if [[ -f "${bin_path}" ]]; then
+    chmod +x "${bin_path}"
+  fi
+
+  # Cursor rule is under files/.cursor/ — already copied via copy_tool_files.
+  _merge_py_indexer_mcp_json
+
+  echo "  py-indexer ready under ${tool_root#"${TARGET_DIR}"/}"
+  echo "  next: edit repos.json, then: ${bin_path#"${TARGET_DIR}"/} index --all"
+}
+
+install_tools() {
+  local name
+  [[ ${#SELECTED_TOOLS[@]} -gt 0 ]] || return 0
+
+  resolve_tool_dependencies
+  echo "tools: ${RESOLVED_TOOLS[*]}"
+
+  for name in "${RESOLVED_TOOLS[@]}"; do
+    case "${name}" in
+      py-indexer) install_py_indexer_tool ;;
+      *)
+        # Generic copy-only tools (future): files/ only.
+        copy_tool_files "${name}"
+        ;;
+    esac
+  done
+}
+
+# Parse common CLI: [target] [--module ...] [--ext <name>] [--tool <name>] [--force] [--list] [--help]
+# Sets: TARGET_DIR, SELECTED_MODULES, SELECTED_EXTENSIONS, SELECTED_TOOLS, FORCE_COPY, DO_LIST
 parse_common_args() {
   TARGET_DIR=""
   SELECTED_MODULES=()
   SELECTED_EXTENSIONS=()
+  SELECTED_TOOLS=()
   FORCE_COPY=0
   DO_LIST=0
   SHOW_HELP=0
 
   discover_modules
+  discover_tools
 
   local arg name matched
+  local known_tools_msg
+  if [[ ${#DECLARED_TOOLS[@]} -gt 0 ]]; then
+    known_tools_msg="${DECLARED_TOOLS[*]}"
+  else
+    known_tools_msg="(none)"
+  fi
+
   while [[ $# -gt 0 ]]; do
     arg="$1"
     shift
@@ -938,6 +1381,16 @@ parse_common_args() {
           SELECTED_EXTENSIONS+=("${name}")
         fi
         ;;
+      --tool)
+        [[ $# -gt 0 ]] || die "--tool requires a name (e.g. --tool py-indexer)"
+        name="$1"
+        shift
+        [[ -n "${name}" ]] || die "--tool requires a name (e.g. --tool py-indexer)"
+        tool_exists "${name}" || die "unknown tool '${name}' (known: ${known_tools_msg})"
+        if ! array_contains "${name}" "${SELECTED_TOOLS[@]+"${SELECTED_TOOLS[@]}"}"; then
+          SELECTED_TOOLS+=("${name}")
+        fi
+        ;;
       --*)
         name="${arg#--}"
         matched=0
@@ -947,7 +1400,7 @@ parse_common_args() {
           fi
           matched=1
         fi
-        [[ "${matched}" -eq 1 ]] || die "unknown flag '${arg}' (known modules: ${DECLARED_MODULES[*]}; extensions via --ext: ${KNOWN_EXTENSIONS[*]})"
+        [[ "${matched}" -eq 1 ]] || die "unknown flag '${arg}' (known modules: ${DECLARED_MODULES[*]}; extensions via --ext: ${KNOWN_EXTENSIONS[*]}; tools via --tool: ${known_tools_msg})"
         ;;
       -*)
         die "unknown flag '${arg}'"
