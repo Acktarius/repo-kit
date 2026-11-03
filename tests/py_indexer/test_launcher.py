@@ -43,12 +43,15 @@ def _load_launcher():
 class PreferVenvTests(unittest.TestCase):
     def setUp(self) -> None:
         self.mod = _load_launcher()
+        self.mod.os.environ.pop(self.mod._REEXEC_ENV, None)
         self.tmp = Path(tempfile.mkdtemp())
         self.venv = self.tmp / ".venv"
         self.venv_python = self.venv / "bin" / "python"
         self.venv_python.parent.mkdir(parents=True)
         self.venv_python.write_text("#!/bin/sh\n", encoding="utf-8")
         self.venv_python.chmod(0o755)
+        # Present so re-exec tests reach os.execv (missing cfg fails first).
+        (self.venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
 
     def tearDown(self) -> None:
         import shutil
@@ -159,6 +162,45 @@ class PreferVenvTests(unittest.TestCase):
             self.mod._prefer_venv(self.tmp)
         self.assertEqual(ctx.exception.code, 1)
 
+    def test_retry_marker_for_this_venv_does_not_exec_again(self) -> None:
+        with (
+            mock.patch.object(self.mod.sys, "prefix", "/usr"),
+            mock.patch.dict(
+                self.mod.os.environ,
+                {self.mod._REEXEC_ENV: str(self.venv.resolve())},
+            ),
+            mock.patch.object(self.mod.os, "execv") as execv,
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            self.mod._prefer_venv(self.tmp)
+        self.assertEqual(ctx.exception.code, 1)
+        execv.assert_not_called()
+
+    def test_unrelated_retry_marker_still_reexecs(self) -> None:
+        calls: list[str] = []
+
+        def capture(path: str, args: list[str]) -> None:
+            calls.append(path)
+            self.assertEqual(
+                self.mod.os.environ.get(self.mod._REEXEC_ENV),
+                str(self.venv.resolve()),
+            )
+            raise SystemExit(0)
+
+        with (
+            mock.patch.object(self.mod.sys, "prefix", "/usr"),
+            mock.patch.object(self.mod.sys, "argv", ["py-indexer", "status"]),
+            mock.patch.dict(
+                self.mod.os.environ,
+                {self.mod._REEXEC_ENV: "/unrelated/other/.venv"},
+                clear=False,
+            ),
+            mock.patch.object(self.mod.os, "execv", side_effect=capture),
+            self.assertRaises(SystemExit),
+        ):
+            self.mod._prefer_venv(self.tmp)
+        self.assertEqual(calls, [str(self.venv_python)])
+
 
 class LauncherSubprocessTests(unittest.TestCase):
     """Subprocess checks including paths/args with spaces."""
@@ -260,6 +302,145 @@ class LauncherSubprocessTests(unittest.TestCase):
         proc = run_case()
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("not executable", proc.stderr.lower())
+        self.assertEqual(proc.stdout, "")
+
+    def test_missing_pyvenv_cfg_fails_without_reexec_loop(self) -> None:
+        """Executable .venv/bin/python without pyvenv.cfg must not loop."""
+        import json
+        import shutil
+
+        other_cwd = self.tmp / "cwd with spaces"
+        other_cwd.mkdir(parents=True)
+        target = self.tmp / "project with spaces" / "app"
+        tool = target / ".repo-kit" / "tools" / "py-indexer"
+        shutil.copytree(
+            ROOT
+            / "tools"
+            / "py-indexer"
+            / "files"
+            / ".repo-kit"
+            / "tools"
+            / "py-indexer",
+            tool,
+        )
+        cfg = {
+            "schema_version": 1,
+            "active_repo": "app",
+            "defaults": {
+                "max_results": 5,
+                "max_snippet_chars": 100,
+                "max_total_chars": 1000,
+                "chunk_lines": 40,
+                "chunk_overlap_lines": 5,
+                "max_file_bytes": 10000,
+            },
+            "repositories": [
+                {
+                    "id": "app",
+                    "root": ".",
+                    "role": "working",
+                    "related": [],
+                    "include": [],
+                    "exclude": [],
+                }
+            ],
+        }
+        (tool / "repos.json").write_text(json.dumps(cfg), encoding="utf-8")
+        launcher = tool / "bin" / "py-indexer"
+        launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+        venv_bin = tool / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        base = Path(shutil.which("python3") or sys.executable).resolve()
+        (venv_bin / "python").symlink_to(base)
+        self.assertFalse((tool / ".venv" / "pyvenv.cfg").exists())
+
+        try:
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(launcher),
+                    "--config",
+                    str(tool / "repos.json"),
+                    "validate-config",
+                ],
+                cwd=str(other_cwd),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self.fail(f"launcher re-exec loop (timed out): {exc}")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("pyvenv.cfg", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertEqual(proc.stdout, "")
+
+    def test_reexec_that_does_not_activate_fails_once(self) -> None:
+        """pyvenv.cfg present, but the interpreter execs the base Python by absolute path."""
+        import json
+        import shutil
+
+        other_cwd = self.tmp / "other cwd"
+        other_cwd.mkdir(parents=True)
+        target = self.tmp / "spaced target" / "app"
+        tool = target / ".repo-kit" / "tools" / "py-indexer"
+        shutil.copytree(
+            ROOT
+            / "tools"
+            / "py-indexer"
+            / "files"
+            / ".repo-kit"
+            / "tools"
+            / "py-indexer",
+            tool,
+        )
+        cfg = {
+            "schema_version": 1,
+            "active_repo": "app",
+            "defaults": {
+                "max_results": 5,
+                "max_snippet_chars": 100,
+                "max_total_chars": 1000,
+                "chunk_lines": 40,
+                "chunk_overlap_lines": 5,
+                "max_file_bytes": 10000,
+            },
+            "repositories": [
+                {
+                    "id": "app",
+                    "root": ".",
+                    "role": "working",
+                    "related": [],
+                    "include": [],
+                    "exclude": [],
+                }
+            ],
+        }
+        (tool / "repos.json").write_text(json.dumps(cfg), encoding="utf-8")
+        launcher = tool / "bin" / "py-indexer"
+        launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+        venv = tool / ".venv"
+        venv_bin = venv / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+        base = Path(shutil.which("python3") or sys.executable).resolve()
+        wrapper = venv_bin / "python"
+        # Absolute exec drops venv discovery, so sys.prefix stays the base prefix.
+        wrapper.write_text(f"#!/bin/sh\nexec {base} \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(launcher), "--config", str(tool / "repos.json"), "validate-config"],
+                cwd=str(other_cwd),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self.fail(f"launcher re-exec loop (timed out): {exc}")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("did not activate", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
         self.assertEqual(proc.stdout, "")
 
 

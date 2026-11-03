@@ -270,20 +270,29 @@ class GeneratedMcpConfigE2E(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self._exercise_session(server), timeout=90)
 
     async def test_direct_bin_serve_reexec_into_tool_venv(self) -> None:
-        """Direct bin/py-indexer serve from outside the tool venv must re-exec."""
-        # Host interpreter should not see mcp if MCP_PYTHON is an isolated venv.
-        host_probe = subprocess.run(
-            [self.host_python, "-c", "import mcp"],
-            capture_output=True,
-            text=True,
-            timeout=20,
+        """Direct bin/py-indexer serve from outside the tool venv must re-exec.
+
+        Records ``sys.prefix`` from the server process via a fixture-only
+        site-packages ``.pth`` line (``import ...`` lines are executed by
+        site.py). A ``sitecustomize.py`` in that directory is not used: the
+        stdlib ``sitecustomize`` is imported first, so a fixture module of the
+        same name never runs. The ``.pth`` is processed only for this venv, so
+        the marker proves the selected environment even when the host
+        interpreter already has ``mcp``. It does not print and is not shipped.
+        """
+        marker = self.tmp / "server-prefix.txt"
+        if marker.exists():
+            marker.unlink()
+        site_dirs = list((self.tool / ".venv" / "lib").glob("python*/site-packages"))
+        self.assertTrue(site_dirs, "tool venv site-packages missing")
+        line = (
+            "import pathlib, sys; pathlib.Path("
+            + repr(str(marker))
+            + ").write_text(sys.prefix, encoding='utf-8')"
         )
-        if host_probe.returncode == 0:
-            # Still valid if host has mcp, but cannot prove isolation; require
-            # tool venv prefix selection via a marker file written only in tool env.
-            pass
-        else:
-            self.assertNotEqual(host_probe.returncode, 0)
+        (site_dirs[0] / "zz_py_indexer_prefix_probe.pth").write_text(
+            line + "\n", encoding="utf-8"
+        )
 
         launcher = self.tool / "bin" / "py-indexer"
         server = self.StdioServerParameters(
@@ -293,6 +302,9 @@ class GeneratedMcpConfigE2E(unittest.IsolatedAsyncioTestCase):
             env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
         )
         await asyncio.wait_for(self._exercise_session(server), timeout=90)
+        self.assertTrue(marker.is_file(), "server process did not record sys.prefix")
+        recorded = Path(marker.read_text(encoding="utf-8").strip()).resolve()
+        self.assertEqual(recorded, (self.tool / ".venv").resolve())
 
 
 if __name__ == "__main__":

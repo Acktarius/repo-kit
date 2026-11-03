@@ -187,6 +187,7 @@ Tools exposed (read-only): `search_code`, `read_code`, `index_status`. Index ref
 |-----------|-----------|
 | **No** `.venv/` directory | Keep the current interpreter (stdlib index/search/validate still work) |
 | `.venv/` exists but `bin/python` is missing, a dangling symlink, not executable, or `exec` fails | Exit nonzero with a stderr diagnostic — **no** silent fallback to another environment |
+| `.venv/` has no `pyvenv.cfg`, or re-exec leaves `sys.prefix` unchanged | Exit nonzero. At most one re-exec for that venv (no loop, no auto-repair) |
 | Usable `.venv/` and `sys.prefix` is already that venv | Continue (no re-exec loop) |
 | Usable `.venv/` and current prefix differs | `os.execv` into `.venv/bin/python` with the same argv (no shell) |
 
