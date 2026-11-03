@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONDONTWRITEBYTECODE=1
 
 echo "== unit tests (stdlib) =="
-(cd "${ROOT}/tests/py_indexer" && python3 -m unittest test_core -v)
+(cd "${ROOT}/tests/py_indexer" && python3 -m unittest test_core test_launcher -v)
 
 echo
 echo "== MCP integration (optional) =="

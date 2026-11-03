@@ -247,6 +247,70 @@ else
     || bad "venv python cannot execute bin/py-indexer — MCP would fail to start"
 fi
 
+# --- venv detection via sys.prefix (not resolved executable; venv may symlink to system python) ---
+# Probe re-exec by wrapping .venv/bin/python. Keep a stable in-venv interpreter path so
+# Python still finds pyvenv.cfg (exec'ing /usr/bin/python3 directly would break prefix).
+VENV_BIN="${TOOL}/.venv/bin"
+REAL_PY="${VENV_BIN}/python.real"
+LOG="${TMP}/venv-reexec.log"
+if [[ -x "${VENV_BIN}/python" ]]; then
+  HOST_PY="$(readlink -f "${VENV_BIN}/python")"
+  rm -f "${VENV_BIN}/python" "${VENV_BIN}/python3" "${VENV_BIN}/python3".* "${REAL_PY}"
+  ln -sfn "${HOST_PY}" "${REAL_PY}"
+  cat >"${VENV_BIN}/python" <<WRAP
+#!/usr/bin/env bash
+echo "reexec-hit \${PY_INDEXER_REEXEC_TAG:-unset}" >>"${LOG}"
+exec "${REAL_PY}" "\$@"
+WRAP
+  chmod +x "${VENV_BIN}/python"
+  ln -sfn python "${VENV_BIN}/python3"
+
+  : >"${LOG}"
+  # Already inside tool venv: launcher must not re-exec (wrapper runs once from the harness).
+  if ! timeout 15 env PY_INDEXER_REEXEC_TAG=inside \
+      "${VENV_BIN}/python" "${TOOL}/bin/py-indexer" validate-config >/dev/null; then
+    bad "tool venv validate-config timed out or failed (possible re-exec loop)"
+  else
+    inside_hits="$(grep -c 'reexec-hit inside' "${LOG}" || true)"
+    if [[ "${inside_hits}" -eq 1 ]]; then
+      ok "tool venv does not re-exec repeatedly (${inside_hits} hit)"
+    else
+      bad "tool venv re-exec loop or miss (hits=${inside_hits})"
+    fi
+  fi
+
+  : >"${LOG}"
+  # System interpreter: must switch into tool venv (resolved executables often match).
+  if ! timeout 15 env PY_INDEXER_REEXEC_TAG=system \
+      python3 "${TOOL}/bin/py-indexer" validate-config >/dev/null; then
+    bad "system python → tool venv re-exec timed out or failed"
+  else
+    system_hits="$(grep -c 'reexec-hit system' "${LOG}" || true)"
+    if [[ "${system_hits}" -eq 1 ]]; then
+      ok "system python re-execs into tool venv"
+    else
+      bad "system python did not re-exec into tool venv (hits=${system_hits})"
+    fi
+  fi
+
+  OTHER="${TMP}/unrelated-venv"
+  python3 -m venv "${OTHER}"
+  : >"${LOG}"
+  if ! timeout 15 env PY_INDEXER_REEXEC_TAG=other \
+      "${OTHER}/bin/python" "${TOOL}/bin/py-indexer" validate-config >/dev/null; then
+    bad "unrelated venv → tool venv re-exec timed out or failed"
+  else
+    other_hits="$(grep -c 'reexec-hit other' "${LOG}" || true)"
+    if [[ "${other_hits}" -eq 1 ]]; then
+      ok "unrelated venv re-execs into tool venv"
+    else
+      bad "unrelated venv blocked tool venv switch (hits=${other_hits})"
+    fi
+  fi
+else
+  bad "missing tool venv for prefix re-exec checks"
+fi
+
 echo
 echo "tools-cli: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]

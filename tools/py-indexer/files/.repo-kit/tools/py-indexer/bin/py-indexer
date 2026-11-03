@@ -21,12 +21,19 @@ def _tool_root() -> Path:
 
 
 def _prefer_venv(root: Path) -> None:
-    """Re-exec under tool .venv when available and not already in use."""
-    venv_python = root / ".venv" / "bin" / "python"
+    """Re-exec under tool .venv when available and not already in use.
+
+    Compare ``sys.prefix`` to the tool-local virtualenv directory. Comparing
+    resolved ``sys.executable`` paths is wrong: venv binaries are often
+    symlinks to the system interpreter, so both resolve equal even when the
+    process is *not* running inside that venv.
+    """
+    venv_dir = root / ".venv"
+    venv_python = venv_dir / "bin" / "python"
     if not venv_python.is_file():
         return
     try:
-        if Path(sys.executable).resolve() == venv_python.resolve():
+        if Path(sys.prefix).resolve() == venv_dir.resolve():
             return
     except OSError:
         return
