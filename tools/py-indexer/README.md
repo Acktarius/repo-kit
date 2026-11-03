@@ -4,6 +4,16 @@ Private, local, cross-repository **lexical** code retrieval for Cursor.
 
 Installed into a target as `.repo-kit/tools/py-indexer/` (copy-based; no symlink to this kit).
 
+## Prerequisites
+
+Before install, the target machine needs **Python 3** with the **venv** module (`ensurepip`). On Debian/Ubuntu:
+
+```bash
+sudo apt install python3 python3-venv
+```
+
+Without `python3-venv`, the installer cannot create `.venv/` (`python3 -m venv` fails).
+
 ## Install
 
 ```bash

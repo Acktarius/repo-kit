@@ -43,19 +43,22 @@ Indexing and CLI search work **without** importing `mcp`. Only `serve` needs the
 
 ## Configure repositories
 
-`repos.json` schema (`schema_version: 1`):
+`repos.json` schema (`schema_version: 1`). Seeded once from `repos.example.json` (which also carries a `_doc` field guide; ignored by the loader).
 
 | Field | Meaning |
 |-------|---------|
-| `active_repo` | Working repository id |
+| `active_repo` | Default repository id for search when `--repo` is omitted |
 | `repositories[].id` | Stable id (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`) |
-| `repositories[].root` | Absolute path, or path relative to the **target repo root** (not cwd) |
-| `repositories[].role` | `working` or `reference` |
-| `repositories[].related` | Explicit related repository ids (search scope) |
-| `include` / `exclude` | Optional globs (in addition to built-in rules) |
-| `defaults` | Budgets and chunk sizes |
+| `repositories[].root` | Absolute path, **or** path relative to the **target project root** (the checkout that contains `.repo-kit/`), **not** the shell cwd. `.` = that project |
+| `repositories[].role` | `working` (primary editable checkout) or `reference` (sibling/context; treat as read-only). **Advisory for agents** — does not change search math |
+| `repositories[].related` | Other `id`s pulled in when search `--scope` is `related` or `active+related` (default). This is what drives multi-repo search, not `role` |
+| `repositories[].include` | Optional **repo-root-relative** gitignore-ish globs (posix paths under that repo’s `root`). Empty `[]` → built-in language/file defaults (`*.py`, `*.ts`, …). **Non-empty replaces those defaults entirely** |
+| `repositories[].exclude` | Optional **repo-root-relative** gitignore-ish globs. **Additive** on top of hard-coded rules, `excludes.txt`, `.py-indexer-ignore`, and gitignores. Leading `/` anchors to that repo’s root; trailing `/` means a directory |
+| `defaults` | Response budgets (`max_results`, `max_snippet_chars`, `max_total_chars`, `max_file_bytes`) and chunking (`chunk_lines`, `chunk_overlap_lines`) |
 
-Remote URLs are rejected. Relative roots resolve against the target repository root.
+Remote URLs are rejected. Relative `root` values resolve against the target project root.
+
+`include` / `exclude` are **not** filesystem paths relative to cwd or the tool install — they are globs matched against each file’s path relative to that repository’s `root` (e.g. `src/app.ts`, `/docs/`, `vendor/`).
 
 Example (Conceal-style **documentation only** — not seeded as defaults):
 
@@ -78,19 +81,21 @@ Example (Conceal-style **documentation only** — not seeded as defaults):
       "role": "working",
       "related": ["conceal-core", "guardian", "explorer", "guardian-pool"],
       "include": [],
-      "exclude": []
+      "exclude": ["*.generated.ts"]
     },
     {
       "id": "conceal-core",
       "root": "../conceal-core",
       "role": "reference",
       "related": [],
-      "include": [],
-      "exclude": []
+      "include": ["src/**/*.ts", "packages/*/src/**/*.ts"],
+      "exclude": ["/docs/", "vendor/"]
     }
   ]
 }
 ```
+
+In that example: empty `include` on the working repo keeps default file types; `conceal-core` indexes only matching `src` trees and still drops `/docs/` and `vendor/` plus the shared exclusion layers.
 
 Validate:
 
@@ -116,12 +121,12 @@ Never silently opens incompatible or corrupt indexes.
 
 ### File selection / exclusions
 
-Indexing and `read_code` apply **all** of these layers (any match excludes):
+A file is indexed only if it matches `include` (default language/file globs when `include` is `[]`) **and** is not excluded by **any** of these layers:
 
 1. **Hard-coded** rules (`.git/`, `node_modules/`, `build/`, `dist/`, `.venv/`, binaries, common secret filenames, …)
 2. **`excludes.txt`** in the tool install (shipped defaults for `.env`, `/build`, credentials, build outputs). Edit freely; reinstall preserves it.
 3. Optional **`<repo>/.py-indexer-ignore`** (same gitignore-style syntax) for per-checkout overlays
-4. **`repos.json` `exclude`** globs
+4. **`repos.json` `exclude`** globs (repo-root-relative; see above)
 5. **Git ignore rules** when the checkout is a Git work tree: `git ls-files -co --exclude-standard` so anything gitignored is skipped. If Git is unavailable, nested `.gitignore` files are parsed as a fallback.
 
 Selection does **not** depend solely on `.gitignore` / `.cursorignore`. This is **not** guaranteed secret detection.

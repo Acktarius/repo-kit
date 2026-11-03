@@ -1,4 +1,15 @@
 {
+  "_doc": {
+    "root": "Absolute path, or path relative to the *target project root* (the checkout that contains .repo-kit/), not the shell cwd. '.' = that project.",
+    "role": "'working' = primary checkout you edit; 'reference' = sibling/context (treat as read-only). Role is advisory for agents; search scope uses active_repo + related + CLI --scope/--repo.",
+    "related": "Other repositories[].id values to include when search scope is 'related' or 'active+related' (default).",
+    "include": "Optional gitignore-ish globs matched against paths *relative to this repository's root* (posix). Empty [] = built-in language/file defaults (*.py, *.ts, …). Non-empty replaces those defaults entirely.",
+    "exclude": "Optional gitignore-ish globs, also repo-root-relative. Additive on top of hard-coded rules, excludes.txt, .py-indexer-ignore, and gitignores. Leading '/' anchors to repo root; trailing '/' means a directory.",
+    "examples": {
+      "include": ["src/**/*.ts", "packages/*/src/**/*.ts"],
+      "exclude": ["/docs/", "*.generated.ts", "vendor/"]
+    }
+  },
   "schema_version": 1,
   "active_repo": "@TARGET_REPO_ID@",
   "defaults": {
