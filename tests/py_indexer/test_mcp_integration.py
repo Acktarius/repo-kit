@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""MCP integration tests (requires mcp==1.30.x in the active interpreter)."""
+"""Legacy lightweight MCP smoke (optional).
+
+Prefer ``test_mcp_generated_config.py``, which launches the installer-generated
+``.cursor/mcp.json`` command/args. This module stays as a narrow SDK smoke and
+is skipped unless ``PY_INDEXER_MCP_PYTHON`` selects the current interpreter.
+It never auto-downloads dependencies.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import shutil
@@ -16,14 +21,46 @@ ROOT = Path(__file__).resolve().parents[2]
 PKG_PARENT = ROOT / "tools" / "py-indexer" / "files" / ".repo-kit" / "tools" / "py-indexer"
 sys.path.insert(0, str(PKG_PARENT))
 
-try:
-    import mcp  # noqa: F401
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
+MCP_PYTHON = os.environ.get("PY_INDEXER_MCP_PYTHON", "").strip()
 
-    HAS_MCP = True
-except Exception:  # noqa: BLE001
-    HAS_MCP = False
+
+def _runner_is_supplied_mcp_python() -> bool:
+    if not MCP_PYTHON:
+        return False
+    try:
+        import subprocess
+
+        probe = subprocess.run(
+            [MCP_PYTHON, "-c", "import sys; print(sys.prefix)"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if probe.returncode != 0:
+            return False
+        return Path(probe.stdout.strip()).resolve() == Path(sys.prefix).resolve()
+    except OSError:
+        return False
+
+
+def _has_mcp() -> bool:
+    try:
+        import mcp  # noqa: F401
+        from mcp import ClientSession, StdioServerParameters  # noqa: F401
+        from mcp.client.stdio import stdio_client  # noqa: F401
+
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_SKIP = None
+if not MCP_PYTHON:
+    _SKIP = "PY_INDEXER_MCP_PYTHON not set (offline default)"
+elif not _runner_is_supplied_mcp_python():
+    _SKIP = "runner is not PY_INDEXER_MCP_PYTHON"
+elif not _has_mcp():
+    _SKIP = "mcp package not importable in PY_INDEXER_MCP_PYTHON"
 
 from py_indexer.config import load_config  # noqa: E402
 from py_indexer.index_cmd import index_repository  # noqa: E402
@@ -35,9 +72,18 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-@unittest.skipUnless(HAS_MCP, "mcp package not installed; skip MCP integration")
+@unittest.skipIf(_SKIP is not None, _SKIP or "skip")
 class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    """SDK smoke using the installed bin launcher path (not python -m)."""
+
     async def asyncSetUp(self) -> None:
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+
+        self.ClientSession = ClientSession
+        self.StdioServerParameters = StdioServerParameters
+        self.stdio_client = stdio_client
+
         self.tmp = Path(tempfile.mkdtemp())
         self.target = self.tmp / "app"
         self.tool = self.target / ".repo-kit" / "tools" / "py-indexer"
@@ -78,35 +124,32 @@ class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             set(list_tool_names_for_tests()),
             {"search_code", "read_code", "index_status"},
         )
-        server = StdioServerParameters(
+        launcher = self.tool / "bin" / "py-indexer"
+        server = self.StdioServerParameters(
             command=sys.executable,
-            args=[
-                "-m",
-                "py_indexer",
-                "--config",
-                str(self.tool / "repos.json"),
-                "serve",
-            ],
-            env={
-                **os.environ,
-                "PYTHONPATH": str(self.tool) + os.pathsep + os.environ.get("PYTHONPATH", ""),
-            },
+            args=[str(launcher), "serve"],
+            env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
         )
-        async with stdio_client(server) as (read, write):
-            async with ClientSession(read, write) as session:
+        async with self.stdio_client(server) as (read, write):
+            async with self.ClientSession(read, write) as session:
                 await session.initialize()
                 tools = await session.list_tools()
                 names = {t.name for t in tools.tools}
                 self.assertEqual(names, {"search_code", "read_code", "index_status"})
 
                 status = await session.call_tool("index_status", {})
+                self.assertFalse(getattr(status, "isError", False))
                 status_text = status.content[0].text
                 self.assertIn("app", status_text)
+                status_payload = json.loads(status_text)
+                self.assertNotIn("error", status_payload)
 
                 found = await session.call_tool(
                     "search_code", {"query": "mcpProbeToken", "scope": "active"}
                 )
+                self.assertFalse(getattr(found, "isError", False))
                 payload = json.loads(found.content[0].text)
+                self.assertNotIn("error", payload)
                 self.assertGreaterEqual(len(payload.get("hits", [])), 1)
 
                 read = await session.call_tool(
@@ -118,7 +161,9 @@ class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "end_line": 2,
                     },
                 )
+                self.assertFalse(getattr(read, "isError", False))
                 read_payload = json.loads(read.content[0].text)
+                self.assertNotIn("error", read_payload)
                 self.assertIn("mcpProbeToken", read_payload.get("text", ""))
 
 

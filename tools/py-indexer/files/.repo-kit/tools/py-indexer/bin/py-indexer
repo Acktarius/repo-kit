@@ -7,6 +7,10 @@ Runnable both ways Cursor/MCP needs:
 
 Locates the sibling ``py_indexer`` package from this file's path (not cwd)
 and prefers the tool-local ``.venv`` interpreter when present.
+
+Absent ``.venv``: fall back to the current interpreter (stdlib CLI still works).
+Broken ``.venv`` (missing / dangling / non-executable interpreter, or exec
+failure): exit nonzero with a stderr diagnostic — never silent fallback.
 """
 
 from __future__ import annotations
@@ -20,6 +24,16 @@ def _tool_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _fail(message: str, code: int = 1) -> None:
+    """Print a concise diagnostic on stderr and exit (keep stdout MCP-clean)."""
+    print(f"error: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def _venv_recreate_hint(venv_dir: Path) -> str:
+    return f"Recreate with: python3 -m venv {venv_dir}"
+
+
 def _prefer_venv(root: Path) -> None:
     """Re-exec under tool .venv when available and not already in use.
 
@@ -29,18 +43,49 @@ def _prefer_venv(root: Path) -> None:
     process is *not* running inside that venv.
     """
     venv_dir = root / ".venv"
-    venv_python = venv_dir / "bin" / "python"
-    if not venv_python.is_file():
+    if not venv_dir.exists():
+        # Intentionally absent → keep current interpreter (CLI without mcp).
         return
+
+    if not venv_dir.is_dir():
+        _fail(
+            f"tool virtualenv path exists but is not a directory: {venv_dir}\n"
+            f"{_venv_recreate_hint(venv_dir)}"
+        )
+
     try:
         if Path(sys.prefix).resolve() == venv_dir.resolve():
             return
     except OSError:
-        return
-    os.execv(
-        str(venv_python),
-        [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]],
-    )
+        # If prefix cannot be resolved, still attempt a careful exec below.
+        pass
+
+    venv_python = venv_dir / "bin" / "python"
+
+    if venv_python.is_symlink() and not venv_python.exists():
+        _fail(
+            f"tool virtualenv interpreter is a dangling symlink: {venv_python}\n"
+            f"{_venv_recreate_hint(venv_dir)}"
+        )
+    if not venv_python.exists():
+        _fail(
+            f"tool virtualenv exists but interpreter is missing: {venv_python}\n"
+            f"{_venv_recreate_hint(venv_dir)}"
+        )
+    if not os.access(venv_python, os.X_OK):
+        _fail(
+            f"tool virtualenv interpreter is not executable: {venv_python}\n"
+            f"Fix mode bits or {_venv_recreate_hint(venv_dir).lower()}"
+        )
+
+    argv = [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]]
+    try:
+        os.execv(argv[0], argv)
+    except OSError as exc:
+        _fail(
+            f"failed to execute tool virtualenv interpreter {venv_python}: {exc}\n"
+            f"{_venv_recreate_hint(venv_dir)}"
+        )
 
 
 def main() -> int:

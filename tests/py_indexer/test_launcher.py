@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Unit tests for the py-indexer bin launcher (venv detection)."""
+"""Unit tests for the py-indexer bin launcher (venv detection + broken venv)."""
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
+import os
+import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -76,10 +80,12 @@ class PreferVenvTests(unittest.TestCase):
             mock.patch.object(self.mod.sys, "prefix", "/usr"),
             mock.patch.object(self.mod.sys, "argv", ["py-indexer", "validate-config"]),
             mock.patch.object(self.mod.os, "execv", side_effect=capture),
-            self.assertRaises(SystemExit),
+            self.assertRaises(SystemExit) as ctx,
         ):
             self.mod._prefer_venv(self.tmp)
 
+        # capture raises SystemExit(0); real execv never returns.
+        self.assertEqual(ctx.exception.code, 0)
         self.assertEqual(len(calls), 1)
         path, args = calls[0]
         self.assertEqual(path, str(self.venv_python))
@@ -105,12 +111,156 @@ class PreferVenvTests(unittest.TestCase):
 
         self.assertEqual(calls, [str(self.venv_python)])
 
-    def test_noop_when_venv_missing(self) -> None:
+    def test_noop_when_venv_absent(self) -> None:
         bare = self.tmp / "bare"
         bare.mkdir()
         with mock.patch.object(self.mod.os, "execv") as execv:
             self.mod._prefer_venv(bare)
         execv.assert_not_called()
+
+    def test_missing_interpreter_fails(self) -> None:
+        self.venv_python.unlink()
+        with (
+            mock.patch.object(self.mod.sys, "prefix", "/usr"),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            self.mod._prefer_venv(self.tmp)
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_dangling_symlink_fails(self) -> None:
+        self.venv_python.unlink()
+        self.venv_python.symlink_to(self.tmp / "missing-python-binary")
+        with (
+            mock.patch.object(self.mod.sys, "prefix", "/usr"),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            self.mod._prefer_venv(self.tmp)
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_non_executable_fails(self) -> None:
+        self.venv_python.chmod(0o644)
+        with (
+            mock.patch.object(self.mod.sys, "prefix", "/usr"),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            self.mod._prefer_venv(self.tmp)
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_execv_failure_fails_cleanly(self) -> None:
+        with (
+            mock.patch.object(self.mod.sys, "prefix", "/usr"),
+            mock.patch.object(
+                self.mod.os,
+                "execv",
+                side_effect=OSError(8, "Exec format error"),
+            ),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            self.mod._prefer_venv(self.tmp)
+        self.assertEqual(ctx.exception.code, 1)
+
+
+class LauncherSubprocessTests(unittest.TestCase):
+    """Subprocess checks including paths/args with spaces."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="py-indexer launch "))
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_broken_venv_cases_and_spaces(self) -> None:
+        import json
+        import shutil
+
+        other_cwd = self.tmp / "cwd with spaces"
+        other_cwd.mkdir(parents=True)
+        target = self.tmp / "project with spaces" / "app"
+        tool = target / ".repo-kit" / "tools" / "py-indexer"
+        shutil.copytree(
+            ROOT
+            / "tools"
+            / "py-indexer"
+            / "files"
+            / ".repo-kit"
+            / "tools"
+            / "py-indexer",
+            tool,
+        )
+        (tool / "index").mkdir(parents=True, exist_ok=True)
+        cfg = {
+            "schema_version": 1,
+            "active_repo": "app",
+            "defaults": {
+                "max_results": 5,
+                "max_snippet_chars": 100,
+                "max_total_chars": 1000,
+                "chunk_lines": 40,
+                "chunk_overlap_lines": 5,
+                "max_file_bytes": 10000,
+            },
+            "repositories": [
+                {
+                    "id": "app",
+                    "root": ".",
+                    "role": "working",
+                    "related": [],
+                    "include": [],
+                    "exclude": [],
+                }
+            ],
+        }
+        (tool / "repos.json").write_text(json.dumps(cfg), encoding="utf-8")
+        launcher = tool / "bin" / "py-indexer"
+        launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+        cfg_path = tool / "repos.json"
+
+        def run_case() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(launcher),
+                    "--config",
+                    str(cfg_path),
+                    "validate-config",
+                ],
+                cwd=str(other_cwd),
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+        # Absent .venv → fallback works.
+        proc = run_case()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        venv_bin = tool / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+
+        # Missing interpreter.
+        proc = run_case()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("missing", proc.stderr.lower())
+        self.assertEqual(proc.stdout, "")
+
+        # Dangling symlink.
+        py = venv_bin / "python"
+        py.symlink_to(tool / "no such python")
+        proc = run_case()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("dangling", proc.stderr.lower())
+        self.assertEqual(proc.stdout, "")
+
+        # Non-executable regular file.
+        py.unlink()
+        py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        py.chmod(0o644)
+        proc = run_case()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("not executable", proc.stderr.lower())
+        self.assertEqual(proc.stdout, "")
 
 
 if __name__ == "__main__":

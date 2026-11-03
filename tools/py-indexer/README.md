@@ -27,3 +27,19 @@ Does **not** require the `python` language module.
 5. Enable the `py-indexer` server in Cursor MCP (`.cursor/mcp.json` is merge-updated when safe).
 
 See the installed `README.md` under `.repo-kit/tools/py-indexer/` for full docs.
+
+## Tests
+
+```bash
+# Offline default (stdlib + installer; skips MCP e2e)
+bash tests/py-indexer.sh
+
+# Supply an interpreter that already has mcp==1.30.x (no download)
+PY_INDEXER_MCP_PYTHON=/path/to/python-with-mcp bash tests/py-indexer.sh
+
+# Require MCP coverage
+PY_INDEXER_MCP_STRICT=1 PY_INDEXER_MCP_PYTHON=/path/to/python-with-mcp bash tests/py-indexer.sh
+
+# Explicit networked bootstrap only when you opt in
+PY_INDEXER_MCP_BOOTSTRAP=1 bash tests/py-indexer.sh
+```

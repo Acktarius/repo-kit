@@ -59,13 +59,19 @@ else
   bad "unknown tool not rejected: rc=${rc} err=${err}"
 fi
 
-# --- tool-only install (with assume-yes for deps) ---
+# --- tool-only install (offline: skip dependency provisioning explicitly) ---
 TARGET="${TMP}/project with spaces/app"
 mkdir -p "${TARGET}"
 git -C "${TARGET}" init -q
-export REPO_KIT_TOOL_ASSUME_YES=1
+export REPO_KIT_TOOL_SKIP_DEPS=1
+unset REPO_KIT_TOOL_ASSUME_YES || true
 init_out="$("${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer)"
 TOOL="${TARGET}/.repo-kit/tools/py-indexer"
+if echo "${init_out}" | grep -Fq 'REPO_KIT_TOOL_SKIP_DEPS=1'; then
+  ok "installer skipped deps via REPO_KIT_TOOL_SKIP_DEPS"
+else
+  bad "installer did not report REPO_KIT_TOOL_SKIP_DEPS skip"
+fi
 
 for rel in \
   bin/py-indexer \
@@ -199,7 +205,7 @@ BAD="${TMP}/badmcp"
 mkdir -p "${BAD}/.cursor"
 printf 'not-json{' >"${BAD}/.cursor/mcp.json"
 set +e
-bad_out="$(REPO_KIT_TOOL_ASSUME_YES=1 "${ROOT}/scripts/init.sh" "${BAD}" --tool py-indexer 2>&1)"
+bad_out="$(REPO_KIT_TOOL_SKIP_DEPS=1 "${ROOT}/scripts/init.sh" "${BAD}" --tool py-indexer 2>&1)"
 bad_rc=$?
 set -e
 if [[ "${bad_rc}" -eq 0 ]] && [[ "$(cat "${BAD}/.cursor/mcp.json")" == 'not-json{' ]] \
@@ -212,7 +218,7 @@ fi
 # --- combine with module ---
 COMBO="${TMP}/combo"
 mkdir -p "${COMBO}"
-REPO_KIT_TOOL_ASSUME_YES=1 "${ROOT}/scripts/init.sh" "${COMBO}" --base --tool py-indexer >/dev/null
+REPO_KIT_TOOL_SKIP_DEPS=1 "${ROOT}/scripts/init.sh" "${COMBO}" --base --tool py-indexer >/dev/null
 if [[ -f "${COMBO}/.cursor/rules/plan-mode-safety.mdc" && -f "${COMBO}/.repo-kit/tools/py-indexer/bin/py-indexer" ]]; then
   ok "module + tool combination works"
 else
@@ -222,7 +228,7 @@ fi
 # --- sync-cursor installs tool fully ---
 SYNC="${TMP}/sync only"
 mkdir -p "${SYNC}"
-REPO_KIT_TOOL_ASSUME_YES=1 "${ROOT}/scripts/sync-cursor.sh" "${SYNC}" --tool py-indexer >/dev/null
+REPO_KIT_TOOL_SKIP_DEPS=1 "${ROOT}/scripts/sync-cursor.sh" "${SYNC}" --tool py-indexer >/dev/null
 if [[ -f "${SYNC}/.repo-kit/tools/py-indexer/bin/py-indexer" && -f "${SYNC}/.cursor/rules/py-indexer.mdc" ]]; then
   ok "sync-cursor --tool installs fully"
 else
@@ -309,6 +315,57 @@ WRAP
   fi
 else
   bad "missing tool venv for prefix re-exec checks"
+fi
+
+# --- broken tool-local virtualenv: must fail clearly (no silent fallback) ---
+BRK="${TMP}/broken venv project/app"
+mkdir -p "${BRK}"
+git -C "${BRK}" init -q
+REPO_KIT_TOOL_SKIP_DEPS=1 "${ROOT}/scripts/init.sh" "${BRK}" --tool py-indexer >/dev/null
+BRK_TOOL="${BRK}/.repo-kit/tools/py-indexer"
+BRK_BIN="${BRK_TOOL}/bin/py-indexer"
+BRK_VENV_BIN="${BRK_TOOL}/.venv/bin"
+# Absent .venv → stdlib CLI fallback still works.
+rm -rf "${BRK_TOOL}/.venv"
+if (cd "${TMP}" && "${BRK_BIN}" validate-config >/dev/null); then
+  ok "absent .venv falls back for validate-config"
+else
+  bad "absent .venv should allow stdlib CLI fallback"
+fi
+
+mkdir -p "${BRK_VENV_BIN}"
+set +e
+out="$(cd "${TMP}" && "${BRK_BIN}" validate-config 2>&1)"
+rc=$?
+set -e
+if [[ "${rc}" -ne 0 ]] && echo "${out}" | grep -qi 'missing'; then
+  ok "missing interpreter in .venv fails clearly"
+else
+  bad "missing interpreter did not fail clearly rc=${rc} out=${out}"
+fi
+
+ln -sfn "${BRK_TOOL}/no-such-python" "${BRK_VENV_BIN}/python"
+set +e
+out="$(cd "${TMP}" && "${BRK_BIN}" validate-config 2>&1)"
+rc=$?
+set -e
+if [[ "${rc}" -ne 0 ]] && echo "${out}" | grep -qi 'dangling'; then
+  ok "dangling interpreter symlink fails clearly"
+else
+  bad "dangling symlink did not fail clearly rc=${rc} out=${out}"
+fi
+
+rm -f "${BRK_VENV_BIN}/python"
+printf '#!/bin/sh\nexit 0\n' >"${BRK_VENV_BIN}/python"
+chmod 644 "${BRK_VENV_BIN}/python"
+set +e
+out="$(cd "${TMP}" && "${BRK_BIN}" validate-config 2>&1)"
+rc=$?
+set -e
+if [[ "${rc}" -ne 0 ]] && echo "${out}" | grep -qi 'not executable'; then
+  ok "non-executable interpreter fails clearly"
+else
+  bad "non-executable interpreter did not fail clearly rc=${rc} out=${out}"
 fi
 
 echo
