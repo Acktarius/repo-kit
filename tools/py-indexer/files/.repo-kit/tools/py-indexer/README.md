@@ -10,7 +10,7 @@ Local indexing does **not** make Cursor model inference local: returned snippets
 
 ```text
 .repo-kit/tools/py-indexer/
-  bin/py-indexer          # entry point (uses .venv when present)
+  bin/py-indexer          # Python entry point (re-execs .venv when present)
   py_indexer/             # implementation package
   excludes.txt            # default secret/build exclusion globs (preserved on reinstall)
   repos.example.json      # portable example (safe to commit)
@@ -169,7 +169,7 @@ Example shape (`mcp.example.json`):
 }
 ```
 
-`${workspaceFolder}` keeps launch working from arbitrary CWDs and with spaces in paths. The venv interpreter is used explicitly.
+`${workspaceFolder}` keeps launch working from arbitrary CWDs and with spaces in paths. Cursor invokes the **venv Python** with `bin/py-indexer` as a script argument (`serve`), so the launcher must be a real Python file (not a shell wrapper). Direct `./bin/py-indexer …` also works: the launcher re-execs into `.venv` when present and puts the tool root on `sys.path` from `__file__` (not cwd).
 
 Tools exposed (read-only): `search_code`, `read_code`, `index_status`. Index refresh remains CLI-only.
 
@@ -188,7 +188,7 @@ Tools exposed (read-only): `search_code`, `read_code`, `index_status`. Index ref
 | `venv` / ensurepip missing | Install `python3-venv` |
 | FTS5 unavailable | Use a Python build with SQLite FTS5 |
 | `serve` ImportError for mcp | Install requirements (or offline wheels) into `.venv` |
-| MCP won’t start | Confirm `.venv/bin/python` and `bin/py-indexer` paths; validate `.cursor/mcp.json` |
+| MCP won’t start | Confirm `.venv/bin/python` can run `bin/py-indexer serve` (Python launcher, not Bash); validate `.cursor/mcp.json` |
 | Stale results | Working tree can diverge from index; re-run `index` and prefer `read_code` |
 | Strange queries | Inputs are sanitized into quoted FTS tokens; operators are stripped |
 

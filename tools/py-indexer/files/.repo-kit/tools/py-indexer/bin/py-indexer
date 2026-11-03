@@ -1,12 +1,52 @@
-#!/usr/bin/env bash
-# Project-local entry point. Prefers the tool venv interpreter.
-set -euo pipefail
+#!/usr/bin/env python3
+"""Project-local py-indexer entry point.
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+Runnable both ways Cursor/MCP needs:
+  - directly:  ./bin/py-indexer …
+  - via venv:  .venv/bin/python bin/py-indexer …
 
-if [[ -x "${ROOT}/.venv/bin/python" ]]; then
-  exec "${ROOT}/.venv/bin/python" -m py_indexer "$@"
-fi
+Locates the sibling ``py_indexer`` package from this file's path (not cwd)
+and prefers the tool-local ``.venv`` interpreter when present.
+"""
 
-exec python3 -m py_indexer "$@"
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+
+def _tool_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _prefer_venv(root: Path) -> None:
+    """Re-exec under tool .venv when available and not already in use."""
+    venv_python = root / ".venv" / "bin" / "python"
+    if not venv_python.is_file():
+        return
+    try:
+        if Path(sys.executable).resolve() == venv_python.resolve():
+            return
+    except OSError:
+        return
+    os.execv(
+        str(venv_python),
+        [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]],
+    )
+
+
+def main() -> int:
+    root = _tool_root()
+    _prefer_venv(root)
+    # Make the copied package importable without an activated env or cwd.
+    root_s = str(root)
+    if root_s not in sys.path:
+        sys.path.insert(0, root_s)
+    from py_indexer.cli import main as cli_main
+
+    return cli_main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

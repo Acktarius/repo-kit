@@ -107,6 +107,29 @@ else
   bad "mcp.json missing py-indexer"
 fi
 
+# Contract: Cursor runs .venv/bin/python with bin/py-indexer as a *Python* script + serve.
+python3 - "${TARGET}/.cursor/mcp.json" <<'PY' && ok "mcp.json uses venv python + bin/py-indexer serve" || bad "mcp.json launch contract wrong"
+import json, pathlib, sys
+doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+entry = doc["mcpServers"]["py-indexer"]
+cmd = entry.get("command", "")
+args = entry.get("args") or []
+assert cmd.endswith("/.repo-kit/tools/py-indexer/.venv/bin/python"), cmd
+assert len(args) == 2 and args[1] == "serve", args
+assert args[0].endswith("/.repo-kit/tools/py-indexer/bin/py-indexer"), args
+print("ok")
+PY
+
+if head -n 1 "${TOOL}/bin/py-indexer" | grep -Eq 'python(3)?[[:space:]]*$'; then
+  ok "bin/py-indexer shebang is Python"
+else
+  bad "bin/py-indexer shebang is not Python"
+fi
+
+python3 -m py_compile "${TOOL}/bin/py-indexer" \
+  && ok "bin/py-indexer compiles as Python" \
+  || bad "bin/py-indexer is not valid Python"
+
 if grep -Fq '.repo-kit/tools/py-indexer/index/' "${TARGET}/.gitignore" \
   && grep -Fq '.repo-kit/tools/py-indexer/repos.json' "${TARGET}/.gitignore"; then
   ok "gitignore entries present"
@@ -211,6 +234,18 @@ fi
   cd "${TMP}"
   "${TOOL}/bin/py-indexer" validate-config >/dev/null
 ) && ok "validate-config works from other cwd with spaces in path" || bad "validate-config cwd/spaces failed"
+
+# --- MCP startup contract: venv python must execute bin/py-indexer (regression for Bash launcher) ---
+if [[ ! -x "${TOOL}/.venv/bin/python" ]]; then
+  bad "expected installer to create .venv/bin/python"
+else
+  (
+    cd "${TMP}"
+    # Same argv shape as .cursor/mcp.json (minus serve; validate-config needs no mcp SDK).
+    "${TOOL}/.venv/bin/python" "${TOOL}/bin/py-indexer" validate-config >/dev/null
+  ) && ok "venv python executes bin/py-indexer (MCP argv shape)" \
+    || bad "venv python cannot execute bin/py-indexer — MCP would fail to start"
+fi
 
 echo
 echo "tools-cli: ${pass} passed, ${fail} failed"
