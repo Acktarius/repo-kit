@@ -1285,7 +1285,13 @@ PY
   [[ -x "${py}" ]] || die "venv python missing at ${py}"
 
   # Indexing/search work without mcp; only install requirements when consented.
+  # REPO_KIT_TOOL_SKIP_DEPS=1 skips provisioning without changing consent defaults
+  # (tests/CI offline). REPO_KIT_TOOL_ASSUME_YES=1 still means "yes" when asked.
   if [[ -f "${req}" ]]; then
+    if [[ "${REPO_KIT_TOOL_SKIP_DEPS:-0}" == "1" ]]; then
+      echo "  skip      dependency install (REPO_KIT_TOOL_SKIP_DEPS=1)"
+      return 0
+    fi
     if ! prompt_yn_interactive "Install py-indexer Python deps into .venv from requirements.txt (network)?"; then
       warn "skipped dependency install; indexing/search work without mcp; run: ${py} -m pip install -r ${req}"
       return 0
