@@ -1055,21 +1055,307 @@ prompt_yn_interactive() {
   esac
 }
 
-# Seed repos.json from example when missing; never overwrite an existing file.
+# --- py-indexer (user-wide application + per-project config) -----------------
+
+# Kit-required compat_version (must match tools/py-indexer/manifest.sh).
+_PY_INDEXER_REQUIRED_COMPAT="0.2.1"
+
+_py_indexer_data_home() {
+  if [[ -n "${XDG_DATA_HOME:-}" ]]; then
+    printf '%s\n' "${XDG_DATA_HOME}/py-indexer"
+  else
+    printf '%s\n' "${HOME}/.local/share/py-indexer"
+  fi
+}
+
+_py_indexer_bin_dir() {
+  if [[ -n "${XDG_BIN_HOME:-}" ]]; then
+    printf '%s\n' "${XDG_BIN_HOME}"
+  else
+    printf '%s\n' "${HOME}/.local/bin"
+  fi
+}
+
+_py_indexer_venv_dir() {
+  printf '%s\n' "$(_py_indexer_data_home)/venv"
+}
+
+_py_indexer_exe_path() {
+  printf '%s\n' "$(_py_indexer_bin_dir)/py-indexer"
+}
+
+# Print identity JSON from an executable; nonempty stdout on success.
+_py_indexer_probe() {
+  local exe="$1"
+  [[ -x "${exe}" ]] || return 1
+  "${exe}" --app-id 2>/dev/null
+}
+
+_py_indexer_compat_ok() {
+  local json="$1"
+  local required="${2:-${_PY_INDEXER_REQUIRED_COMPAT}}"
+  python3 - "${json}" "${required}" <<'PY'
+import json, sys
+raw, required = sys.argv[1], sys.argv[2]
+try:
+    doc = json.loads(raw)
+except Exception:
+    sys.exit(1)
+if doc.get("name") != "py-indexer":
+    sys.exit(1)
+if not doc.get("fts5"):
+    sys.exit(1)
+ver = str(doc.get("compat_version") or doc.get("version") or "")
+
+def parts(v):
+    out = []
+    for p in v.split("."):
+        try:
+            out.append(int(p))
+        except ValueError:
+            out.append(0)
+    return out
+
+a, b = parts(required), parts(ver)
+n = max(len(a), len(b))
+a += [0] * (n - len(a))
+b += [0] * (n - len(b))
+sys.exit(0 if b >= a else 1)
+PY
+}
+
+# Resolve a verified py-indexer executable (empty if none).
+_py_indexer_find_verified() {
+  local candidates=()
+  local exe bin_dir json
+  bin_dir="$(_py_indexer_bin_dir)"
+  candidates+=("${bin_dir}/py-indexer")
+  if cmd_exists py-indexer; then
+    candidates+=("$(command -v py-indexer)")
+  fi
+  candidates+=("$(_py_indexer_venv_dir)/bin/py-indexer")
+
+  for exe in "${candidates[@]}"; do
+    [[ -n "${exe}" && -x "${exe}" ]] || continue
+    json="$(_py_indexer_probe "${exe}" || true)"
+    [[ -n "${json}" ]] || continue
+    if _py_indexer_compat_ok "${json}" "${_PY_INDEXER_REQUIRED_COMPAT}"; then
+      printf '%s\n' "${exe}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_py_indexer_find_any_ours() {
+  local candidates=() exe json
+  candidates+=("$(_py_indexer_bin_dir)/py-indexer")
+  if cmd_exists py-indexer; then
+    candidates+=("$(command -v py-indexer)")
+  fi
+  candidates+=("$(_py_indexer_venv_dir)/bin/py-indexer")
+  for exe in "${candidates[@]}"; do
+    [[ -n "${exe}" && -x "${exe}" ]] || continue
+    json="$(_py_indexer_probe "${exe}" || true)"
+    [[ -n "${json}" ]] || continue
+    if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); raise SystemExit(0 if d.get("name")=="py-indexer" else 1)' "${json}"; then
+      printf '%s\n' "${exe}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_ensure_py_indexer_path() {
+  local bin_dir="$1"
+  local marker="# repo-kit py-indexer PATH"
+  local profile="${HOME}/.bashrc"
+
+  case ":${PATH}:" in
+    *":${bin_dir}:"*)
+      echo "  PATH ok   ${bin_dir} already on PATH"
+      return 0
+      ;;
+  esac
+
+  echo "  note      ${bin_dir} is not on PATH in this process"
+  echo "            GUI/Cursor MCP uses the absolute executable and does not need PATH."
+  if [[ ! -t 0 ]] && [[ "${REPO_KIT_TOOL_ASSUME_YES:-0}" != "1" ]]; then
+    warn "non-interactive: not modifying shell profile; add ${bin_dir} to PATH yourself"
+    echo "  activate:  export PATH=\"${bin_dir}:\$PATH\""
+    return 0
+  fi
+  if ! prompt_yn_interactive "Add ${bin_dir} to PATH in ${profile} (idempotent marker)?"; then
+    warn "skipped PATH profile update"
+    echo "  activate:  export PATH=\"${bin_dir}:\$PATH\""
+    return 0
+  fi
+
+  touch "${profile}"
+  if grep -Fqx "${marker}" "${profile}" 2>/dev/null; then
+    echo "  reuse     PATH marker already present in ${profile}"
+  else
+    {
+      echo ""
+      echo "${marker}"
+      echo "# Idempotent: only prepend if missing"
+      echo "case \":\${PATH}:\" in *\":${bin_dir}:\"*) ;; *) export PATH=\"${bin_dir}:\${PATH}\" ;; esac"
+    } >>"${profile}"
+    echo "  added     PATH block to ${profile}"
+  fi
+  echo "  activate now in this terminal:"
+  echo "    export PATH=\"${bin_dir}:\$PATH\""
+  echo "  or: source ${profile}"
+  echo "  (this script cannot update the parent shell's PATH)"
+}
+
+_install_py_indexer_shared_app() {
+  local src="${TOOLS_DIR}/py-indexer"
+  local data venv bin_dir exe py
+  local skip_deps="${REPO_KIT_TOOL_SKIP_DEPS:-0}"
+
+  data="$(_py_indexer_data_home)"
+  venv="$(_py_indexer_venv_dir)"
+  bin_dir="$(_py_indexer_bin_dir)"
+  exe="$(_py_indexer_exe_path)"
+
+  [[ -f "${src}/pyproject.toml" ]] || die "py-indexer package missing at ${src}/pyproject.toml"
+  cmd_exists python3 || die "python3 is required for py-indexer"
+
+  if ! python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then
+    die "python3 venv support missing (install python3-venv / ensurepip), then re-run"
+  fi
+
+  if ! python3 - <<'PY' >/dev/null
+import sqlite3
+c = sqlite3.connect(":memory:")
+c.execute("CREATE VIRTUAL TABLE t USING fts5(x)")
+PY
+  then
+    die "SQLite FTS5 is unavailable in this python3 build"
+  fi
+
+  mkdir -p "${data}" "${bin_dir}"
+
+  if [[ ! -x "${venv}/bin/python" ]]; then
+    echo "  creating user venv at ${venv} ..."
+    python3 -m venv "${venv}"
+  else
+    echo "  reuse     user venv ${venv}"
+  fi
+  py="${venv}/bin/python"
+  [[ -x "${py}" ]] || die "venv python missing at ${py}"
+
+  echo "  install   shared py-indexer from ${src} ..."
+  if [[ "${skip_deps}" == "1" ]]; then
+    # Fully offline: copy package into site-packages + write console script (no PyPI).
+    "${py}" - "${src}" "${venv}" <<'PY'
+import pathlib, shutil, sys, subprocess
+src, venv = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+pkg_src = src / "src" / "py_indexer"
+assert pkg_src.is_dir(), pkg_src
+site = subprocess.check_output(
+    [str(venv / "bin" / "python"), "-c", "import site; print(site.getsitepackages()[0])"],
+    text=True,
+).strip()
+dest = pathlib.Path(site) / "py_indexer"
+if dest.exists():
+    shutil.rmtree(dest)
+shutil.copytree(pkg_src, dest)
+script = venv / "bin" / "py-indexer"
+script.write_text(
+    "#!" + str(venv / "bin" / "python") + "\n"
+    "from py_indexer.cli import main\n"
+    "raise SystemExit(main())\n",
+    encoding="utf-8",
+)
+script.chmod(0o755)
+PY
+    warn "installed py-indexer offline without mcp (REPO_KIT_TOOL_SKIP_DEPS=1); MCP serve needs: ${py} -m pip install 'mcp==1.30.0'"
+  else
+    if ! prompt_yn_interactive "Install/upgrade shared py-indexer into ${venv} (may use network for mcp==1.30.0)?"; then
+      die "refused shared py-indexer install; aborting (MCP would be unusable)"
+    fi
+    "${py}" -m pip install --upgrade "${src}"
+  fi
+
+  [[ -x "${venv}/bin/py-indexer" ]] || die "console script missing after install: ${venv}/bin/py-indexer"
+
+  ln -sfn "${venv}/bin/py-indexer" "${exe}"
+  [[ -x "${exe}" ]] || die "failed to link ${exe}"
+
+  local json
+  json="$(_py_indexer_probe "${exe}" || true)"
+  [[ -n "${json}" ]] || die "installed py-indexer failed --app-id probe"
+  _py_indexer_compat_ok "${json}" "${_PY_INDEXER_REQUIRED_COMPAT}" \
+    || die "installed py-indexer failed compatibility check: ${json}"
+
+  echo "  installed ${exe}"
+  _ensure_py_indexer_path "${bin_dir}"
+  # Caller captures via global.
+  PY_INDEXER_EXE="${exe}"
+}
+
+_ensure_py_indexer_shared() {
+  local verified existing json
+  load_tool_manifest "py-indexer"
+  if [[ -n "${TOOL_PY_INDEXER_COMPAT:-}" ]]; then
+    _PY_INDEXER_REQUIRED_COMPAT="${TOOL_PY_INDEXER_COMPAT}"
+  fi
+
+  PY_INDEXER_EXE=""
+  if verified="$(_py_indexer_find_verified)"; then
+    echo "  reuse     shared py-indexer: ${verified}"
+    PY_INDEXER_EXE="${verified}"
+    return 0
+  fi
+
+  if existing="$(_py_indexer_find_any_ours)"; then
+    json="$(_py_indexer_probe "${existing}" || true)"
+    echo "  found     incompatible py-indexer at ${existing}"
+    echo "            ${json}"
+    if [[ ! -t 0 ]] && [[ "${REPO_KIT_TOOL_ASSUME_YES:-0}" != "1" ]]; then
+      die "incompatible py-indexer; re-run interactively or set REPO_KIT_TOOL_ASSUME_YES=1 to upgrade"
+    fi
+    if ! prompt_yn_interactive "Upgrade shared py-indexer to compat ${_PY_INDEXER_REQUIRED_COMPAT}?"; then
+      die "refused to upgrade incompatible py-indexer"
+    fi
+  else
+    echo "  missing   shared py-indexer application"
+    if [[ "${REPO_KIT_TOOL_SKIP_DEPS:-0}" == "1" ]]; then
+      if [[ ! -t 0 ]] && [[ "${REPO_KIT_TOOL_ASSUME_YES:-0}" != "1" ]]; then
+        die "shared py-indexer not installed; non-interactive run refused install without REPO_KIT_TOOL_ASSUME_YES=1"
+      fi
+      if [[ "${REPO_KIT_TOOL_ASSUME_YES:-0}" != "1" ]]; then
+        if ! prompt_yn_interactive "Install shared py-indexer from kit (offline --no-deps; MCP optional)?"; then
+          die "refused shared py-indexer install"
+        fi
+      fi
+    elif [[ ! -t 0 ]] && [[ "${REPO_KIT_TOOL_ASSUME_YES:-0}" != "1" ]]; then
+      die "shared py-indexer not installed; non-interactive refuse without REPO_KIT_TOOL_ASSUME_YES=1"
+    fi
+  fi
+
+  _install_py_indexer_shared_app
+  [[ -n "${PY_INDEXER_EXE}" && -x "${PY_INDEXER_EXE}" ]] \
+    || die "shared py-indexer install did not set PY_INDEXER_EXE"
+}
+
+# Seed repos.json from kit example when missing; never overwrite an existing file.
 _seed_py_indexer_repos_json() {
   local tool_root="$1"
-  local example="${tool_root}/repos.example.json"
+  local example="${TOOLS_DIR}/py-indexer/project/repos.example.json"
   local dest="${tool_root}/repos.json"
   local target_name
 
-  [[ -f "${example}" ]] || die "py-indexer missing repos.example.json"
+  [[ -f "${example}" ]] || die "py-indexer missing project/repos.example.json"
+  mkdir -p "${tool_root}"
   if [[ -e "${dest}" || -L "${dest}" ]]; then
     echo "  preserve   ${dest#"${TARGET_DIR}"/}"
     PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
     return 0
   fi
 
-  # Safe default id from basename (fallback when basename is not a valid repo id).
   target_name="$(basename "${TARGET_DIR}" | tr -c 'A-Za-z0-9._-' '_' | sed 's/^_//;s/_$//')"
   [[ -n "${target_name}" ]] || target_name="active"
   case "${target_name}" in
@@ -1084,22 +1370,14 @@ _seed_py_indexer_repos_json() {
   echo "  add        ${dest#"${TARGET_DIR}"/}"
 }
 
-# Idempotently append py-indexer ignore entries without wiping unrelated lines.
+# Idempotently ensure repos.json is gitignored.
 _ensure_py_indexer_gitignore() {
   local gitignore="${TARGET_DIR}/.gitignore"
   local marker="# repo-kit py-indexer"
   local entries=(
-    ".repo-kit/tools/py-indexer/index/"
-    ".repo-kit/tools/py-indexer/.venv/"
-    ".repo-kit/tools/py-indexer/**/__pycache__/"
-    ".repo-kit/tools/py-indexer/**/*.py[cod]"
     ".repo-kit/tools/py-indexer/repos.json"
   )
-  local entry tmp existing=0
-
-  if [[ -f "${gitignore}" ]] && grep -Fqx "${marker}" "${gitignore}" 2>/dev/null; then
-    existing=1
-  fi
+  local entry
 
   if [[ ! -f "${gitignore}" ]]; then
     {
@@ -1112,8 +1390,7 @@ _ensure_py_indexer_gitignore() {
     return 0
   fi
 
-  if [[ "${existing}" -eq 1 ]]; then
-    # Ensure each entry exists somewhere in the file (idempotent).
+  if grep -Fqx "${marker}" "${gitignore}" 2>/dev/null; then
     for entry in "${entries[@]}"; do
       if ! grep -Fqx "${entry}" "${gitignore}" 2>/dev/null; then
         printf '%s\n' "${entry}" >>"${gitignore}"
@@ -1133,40 +1410,44 @@ _ensure_py_indexer_gitignore() {
   echo "  added     .gitignore py-indexer block"
 }
 
+_copy_py_indexer_cursor_rule() {
+  local src="${TOOLS_DIR}/py-indexer/files/.cursor/rules/py-indexer.mdc"
+  local dest="${TARGET_DIR}/.cursor/rules/py-indexer.mdc"
+  [[ -f "${src}" ]] || die "py-indexer missing cursor rule at ${src}"
+  mkdir -p "$(dirname "${dest}")"
+  _copy_file "${src}" "${dest}"
+}
+
 # Merge only the py-indexer MCP server entry into .cursor/mcp.json.
-# Never overwrite a divergent existing py-indexer entry; never rewrite unrelated servers.
 _merge_py_indexer_mcp_json() {
+  local exe="$1"
   local mcp_path="${TARGET_DIR}/.cursor/mcp.json"
   local fragment_path="${TARGET_DIR}/.repo-kit/tools/py-indexer/mcp.fragment.json"
-  local example="${TARGET_DIR}/.repo-kit/tools/py-indexer/mcp.example.json"
-  local python_bin='${workspaceFolder}/.repo-kit/tools/py-indexer/.venv/bin/python'
-  local script_path='${workspaceFolder}/.repo-kit/tools/py-indexer/bin/py-indexer'
-  local desired tmp rc
+  local config_path="${TARGET_DIR}/.repo-kit/tools/py-indexer/repos.json"
+  local desired rc
 
-  [[ -f "${example}" ]] || die "py-indexer missing mcp.example.json"
+  [[ -x "${exe}" ]] || die "py-indexer executable not usable: ${exe}"
   mkdir -p "$(dirname "${mcp_path}")" "$(dirname "${fragment_path}")"
 
-  desired="$(python3 - "${python_bin}" "${script_path}" <<'PY'
+  desired="$(python3 - "${exe}" "${config_path}" <<'PY'
 import json, sys
-command, script = sys.argv[1], sys.argv[2]
+command, config = sys.argv[1], sys.argv[2]
 print(json.dumps({
     "type": "stdio",
     "command": command,
-    "args": [script, "serve"],
+    "args": ["--config", config, "serve"],
 }, indent=2, sort_keys=True))
 PY
 )"
 
-  # Write standalone fragment always (useful when merge is refused).
   python3 - "${fragment_path}" "${desired}" <<'PY'
-import json, sys
+import json, os, sys
 path, desired = sys.argv[1], json.loads(sys.argv[2])
 doc = {"mcpServers": {"py-indexer": desired}}
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as fh:
     json.dump(doc, fh, indent=2)
     fh.write("\n")
-import os
 os.replace(tmp, path)
 PY
   echo "  wrote     ${fragment_path#"${TARGET_DIR}"/}"
@@ -1187,16 +1468,30 @@ PY
   fi
 
   set +e
-  python3 - "${mcp_path}" "${desired}" <<'PY'
+  python3 - "${mcp_path}" "${desired}" "${TARGET_DIR}" <<'PY'
 import json, os, sys
 
-path, desired = sys.argv[1], json.loads(sys.argv[2])
+path, desired, target = sys.argv[1], json.loads(sys.argv[2]), sys.argv[3]
+
+def is_legacy(existing):
+    cmd = str(existing.get("command") or "").replace("${workspaceFolder}", target)
+    args = existing.get("args")
+    if not isinstance(args, list):
+        return False
+    args_n = [str(a).replace("${workspaceFolder}", target) for a in args]
+    if not cmd.endswith("/.repo-kit/tools/py-indexer/.venv/bin/python"):
+        return False
+    if len(args_n) != 2:
+        return False
+    if not args_n[0].endswith("/.repo-kit/tools/py-indexer/bin/py-indexer"):
+        return False
+    return args_n[1] == "serve"
 
 try:
     with open(path, encoding="utf-8") as fh:
         raw = fh.read()
     doc = json.loads(raw) if raw.strip() else {}
-except Exception as exc:  # noqa: BLE001 — report and leave file untouched
+except Exception as exc:  # noqa: BLE001
     print(f"UNPARSEABLE:{exc}")
     sys.exit(2)
 
@@ -1214,9 +1509,17 @@ if not isinstance(servers, dict):
 
 existing = servers.get("py-indexer")
 if existing is not None:
-    # Compare semantically (ignore key order / whitespace).
     if json.loads(json.dumps(existing, sort_keys=True)) == json.loads(json.dumps(desired, sort_keys=True)):
         print("UNCHANGED")
+        sys.exit(0)
+    if isinstance(existing, dict) and is_legacy(existing):
+        servers["py-indexer"] = desired
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+        print("MIGRATED_LEGACY")
         sys.exit(0)
     print("DIVERGENT")
     sys.exit(3)
@@ -1233,10 +1536,7 @@ PY
   set -e
 
   case "${rc}" in
-    0)
-      # UNCHANGED or MERGED printed by python
-      :
-      ;;
+    0) ;;
     2)
       warn "could not parse ${mcp_path}; left untouched"
       echo "  use fragment: ${fragment_path#"${TARGET_DIR}"/}"
@@ -1252,78 +1552,100 @@ PY
   esac
 }
 
-_setup_py_indexer_venv() {
+_py_indexer_legacy_present() {
   local tool_root="$1"
-  local venv="${tool_root}/.venv"
-  local req="${tool_root}/requirements.txt"
-  local py
+  [[ -e "${tool_root}/bin/py-indexer" ]] \
+    || [[ -d "${tool_root}/py_indexer" ]] \
+    || [[ -d "${tool_root}/.venv" ]] \
+    || [[ -d "${tool_root}/index" ]]
+}
 
-  cmd_exists python3 || die "python3 is required for py-indexer"
-
-  if ! python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then
-    die "python3 venv support missing (install python3-venv / ensurepip), then re-run"
+# Yes only when the user types yes. Install consent and REPO_KIT_TOOL_ASSUME_YES do not count.
+_prompt_yn_explicit_no() {
+  local prompt="$1"
+  local reply
+  if [[ ! -t 0 ]]; then
+    echo "  skip      ${prompt}"
+    echo "            Re-run this command in a terminal and answer y to remove them."
+    return 1
   fi
-
-  if ! python3 - <<'PY'
-import sqlite3
-c = sqlite3.connect(":memory:")
-c.execute("CREATE VIRTUAL TABLE t USING fts5(x)")
-print("ok")
-PY
-  then
-    die "SQLite FTS5 is unavailable in this python3 build"
+  if ! read -r -p "${prompt} [y/N] " reply; then
+    echo "  skip      no answer"
+    return 1
   fi
+  case "${reply}" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
-  if [[ ! -x "${venv}/bin/python" ]]; then
-    echo "  creating project-local venv at ${venv#"${TARGET_DIR}"/} ..."
-    python3 -m venv "${venv}"
+_advise_py_indexer_legacy() {
+  local tool_root="$1"
+  local cache_indexes name entry
+  local -a removals=()
+
+  if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+    cache_indexes="${XDG_CACHE_HOME}/py-indexer/indexes"
   else
-    echo "  reuse     ${venv#"${TARGET_DIR}"/}"
+    cache_indexes="${HOME}/.cache/py-indexer/indexes"
   fi
 
-  py="${venv}/bin/python"
-  [[ -x "${py}" ]] || die "venv python missing at ${py}"
+  if [[ -d "${tool_root}" ]]; then
+    for name in bin py_indexer .venv index requirements.txt mcp.example.json; do
+      if [[ -e "${tool_root}/${name}" || -L "${tool_root}/${name}" ]]; then
+        removals+=("${tool_root}/${name}")
+      fi
+    done
+  fi
+  # Old layout stored indexes in per-project directories. Current layout is flat *.sqlite3 files.
+  if [[ -d "${cache_indexes}" ]]; then
+    for entry in "${cache_indexes}"/*; do
+      [[ -d "${entry}" ]] || continue
+      removals+=("${entry}")
+    done
+  fi
 
-  # Indexing/search work without mcp; only install requirements when consented.
-  # REPO_KIT_TOOL_SKIP_DEPS=1 skips provisioning without changing consent defaults
-  # (tests/CI offline). REPO_KIT_TOOL_ASSUME_YES=1 still means "yes" when asked.
-  if [[ -f "${req}" ]]; then
-    if [[ "${REPO_KIT_TOOL_SKIP_DEPS:-0}" == "1" ]]; then
-      echo "  skip      dependency install (REPO_KIT_TOOL_SKIP_DEPS=1)"
-      return 0
-    fi
-    if ! prompt_yn_interactive "Install py-indexer Python deps into .venv from requirements.txt (network)?"; then
-      warn "skipped dependency install; indexing/search work without mcp; run: ${py} -m pip install -r ${req}"
-      return 0
-    fi
-    echo "  pip install -r requirements.txt ..."
-    "${py}" -m pip install -r "${req}"
+  if [[ ${#removals[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "  legacy    old py-indexer indexes or project-local install files:"
+  for entry in "${removals[@]}"; do
+    echo "            ${entry}"
+  done
+  if [[ -f "${tool_root}/excludes.txt" ]]; then
+    echo "            excludes.txt is kept. Fold extra patterns into repos.json exclude when you want, then delete that file yourself."
+  fi
+  echo "            repos.json is kept. Current cache databases (*.sqlite3) are kept."
+  if _prompt_yn_explicit_no "Remove the old py-indexer paths listed above?"; then
+    for entry in "${removals[@]}"; do
+      rm -rf "${entry}"
+      echo "  removed   ${entry}"
+    done
+  else
+    echo "  skip      old py-indexer files left in place"
   fi
 }
 
 install_py_indexer_tool() {
   local tool_root="${TARGET_DIR}/.repo-kit/tools/py-indexer"
-  local bin_path="${tool_root}/bin/py-indexer"
 
-  copy_tool_files "py-indexer"
-
-  mkdir -p "${tool_root}/index"
-  echo "  ensure     ${tool_root#"${TARGET_DIR}"/}/index/"
+  echo "tool: py-indexer"
+  _ensure_py_indexer_shared
+  [[ -n "${PY_INDEXER_EXE:-}" && -x "${PY_INDEXER_EXE}" ]] \
+    || die "shared py-indexer executable missing after ensure"
 
   _seed_py_indexer_repos_json "${tool_root}"
   _ensure_py_indexer_gitignore
-  _setup_py_indexer_venv "${tool_root}"
+  _copy_py_indexer_cursor_rule
+  _merge_py_indexer_mcp_json "${PY_INDEXER_EXE}"
+  _advise_py_indexer_legacy "${tool_root}"
 
-  if [[ -f "${bin_path}" ]]; then
-    chmod +x "${bin_path}"
-  fi
-
-  # Cursor rule is under files/.cursor/ — already copied via copy_tool_files.
-  _merge_py_indexer_mcp_json
-
-  echo "  py-indexer ready under ${tool_root#"${TARGET_DIR}"/}"
-  echo "  next: edit repos.json, then: ${bin_path#"${TARGET_DIR}"/} index --all"
+  echo "  py-indexer ready (shared app + project config)"
+  echo "  next: edit ${tool_root#"${TARGET_DIR}"/}/repos.json, then: py-indexer index --all"
+  echo "  (or: ${PY_INDEXER_EXE} --config ${tool_root}/repos.json index --all)"
 }
+
 
 install_tools() {
   local name

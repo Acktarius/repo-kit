@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "py-indexer": {
+      "type": "stdio",
+      "command": "/absolute/path/to/py-indexer",
+      "args": [
+        "--config",
+        "/absolute/path/to/project/.repo-kit/tools/py-indexer/repos.json",
+        "serve"
+      ]
+    }
+  }
+}

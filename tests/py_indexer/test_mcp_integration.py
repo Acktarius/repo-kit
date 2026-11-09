@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Legacy lightweight MCP smoke (optional).
+"""Lightweight MCP smoke (optional).
 
-Prefer ``test_mcp_generated_config.py``, which launches the installer-generated
-``.cursor/mcp.json`` command/args. This module stays as a narrow SDK smoke and
-is skipped unless ``PY_INDEXER_MCP_PYTHON`` selects the current interpreter.
-It never auto-downloads dependencies.
+Prefer ``test_mcp_generated_config.py``. This module stays as a narrow SDK smoke
+and is skipped unless ``PY_INDEXER_MCP_PYTHON`` selects the current interpreter.
 """
 
 from __future__ import annotations
@@ -18,7 +16,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PKG_PARENT = ROOT / "tools" / "py-indexer" / "files" / ".repo-kit" / "tools" / "py-indexer"
+PKG_PARENT = ROOT / "tools" / "py-indexer" / "src"
 sys.path.insert(0, str(PKG_PARENT))
 
 MCP_PYTHON = os.environ.get("PY_INDEXER_MCP_PYTHON", "").strip()
@@ -74,8 +72,6 @@ def _write(path: Path, text: str) -> None:
 
 @unittest.skipIf(_SKIP is not None, _SKIP or "skip")
 class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    """SDK smoke using the installed bin launcher path (not python -m)."""
-
     async def asyncSetUp(self) -> None:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
@@ -85,10 +81,10 @@ class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.stdio_client = stdio_client
 
         self.tmp = Path(tempfile.mkdtemp())
+        os.environ["XDG_CACHE_HOME"] = str(self.tmp / "cache")
         self.target = self.tmp / "app"
         self.tool = self.target / ".repo-kit" / "tools" / "py-indexer"
-        shutil.copytree(PKG_PARENT, self.tool, dirs_exist_ok=True)
-        (self.tool / "index").mkdir(exist_ok=True)
+        self.tool.mkdir(parents=True)
         _write(self.target / "src" / "hello.ts", "export const mcpProbeToken = 1;\n")
         cfg = {
             "schema_version": 1,
@@ -112,8 +108,9 @@ class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         }
-        (self.tool / "repos.json").write_text(json.dumps(cfg), encoding="utf-8")
-        self.cfg = load_config(self.tool / "repos.json", target_root=self.target, tool_root=self.tool)
+        self.cfg_path = self.tool / "repos.json"
+        self.cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.cfg = load_config(self.cfg_path, project_root=self.target)
         index_repository(self.cfg, "app")
 
     async def asyncTearDown(self) -> None:
@@ -124,11 +121,20 @@ class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
             set(list_tool_names_for_tests()),
             {"search_code", "read_code", "index_status"},
         )
-        launcher = self.tool / "bin" / "py-indexer"
         server = self.StdioServerParameters(
             command=sys.executable,
-            args=[str(launcher), "serve"],
-            env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
+            args=[
+                "-m",
+                "py_indexer",
+                "--config",
+                str(self.cfg_path),
+                "serve",
+            ],
+            env={
+                **{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
+                "PYTHONPATH": str(PKG_PARENT),
+                "XDG_CACHE_HOME": str(self.tmp / "cache"),
+            },
         )
         async with self.stdio_client(server) as (read, write):
             async with self.ClientSession(read, write) as session:

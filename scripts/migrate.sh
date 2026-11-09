@@ -24,7 +24,12 @@ Steps for <= 1.0.1 -> 1.0.2:
   - write .repo-kit/version
   - refresh base module .cursor/ assets (force overwrite)
 
+If an older project-local py-indexer install or cache directory is present, migrate asks
+once whether to remove those old paths. Answering y is enough. repos.json and current
+~/.cache/py-indexer/indexes/*.sqlite3 files are kept.
+
 Re-run when already up to date is a no-op unless --force (cursor refresh only).
+The py-indexer cleanup question still runs when old paths are present.
 
 Examples:
   ./scripts/migrate.sh /path/to/project
@@ -107,6 +112,11 @@ else
   write_installed_version "${TARGET_DIR}" "${KIT_VERSION}"
   INSTALLED_VERSION="${KIT_VERSION}"
 fi
+
+# Presence-based: ask once when an older py-indexer install or cache layout is still on disk.
+# A yes here is the cleanup consent. No VERSION bump and no extra environment variable.
+_advise_py_indexer_legacy "${TARGET_DIR}/.repo-kit/tools/py-indexer"
+echo
 
 # Refresh base .cursor/ assets after layout migration or --force.
 if [[ "${MIGRATED}" -eq 1 ]] || [[ "${FORCE_CURSOR}" -eq 1 ]]; then

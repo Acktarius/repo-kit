@@ -6,7 +6,7 @@ Copy selected **modules** into a target repo. repo-kit is the source of truth; t
 
 Optional **extensions** (via `--ext`) install non-module tooling such as Continue, OpenSpec, and Forgekit.
 
-Optional **tools** (via `--tool`) install copy-based local tooling under `.repo-kit/tools/` (for example `py-indexer`).
+Optional **tools** (via `--tool`) install tooling such as **py-indexer** (user-wide application + per-project `repos.json` under `.repo-kit/tools/`).
 
 ## Layout
 
@@ -42,7 +42,7 @@ repo-kit/
 
 Each module has `files/` (ready to copy) and `manifest.sh` (name, description, depends, conflicts, and optional `MODULE_PRESERVE` paths that are never overwritten, even with `--force`).
 
-Each tool has `files/` and `manifest.sh` (`TOOL_NAME`, `TOOL_DESC`, optional `TOOL_DEPENDS` / `TOOL_PRESERVE`). Tools are discovered from `tools/*/manifest.sh`.
+Each tool has `manifest.sh` (`TOOL_NAME`, `TOOL_DESC`, optional `TOOL_DEPENDS` / `TOOL_PRESERVE`) plus tool-specific assets (`files/`, packaging, examples). Tools are discovered from `tools/*/manifest.sh`.
 
 ## Usage
 
@@ -165,14 +165,18 @@ Optional extensions pull in third-party tools with their own licenses:
 
 | Tool | Notes |
 |------|-------|
-| `py-indexer` | Local SQLite FTS5 lexical retrieval across explicitly configured related checkouts; CLI + read-only stdio MCP. Installs under `.repo-kit/tools/py-indexer/`. Does not require the `python` module. |
+| `py-indexer` | Local SQLite FTS5 lexical retrieval across explicitly configured related checkouts; CLI + read-only stdio MCP. **Once per user** shared app (`~/.local/bin/py-indexer`); **per project** `.repo-kit/tools/py-indexer/repos.json`; indexes in `~/.cache/py-indexer/`. Does not require the `python` module. |
 
 ```bash
 ./scripts/init.sh /path/to/project --tool py-indexer
-# then in the target:
-.repo-kit/tools/py-indexer/bin/py-indexer index --all
-.repo-kit/tools/py-indexer/bin/py-indexer search 'symbol' --json
+# then (from the project, after PATH includes ~/.local/bin if needed):
+py-indexer validate-config
+py-indexer index --all
+py-indexer search 'symbol' --json
+py-indexer status
 ```
+
+Cursor MCP uses the absolute shared executable and an explicit `--config` path (does not rely on shell PATH). Updating the shared app affects every project that uses it. Local retrieval does not make model inference local.
 
 See [catalog/tools.md](catalog/tools.md) and `tools/py-indexer/README.md`.
 

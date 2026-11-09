@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 TOOL_NAME="py-indexer"
-TOOL_DESC="Local cross-repo lexical code retrieval (CLI + read-only stdio MCP)"
+TOOL_DESC="Local cross-repo lexical code retrieval (user-wide CLI + read-only stdio MCP)"
 TOOL_DEPENDS=()
-# User may edit excludes.txt after install; never overwrite on reinstall/--force.
+# Project-local machine config must never be overwritten on reinstall/--force.
+# (Seeded separately; listed here for documentation / future generic copy.)
 TOOL_PRESERVE=(
-  ".repo-kit/tools/py-indexer/excludes.txt"
+  ".repo-kit/tools/py-indexer/repos.json"
 )
+# Minimum shared application compat_version accepted without upgrade prompt.
+TOOL_PY_INDEXER_COMPAT="0.2.1"

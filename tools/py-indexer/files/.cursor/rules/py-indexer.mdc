@@ -9,8 +9,9 @@ alwaysApply: true
 # py-indexer (local retrieval)
 
 MCP tools: `search_code`, `read_code`, `index_status` (project `py-indexer` server).
-Related checkouts come from `repos.json` (`active_repo` + `related`); treat
-`role: reference` entries as read-only search scope.
+Config: `.repo-kit/tools/py-indexer/repos.json` (shared user-wide `py-indexer` app;
+indexes under the user cache). Related checkouts come from `repos.json`
+(`active_repo` + `related`); treat `role: reference` entries as read-only search scope.
 
 ## When to use it (do this first)
 

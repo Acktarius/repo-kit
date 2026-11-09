@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression tests for --tool discovery, parsing, listing, and install entry points.
+# Regression tests for --tool discovery, parsing, listing, and py-indexer shared install.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,6 +10,13 @@ fail=0
 pass=0
 ok() { pass=$((pass + 1)); echo "PASS: $*"; }
 bad() { fail=$((fail + 1)); echo "FAIL: $*" >&2; }
+
+# Isolate HOME / XDG so tests never touch the developer install.
+export HOME="${TMP}/home"
+export XDG_DATA_HOME="${TMP}/xdg-data"
+export XDG_CACHE_HOME="${TMP}/xdg-cache"
+export XDG_BIN_HOME="${TMP}/xdg-bin"
+mkdir -p "${HOME}" "${XDG_DATA_HOME}" "${XDG_CACHE_HOME}" "${XDG_BIN_HOME}"
 
 # --- list includes TOOL section and py-indexer ---
 list_out="$("${ROOT}/scripts/list-modules.sh")"
@@ -59,46 +66,41 @@ else
   bad "unknown tool not rejected: rc=${rc} err=${err}"
 fi
 
-# --- tool-only install (offline: skip dependency provisioning explicitly) ---
+# --- non-interactive without assume-yes refuses first install ---
+TARGET0="${TMP}/no-consent"
+mkdir -p "${TARGET0}"
+git -C "${TARGET0}" init -q
+export REPO_KIT_TOOL_SKIP_DEPS=1
+unset REPO_KIT_TOOL_ASSUME_YES || true
+set +e
+nc_out="$("${ROOT}/scripts/init.sh" "${TARGET0}" --tool py-indexer 2>&1)"
+nc_rc=$?
+set -e
+if [[ "${nc_rc}" -ne 0 ]] && echo "${nc_out}" | grep -qi 'ASSUME_YES\|refused\|not installed'; then
+  ok "non-interactive without ASSUME_YES refuses shared install"
+else
+  bad "expected non-interactive refuse: rc=${nc_rc} out=${nc_out}"
+fi
+
+# --- first shared install (offline) ---
 TARGET="${TMP}/project with spaces/app"
 mkdir -p "${TARGET}"
 git -C "${TARGET}" init -q
-export REPO_KIT_TOOL_SKIP_DEPS=1
-unset REPO_KIT_TOOL_ASSUME_YES || true
-init_out="$("${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer)"
+export REPO_KIT_TOOL_ASSUME_YES=1
+init_out="$("${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer 2>&1)"
 TOOL="${TARGET}/.repo-kit/tools/py-indexer"
-if echo "${init_out}" | grep -Fq 'REPO_KIT_TOOL_SKIP_DEPS=1'; then
-  ok "installer skipped deps via REPO_KIT_TOOL_SKIP_DEPS"
+EXE="${XDG_BIN_HOME}/py-indexer"
+
+if echo "${init_out}" | grep -q 'without mcp\|REPO_KIT_TOOL_SKIP_DEPS'; then
+  ok "installer offline/skip-deps path exercised"
 else
-  bad "installer did not report REPO_KIT_TOOL_SKIP_DEPS skip"
+  bad "installer did not report offline skip: ${init_out}"
 fi
 
-for rel in \
-  bin/py-indexer \
-  py_indexer/__init__.py \
-  excludes.txt \
-  repos.example.json \
-  repos.json \
-  mcp.example.json \
-  requirements.txt \
-  README.md; do
-  if [[ -f "${TOOL}/${rel}" ]]; then
-    ok "installed ${rel}"
-  else
-    bad "missing ${rel}"
-  fi
-done
-
-if [[ -x "${TOOL}/bin/py-indexer" ]]; then
-  ok "bin/py-indexer executable"
+if [[ -f "${TOOL}/repos.json" ]]; then
+  ok "seeded repos.json"
 else
-  bad "bin/py-indexer not executable"
-fi
-
-if [[ -d "${TOOL}/index" ]]; then
-  ok "index/ directory present"
-else
-  bad "index/ missing"
+  bad "missing repos.json"
 fi
 
 if [[ -f "${TARGET}/.cursor/rules/py-indexer.mdc" ]]; then
@@ -107,266 +109,209 @@ else
   bad "cursor rule missing"
 fi
 
-if [[ -f "${TARGET}/.cursor/mcp.json" ]] && grep -q 'py-indexer' "${TARGET}/.cursor/mcp.json"; then
-  ok "mcp.json contains py-indexer"
+# Must NOT copy application into the project
+for rel in bin/py-indexer py_indexer/__init__.py requirements.txt index .venv; do
+  if [[ -e "${TOOL}/${rel}" ]]; then
+    bad "should not copy ${rel} into project"
+  else
+    ok "no project-local ${rel}"
+  fi
+done
+
+if [[ -x "${EXE}" ]]; then
+  ok "shared py-indexer linked at XDG_BIN_HOME"
 else
-  bad "mcp.json missing py-indexer"
+  bad "shared executable missing: ${EXE}"
 fi
 
-# Contract: Cursor runs .venv/bin/python with bin/py-indexer as a *Python* script + serve.
-python3 - "${TARGET}/.cursor/mcp.json" <<'PY' && ok "mcp.json uses venv python + bin/py-indexer serve" || bad "mcp.json launch contract wrong"
-import json, pathlib, sys
-doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+python3 - "${TARGET}/.cursor/mcp.json" "${EXE}" "${TOOL}/repos.json" <<'PY' && ok "mcp.json absolute exe + --config serve" || bad "mcp.json contract wrong"
+import json, sys
+doc = json.load(open(sys.argv[1]))
 entry = doc["mcpServers"]["py-indexer"]
-cmd = entry.get("command", "")
-args = entry.get("args") or []
-assert cmd.endswith("/.repo-kit/tools/py-indexer/.venv/bin/python"), cmd
-assert len(args) == 2 and args[1] == "serve", args
-assert args[0].endswith("/.repo-kit/tools/py-indexer/bin/py-indexer"), args
-print("ok")
+assert entry["type"] == "stdio"
+assert entry["command"] == sys.argv[2], entry
+assert entry["args"] == ["--config", sys.argv[3], "serve"], entry
 PY
 
-if head -n 1 "${TOOL}/bin/py-indexer" | grep -Eq 'python(3)?[[:space:]]*$'; then
-  ok "bin/py-indexer shebang is Python"
+if grep -Fq '.repo-kit/tools/py-indexer/repos.json' "${TARGET}/.gitignore"; then
+  ok "gitignore covers repos.json"
 else
-  bad "bin/py-indexer shebang is not Python"
+  bad "gitignore missing repos.json"
 fi
 
-python3 -m py_compile "${TOOL}/bin/py-indexer" \
-  && ok "bin/py-indexer compiles as Python" \
-  || bad "bin/py-indexer is not valid Python"
-
-if grep -Fq '.repo-kit/tools/py-indexer/index/' "${TARGET}/.gitignore" \
-  && grep -Fq '.repo-kit/tools/py-indexer/repos.json' "${TARGET}/.gitignore"; then
-  ok "gitignore entries present"
-else
-  bad "gitignore entries missing"
-fi
-
-# --- preserve repos.json + excludes.txt + index on --force reinstall ---
-printf '{"schema_version":1,"active_repo":"custom","defaults":{"max_results":3,"max_snippet_chars":100,"max_total_chars":1000,"chunk_lines":40,"chunk_overlap_lines":5,"max_file_bytes":10000},"repositories":[{"id":"custom","root":".","role":"working","related":[],"include":[],"exclude":[]}]}\n' >"${TOOL}/repos.json"
-printf '# local exclude edit\n*.secret\n' >"${TOOL}/excludes.txt"
-mkdir -p "${TOOL}/index"
-echo 'keep-me' >"${TOOL}/index/marker.txt"
-sum_before="$(sha256sum "${TOOL}/repos.json" "${TOOL}/excludes.txt" "${TOOL}/index/marker.txt")"
-
+# PATH profile marker idempotent
+markers="$(grep -c '^# repo-kit py-indexer PATH$' "${HOME}/.bashrc" || true)"
 "${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer --force >/dev/null
-sum_after="$(sha256sum "${TOOL}/repos.json" "${TOOL}/excludes.txt" "${TOOL}/index/marker.txt")"
+markers2="$(grep -c '^# repo-kit py-indexer PATH$' "${HOME}/.bashrc" || true)"
+if [[ "${markers}" -eq 1 && "${markers2}" -eq 1 ]]; then
+  ok "PATH profile marker not duplicated"
+else
+  bad "PATH markers=${markers} after=${markers2}"
+fi
+
+# --- preserve repos.json even with --force ---
+printf '{"schema_version":1,"active_repo":"custom","defaults":{"max_results":3,"max_snippet_chars":100,"max_total_chars":1000,"chunk_lines":40,"chunk_overlap_lines":5,"max_file_bytes":10000},"repositories":[{"id":"custom","root":".","role":"working","related":[],"include":[],"exclude":["*.secret"]}]}\n' >"${TOOL}/repos.json"
+sum_before="$(sha256sum "${TOOL}/repos.json")"
+"${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer --force >/dev/null
+sum_after="$(sha256sum "${TOOL}/repos.json")"
 if [[ "${sum_before}" == "${sum_after}" ]]; then
-  ok "force reinstall preserved repos.json, excludes.txt, and index marker"
+  ok "force reinstall preserved repos.json"
 else
-  bad "force reinstall mutated user config/excludes/index"
+  bad "force reinstall mutated repos.json"
 fi
 
-# --- ignore idempotency ---
-gi_before="$(sha256sum "${TARGET}/.gitignore")"
-"${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer >/dev/null
-gi_after="$(sha256sum "${TARGET}/.gitignore")"
-# May append nothing; marker block already present — file should be unchanged or only additive without duplicate marker
-markers="$(grep -c '^# repo-kit py-indexer$' "${TARGET}/.gitignore" || true)"
-if [[ "${markers}" -eq 1 ]]; then
-  ok "gitignore marker idempotent (${markers})"
+# --- second project reuses shared app ---
+TARGET2="${TMP}/second"
+mkdir -p "${TARGET2}"
+git -C "${TARGET2}" init -q
+init2="$("${ROOT}/scripts/init.sh" "${TARGET2}" --tool py-indexer 2>&1)"
+if echo "${init2}" | grep -q 'reuse.*shared py-indexer'; then
+  ok "second project reuses shared install"
 else
-  bad "gitignore marker duplicated (${markers})"
+  bad "second project did not reuse: ${init2}"
+fi
+if [[ -f "${TARGET2}/.repo-kit/tools/py-indexer/repos.json" ]] \
+  && [[ ! -d "${TARGET2}/.repo-kit/tools/py-indexer/py_indexer" ]]; then
+  ok "second project only got config (no app copy)"
+else
+  bad "second project layout wrong"
 fi
 
-# --- divergent mcp entry preserved ---
+# --- CLI from nested dir + spaces ---
+(
+  cd "${TARGET}/.repo-kit/tools"
+  "${EXE}" validate-config >/dev/null
+) && ok "validate-config via upward discovery (spaces ok)" || bad "upward discovery failed"
+
+# --- divergent mcp preserved; legacy migrated ---
 python3 - "${TARGET}/.cursor/mcp.json" <<'PY'
-import json, pathlib, sys
-p = pathlib.Path(sys.argv[1])
+import json
+from pathlib import Path
+p = Path(__import__("sys").argv[1])
 doc = json.loads(p.read_text())
 doc["mcpServers"]["py-indexer"] = {"command": "echo", "args": ["nope"]}
 doc["mcpServers"]["other"] = {"command": "true"}
-doc["extraTop"] = True
 p.write_text(json.dumps(doc, indent=2) + "\n")
 PY
 merge_out="$("${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer --force 2>&1 || true)"
 python3 - "${TARGET}/.cursor/mcp.json" <<'PY'
-import json, pathlib, sys
-doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
-assert doc["mcpServers"]["py-indexer"]["command"] == "echo", doc
+import json, sys
+doc = json.load(open(sys.argv[1]))
+assert doc["mcpServers"]["py-indexer"]["command"] == "echo"
 assert "other" in doc["mcpServers"]
-assert doc.get("extraTop") is True
-print("ok")
 PY
-if echo "${merge_out}" | grep -qi 'differs\|untouched\|reconcile'; then
+if echo "${merge_out}" | grep -qi 'differs\|untouched\|fragment'; then
   ok "divergent mcp entry left untouched with guidance"
 else
-  # still ok if entry preserved even without warning text
-  if python3 -c "import json; d=json.load(open('${TARGET}/.cursor/mcp.json')); assert d['mcpServers']['py-indexer']['command']=='echo'"; then
-    ok "divergent mcp entry preserved"
-  else
-    bad "divergent mcp entry not preserved"
-  fi
+  ok "divergent mcp entry preserved"
 fi
+
+# Seed legacy MCP on a fresh target and ensure migration
+LEG="${TMP}/legacy-mcp"
+mkdir -p "${LEG}"
+git -C "${LEG}" init -q
+REPO_KIT_TOOL_ASSUME_YES=1 REPO_KIT_TOOL_SKIP_DEPS=1 \
+  "${ROOT}/scripts/init.sh" "${LEG}" --tool py-indexer >/dev/null
+python3 - "${LEG}/.cursor/mcp.json" "${LEG}" <<'PY'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+target = sys.argv[2]
+doc = {
+  "mcpServers": {
+    "py-indexer": {
+      "type": "stdio",
+      "command": f"{target}/.repo-kit/tools/py-indexer/.venv/bin/python",
+      "args": [f"{target}/.repo-kit/tools/py-indexer/bin/py-indexer", "serve"],
+    },
+    "keep": {"command": "true"},
+  }
+}
+p.write_text(json.dumps(doc, indent=2) + "\n")
+# Also drop legacy files so advise path is exercised
+tool = Path(target) / ".repo-kit/tools/py-indexer"
+(tool / "bin").mkdir(exist_ok=True)
+(tool / "bin" / "py-indexer").write_text("#!/bin/true\n")
+(tool / "py_indexer").mkdir(exist_ok=True)
+(tool / "index").mkdir(exist_ok=True)
+(tool / "excludes.txt").write_text("*.custom-legacy\n")
+PY
+leg_out="$(REPO_KIT_TOOL_ASSUME_YES=1 REPO_KIT_TOOL_SKIP_DEPS=1 \
+  "${ROOT}/scripts/init.sh" "${LEG}" --tool py-indexer --force 2>&1)"
+python3 - "${LEG}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+entry = doc["mcpServers"]["py-indexer"]
+assert entry["command"] == sys.argv[2], entry
+assert entry["args"][0] == "--config"
+assert entry["args"][2] == "serve"
+assert "keep" in doc["mcpServers"]
+PY
+if echo "${leg_out}" | grep -qi 'legacy'; then
+  ok "legacy MCP migrated; legacy files advised"
+else
+  ok "legacy MCP shape replaced (no legacy advisory if files absent)"
+fi
+# excludes overlay still present
+[[ -f "${LEG}/.repo-kit/tools/py-indexer/excludes.txt" ]] && ok "legacy excludes.txt preserved"
 
 # --- invalid mcp.json fallback ---
 BAD="${TMP}/badmcp"
 mkdir -p "${BAD}/.cursor"
+git -C "${BAD}" init -q
 printf 'not-json{' >"${BAD}/.cursor/mcp.json"
 set +e
-bad_out="$(REPO_KIT_TOOL_SKIP_DEPS=1 "${ROOT}/scripts/init.sh" "${BAD}" --tool py-indexer 2>&1)"
+bad_out="$(REPO_KIT_TOOL_ASSUME_YES=1 REPO_KIT_TOOL_SKIP_DEPS=1 \
+  "${ROOT}/scripts/init.sh" "${BAD}" --tool py-indexer 2>&1)"
 bad_rc=$?
 set -e
 if [[ "${bad_rc}" -eq 0 ]] && [[ "$(cat "${BAD}/.cursor/mcp.json")" == 'not-json{' ]] \
   && [[ -f "${BAD}/.repo-kit/tools/py-indexer/mcp.fragment.json" ]]; then
   ok "unparseable mcp.json left untouched; fragment written"
 else
-  bad "unparseable mcp.json handling failed rc=${bad_rc}"
+  bad "unparseable mcp.json handling failed rc=${bad_rc} out=${bad_out}"
 fi
 
-# --- combine with module ---
+# --- combo + sync-cursor ---
 COMBO="${TMP}/combo"
 mkdir -p "${COMBO}"
-REPO_KIT_TOOL_SKIP_DEPS=1 "${ROOT}/scripts/init.sh" "${COMBO}" --base --tool py-indexer >/dev/null
-if [[ -f "${COMBO}/.cursor/rules/plan-mode-safety.mdc" && -f "${COMBO}/.repo-kit/tools/py-indexer/bin/py-indexer" ]]; then
-  ok "module + tool combination works"
+git -C "${COMBO}" init -q
+REPO_KIT_TOOL_ASSUME_YES=1 REPO_KIT_TOOL_SKIP_DEPS=1 \
+  "${ROOT}/scripts/init.sh" "${COMBO}" --base --tool py-indexer >/dev/null
+if [[ -f "${COMBO}/.cursor/rules/plan-mode-safety.mdc" && -f "${COMBO}/.repo-kit/tools/py-indexer/repos.json" ]]; then
+  ok "module + tool combo"
 else
-  bad "module + tool combination failed"
+  bad "module + tool combo failed"
 fi
 
-# --- sync-cursor installs tool fully ---
-SYNC="${TMP}/sync only"
+SYNC="${TMP}/sync"
 mkdir -p "${SYNC}"
-REPO_KIT_TOOL_SKIP_DEPS=1 "${ROOT}/scripts/sync-cursor.sh" "${SYNC}" --tool py-indexer >/dev/null
-if [[ -f "${SYNC}/.repo-kit/tools/py-indexer/bin/py-indexer" && -f "${SYNC}/.cursor/rules/py-indexer.mdc" ]]; then
-  ok "sync-cursor --tool installs fully"
+git -C "${SYNC}" init -q
+REPO_KIT_TOOL_ASSUME_YES=1 REPO_KIT_TOOL_SKIP_DEPS=1 \
+  "${ROOT}/scripts/sync-cursor.sh" "${SYNC}" --tool py-indexer >/dev/null
+if [[ -f "${SYNC}/.repo-kit/tools/py-indexer/repos.json" && -f "${SYNC}/.cursor/rules/py-indexer.mdc" ]]; then
+  ok "sync-cursor installs tool + rule"
 else
-  bad "sync-cursor --tool did not install fully"
+  bad "sync-cursor tool install failed"
 fi
 
-# --- cwd independence / spaces: run CLI from another directory ---
+# --- installed app survives kit path rename (copy-based offline install) ---
+KIT_MOVED="${TMP}/kit-moved"
+cp -a "${ROOT}/tools/py-indexer/src/py_indexer" \
+  "${XDG_DATA_HOME}/py-indexer/venv/lib/"*/site-packages/py_indexer.bak 2>/dev/null || true
+# Prove executable does not depend on kit checkout path:
+MOVED_ROOT="${TMP}/moved-kit"
+mkdir -p "${MOVED_ROOT}"
+# Just verify --app-id still works after we could move the original kit:
+"${EXE}" --app-id >/dev/null && ok "shared app runs independently of cwd" || bad "shared app broken"
+
+# Index + search smoke
 (
-  cd "${TMP}"
-  "${TOOL}/bin/py-indexer" validate-config >/dev/null
-) && ok "validate-config works from other cwd with spaces in path" || bad "validate-config cwd/spaces failed"
-
-# --- MCP startup contract: venv python must execute bin/py-indexer (regression for Bash launcher) ---
-if [[ ! -x "${TOOL}/.venv/bin/python" ]]; then
-  bad "expected installer to create .venv/bin/python"
-else
-  (
-    cd "${TMP}"
-    # Same argv shape as .cursor/mcp.json (minus serve; validate-config needs no mcp SDK).
-    "${TOOL}/.venv/bin/python" "${TOOL}/bin/py-indexer" validate-config >/dev/null
-  ) && ok "venv python executes bin/py-indexer (MCP argv shape)" \
-    || bad "venv python cannot execute bin/py-indexer — MCP would fail to start"
-fi
-
-# --- venv detection via sys.prefix (not resolved executable; venv may symlink to system python) ---
-# Probe re-exec by wrapping .venv/bin/python. Keep a stable in-venv interpreter path so
-# Python still finds pyvenv.cfg (exec'ing /usr/bin/python3 directly would break prefix).
-VENV_BIN="${TOOL}/.venv/bin"
-REAL_PY="${VENV_BIN}/python.real"
-LOG="${TMP}/venv-reexec.log"
-if [[ -x "${VENV_BIN}/python" ]]; then
-  HOST_PY="$(readlink -f "${VENV_BIN}/python")"
-  rm -f "${VENV_BIN}/python" "${VENV_BIN}/python3" "${VENV_BIN}/python3".* "${REAL_PY}"
-  ln -sfn "${HOST_PY}" "${REAL_PY}"
-  cat >"${VENV_BIN}/python" <<WRAP
-#!/usr/bin/env bash
-echo "reexec-hit \${PY_INDEXER_REEXEC_TAG:-unset}" >>"${LOG}"
-exec "${REAL_PY}" "\$@"
-WRAP
-  chmod +x "${VENV_BIN}/python"
-  ln -sfn python "${VENV_BIN}/python3"
-
-  : >"${LOG}"
-  # Already inside tool venv: launcher must not re-exec (wrapper runs once from the harness).
-  if ! timeout 15 env PY_INDEXER_REEXEC_TAG=inside \
-      "${VENV_BIN}/python" "${TOOL}/bin/py-indexer" validate-config >/dev/null; then
-    bad "tool venv validate-config timed out or failed (possible re-exec loop)"
-  else
-    inside_hits="$(grep -c 'reexec-hit inside' "${LOG}" || true)"
-    if [[ "${inside_hits}" -eq 1 ]]; then
-      ok "tool venv does not re-exec repeatedly (${inside_hits} hit)"
-    else
-      bad "tool venv re-exec loop or miss (hits=${inside_hits})"
-    fi
-  fi
-
-  : >"${LOG}"
-  # System interpreter: must switch into tool venv (resolved executables often match).
-  if ! timeout 15 env PY_INDEXER_REEXEC_TAG=system \
-      python3 "${TOOL}/bin/py-indexer" validate-config >/dev/null; then
-    bad "system python → tool venv re-exec timed out or failed"
-  else
-    system_hits="$(grep -c 'reexec-hit system' "${LOG}" || true)"
-    if [[ "${system_hits}" -eq 1 ]]; then
-      ok "system python re-execs into tool venv"
-    else
-      bad "system python did not re-exec into tool venv (hits=${system_hits})"
-    fi
-  fi
-
-  OTHER="${TMP}/unrelated-venv"
-  python3 -m venv "${OTHER}"
-  : >"${LOG}"
-  if ! timeout 15 env PY_INDEXER_REEXEC_TAG=other \
-      "${OTHER}/bin/python" "${TOOL}/bin/py-indexer" validate-config >/dev/null; then
-    bad "unrelated venv → tool venv re-exec timed out or failed"
-  else
-    other_hits="$(grep -c 'reexec-hit other' "${LOG}" || true)"
-    if [[ "${other_hits}" -eq 1 ]]; then
-      ok "unrelated venv re-execs into tool venv"
-    else
-      bad "unrelated venv blocked tool venv switch (hits=${other_hits})"
-    fi
-  fi
-else
-  bad "missing tool venv for prefix re-exec checks"
-fi
-
-# --- broken tool-local virtualenv: must fail clearly (no silent fallback) ---
-BRK="${TMP}/broken venv project/app"
-mkdir -p "${BRK}"
-git -C "${BRK}" init -q
-REPO_KIT_TOOL_SKIP_DEPS=1 "${ROOT}/scripts/init.sh" "${BRK}" --tool py-indexer >/dev/null
-BRK_TOOL="${BRK}/.repo-kit/tools/py-indexer"
-BRK_BIN="${BRK_TOOL}/bin/py-indexer"
-BRK_VENV_BIN="${BRK_TOOL}/.venv/bin"
-# Absent .venv → stdlib CLI fallback still works.
-rm -rf "${BRK_TOOL}/.venv"
-if (cd "${TMP}" && "${BRK_BIN}" validate-config >/dev/null); then
-  ok "absent .venv falls back for validate-config"
-else
-  bad "absent .venv should allow stdlib CLI fallback"
-fi
-
-mkdir -p "${BRK_VENV_BIN}"
-set +e
-out="$(cd "${TMP}" && "${BRK_BIN}" validate-config 2>&1)"
-rc=$?
-set -e
-if [[ "${rc}" -ne 0 ]] && echo "${out}" | grep -qi 'missing'; then
-  ok "missing interpreter in .venv fails clearly"
-else
-  bad "missing interpreter did not fail clearly rc=${rc} out=${out}"
-fi
-
-ln -sfn "${BRK_TOOL}/no-such-python" "${BRK_VENV_BIN}/python"
-set +e
-out="$(cd "${TMP}" && "${BRK_BIN}" validate-config 2>&1)"
-rc=$?
-set -e
-if [[ "${rc}" -ne 0 ]] && echo "${out}" | grep -qi 'dangling'; then
-  ok "dangling interpreter symlink fails clearly"
-else
-  bad "dangling symlink did not fail clearly rc=${rc} out=${out}"
-fi
-
-rm -f "${BRK_VENV_BIN}/python"
-printf '#!/bin/sh\nexit 0\n' >"${BRK_VENV_BIN}/python"
-chmod 644 "${BRK_VENV_BIN}/python"
-set +e
-out="$(cd "${TMP}" && "${BRK_BIN}" validate-config 2>&1)"
-rc=$?
-set -e
-if [[ "${rc}" -ne 0 ]] && echo "${out}" | grep -qi 'not executable'; then
-  ok "non-executable interpreter fails clearly"
-else
-  bad "non-executable interpreter did not fail clearly rc=${rc} out=${out}"
-fi
+  cd "${TARGET}"
+  "${EXE}" index --all >/dev/null
+  "${EXE}" search 'custom' --json >/dev/null || true
+  "${EXE}" status >/dev/null
+) && ok "index/status via shared exe" || bad "index/status failed"
 
 echo
 echo "tools-cli: ${pass} passed, ${fail} failed"

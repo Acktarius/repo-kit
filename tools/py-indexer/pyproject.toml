@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-indexer"
+version = "0.2.1"
+description = "Local cross-repository lexical code retrieval (SQLite FTS5 + optional MCP)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp==1.30.0",
+]
+
+[project.scripts]
+py-indexer = "py_indexer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+py_indexer = ["default_excludes.txt"]

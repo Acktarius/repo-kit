@@ -5,17 +5,21 @@
 # MCP e2e: supply PY_INDEXER_MCP_PYTHON (interpreter that already has mcp==1.30.x).
 # Strict:  PY_INDEXER_MCP_STRICT=1 fails if MCP env is missing/unusable.
 # Opt-in bootstrap (network): PY_INDEXER_MCP_BOOTSTRAP=1 creates a temp venv
-# and pip-installs requirements.txt once for local/CI convenience.
+# and pip-installs mcp==1.30.0 once for local/CI convenience.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONDONTWRITEBYTECODE=1
 export REPO_KIT_TOOL_SKIP_DEPS="${REPO_KIT_TOOL_SKIP_DEPS:-1}"
-# Do not force networked dependency consent for installer fixtures.
+# Installer fixtures that need a shared app set ASSUME_YES themselves.
 unset REPO_KIT_TOOL_ASSUME_YES || true
 
 echo "== unit tests (stdlib, offline) =="
-(cd "${ROOT}/tests/py_indexer" && python3 -m unittest test_core test_launcher -v)
+(
+  cd "${ROOT}/tests/py_indexer"
+  PYTHONPATH="${ROOT}/tools/py-indexer/src" python3 -m unittest \
+    test_core test_cli_discovery -v
+)
 
 echo
 echo "== tools-cli installer regressions (offline; SKIP_DEPS) =="
@@ -36,11 +40,10 @@ cleanup_bootstrap() {
 trap cleanup_bootstrap EXIT
 
 if [[ -z "${MCP_PY}" && "${BOOTSTRAP}" == "1" ]]; then
-  echo "opt-in: PY_INDEXER_MCP_BOOTSTRAP=1 — creating temp venv and installing requirements (network)"
+  echo "opt-in: PY_INDEXER_MCP_BOOTSTRAP=1 — creating temp venv and installing mcp (network)"
   BOOTSTRAP_ROOT="$(mktemp -d)"
   python3 -m venv "${BOOTSTRAP_ROOT}/venv"
-  "${BOOTSTRAP_ROOT}/venv/bin/pip" install -r \
-    "${ROOT}/tools/py-indexer/files/.repo-kit/tools/py-indexer/requirements.txt"
+  "${BOOTSTRAP_ROOT}/venv/bin/pip" install 'mcp==1.30.0'
   MCP_PY="${BOOTSTRAP_ROOT}/venv/bin/python"
   export PY_INDEXER_MCP_PYTHON="${MCP_PY}"
 fi
@@ -53,7 +56,8 @@ if [[ -n "${MCP_PY}" ]]; then
   echo "using PY_INDEXER_MCP_PYTHON=${MCP_PY}"
   (
     cd "${ROOT}/tests/py_indexer"
-    "${MCP_PY}" -m unittest test_mcp_generated_config test_mcp_integration -v
+    PYTHONPATH="${ROOT}/tools/py-indexer/src" \
+      "${MCP_PY}" -m unittest test_mcp_generated_config test_mcp_integration -v
   )
 elif [[ "${STRICT}" == "1" ]]; then
   echo "error: PY_INDEXER_MCP_STRICT=1 but PY_INDEXER_MCP_PYTHON is unset/unusable" >&2
