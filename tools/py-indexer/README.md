@@ -164,10 +164,12 @@ On init/sync the installer:
    exact legacy `serve` entry stays as it is, and the installer reports that
    the shared CLI is available while legacy MCP remains active. If a previous
    run left the stock entry (only `type`, `command`, and `--config` / `serve`
-   args) pointed at the CLI-only executable, and the project launcher and
-   virtualenv are still present, that stock entry is restored. A customized
-   shared entry, extra `env`/`cwd` fields, or another checkout's paths are
-   left untouched.
+   args) pointed at the CLI-only executable, and `--config` identifies this
+   project's `.repo-kit/tools/py-indexer/repos.json`, and the project launcher
+   and virtualenv are still present, that stock entry is restored. The same
+   shape with another config is left untouched, with guidance to reconcile
+   `mcp.fragment.json`. A customized shared entry, extra `env`/`cwd` fields,
+   or another checkout's paths are left untouched.
    `mcp.fragment.json` is written for a later manual merge and is not installed
    while the app is CLI-only.
 3. Preserves `repos.json` and any legacy `excludes.txt` (still honored as an overlay)

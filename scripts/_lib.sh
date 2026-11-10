@@ -1758,9 +1758,19 @@ def is_exact_legacy(existing) -> bool:
         (abs_legacy["command"], abs_legacy["args"][0]),
     }
 
-def is_exact_shared(existing) -> bool:
-    # Only the stock registration is rewritten. Extra fields or arguments are a
-    # customized shared entry and stay as they are.
+expected_config = tool / "repos.json"
+
+def identifies_project_config(arg: str) -> bool:
+    candidate = Path(arg)
+    if not candidate.is_absolute():
+        candidate = Path(target) / candidate
+    try:
+        return candidate.resolve() == expected_config.resolve()
+    except OSError:
+        return False
+
+def is_stock_shared_shape(existing) -> bool:
+    # Stock shape is only type/command/args. Extra fields or arguments stay.
     if not isinstance(existing, dict) or set(existing.keys()) != legacy_keys:
         return False
     if existing.get("type") != "stdio":
@@ -1777,6 +1787,12 @@ def is_exact_shared(existing) -> bool:
         return os.path.realpath(cmd) == os.path.realpath(exe)
     except OSError:
         return cmd == exe
+
+def is_exact_shared(existing) -> bool:
+    # The config argument must identify this project's repos.json.
+    if not is_stock_shared_shape(existing):
+        return False
+    return identifies_project_config(existing["args"][1])
 
 if not mcp.is_file():
     emit(
@@ -1836,6 +1852,12 @@ if is_exact_shared(existing):
         "  mcp       registration points at a CLI-only executable, so serve will not work",
         "            the previous project runtime is gone, so the legacy registration cannot be restored",
         "            install mcp==1.30.0 into the shared virtualenv, then re-run",
+    )
+if is_stock_shared_shape(existing):
+    emit(
+        "DIVERGENT",
+        "  keep      py-indexer MCP entry uses a different config than .repo-kit/tools/py-indexer/repos.json; left untouched",
+        "            reconcile it manually with mcp.fragment.json after the shared app is MCP-ready",
     )
 emit(
     "DIVERGENT",

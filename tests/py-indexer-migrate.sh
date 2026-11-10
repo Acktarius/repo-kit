@@ -359,16 +359,16 @@ TOOL_S="${RESTORE}/.repo-kit/tools/py-indexer"
 seed_bin "${TOOL_S}"
 seed_venv "${TOOL_S}"
 mkdir -p "${RESTORE}/.cursor"
-python3 - "${RESTORE}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" <<'PY'
+python3 - "${RESTORE}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" "${TOOL_S}/repos.json" <<'PY'
 import json, sys
 from pathlib import Path
-path, exe = Path(sys.argv[1]), sys.argv[2]
+path, exe, config = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 doc = {
     "mcpServers": {
         "py-indexer": {
             "type": "stdio",
             "command": exe,
-            "args": ["--config", "/tmp/repos.json", "serve"],
+            "args": ["--config", config, "serve"],
         }
     }
 }
@@ -389,23 +389,56 @@ else
   bad "broken registration was left pointing at the CLI-only app: $(cat "${TMP}/restore.out")"
 fi
 
-# A customized shared registration is not rewritten to the stock legacy entry.
+# Same three keys, but the config is another project's repos.json.
+OTHER="${TMP}/other-config"
+write_version "${OTHER}"
+TOOL_O="${OTHER}/.repo-kit/tools/py-indexer"
+seed_bin "${TOOL_O}"
+seed_venv "${TOOL_O}"
+mkdir -p "${OTHER}/.cursor"
+python3 - "${OTHER}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" "${TMP}/elsewhere/repos.json" <<'PY'
+import json, sys
+from pathlib import Path
+path, exe, config = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+doc = {
+    "mcpServers": {
+        "py-indexer": {
+            "type": "stdio",
+            "command": exe,
+            "args": ["--config", config, "serve"],
+        }
+    }
+}
+path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+PY
+cp "${OTHER}/.cursor/mcp.json" "${TMP}/other-config.json.before"
+pty_run y "${ROOT}/scripts/migrate.sh" "${OTHER}" >"${TMP}/other.out"
+if cmp -s "${OTHER}/.cursor/mcp.json" "${TMP}/other-config.json.before" \
+  && grep -q 'different config than .repo-kit/tools/py-indexer/repos.json; left untouched' "${TMP}/other.out" \
+  && grep -q 'reconcile it manually with mcp.fragment.json' "${TMP}/other.out"; then
+  ok "CLI-only fallback keeps a shared entry that names another config"
+else
+  bad "shared entry for another config was rewritten: $(cat "${TMP}/other.out")"
+fi
+
+# Extra env/cwd on this project's config is not rewritten.
 CUSTOM="${TMP}/custom-mcp"
 write_version "${CUSTOM}"
 TOOL_U="${CUSTOM}/.repo-kit/tools/py-indexer"
 seed_bin "${TOOL_U}"
 seed_venv "${TOOL_U}"
 mkdir -p "${CUSTOM}/.cursor"
-python3 - "${CUSTOM}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" <<'PY'
+python3 - "${CUSTOM}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" "${TOOL_U}/repos.json" <<'PY'
 import json, sys
 from pathlib import Path
-path, exe = Path(sys.argv[1]), sys.argv[2]
+path, exe, config = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 doc = {
     "mcpServers": {
         "py-indexer": {
             "type": "stdio",
             "command": exe,
-            "args": ["--config", "/tmp/repos.json", "serve"],
+            "args": ["--config", config, "serve"],
+            "cwd": "/tmp/py-indexer-custom",
             "env": {"PY_INDEXER_CUSTOM": "1"},
         }
     }
@@ -415,10 +448,41 @@ PY
 cp "${CUSTOM}/.cursor/mcp.json" "${TMP}/custom-mcp.json.before"
 pty_run y "${ROOT}/scripts/migrate.sh" "${CUSTOM}" >"${TMP}/custom.out"
 if cmp -s "${CUSTOM}/.cursor/mcp.json" "${TMP}/custom-mcp.json.before" \
-  && grep -q 'left untouched' "${TMP}/custom.out"; then
-  ok "CLI-only fallback keeps a customized shared MCP entry"
+  && grep -q 'existing py-indexer MCP entry differs; left untouched' "${TMP}/custom.out"; then
+  ok "CLI-only fallback keeps extra env and cwd on this project's config"
 else
-  bad "customized shared MCP entry was rewritten: $(cat "${TMP}/custom.out")"
+  bad "shared MCP entry with env and cwd was rewritten: $(cat "${TMP}/custom.out")"
+fi
+
+# A non-stock argument list on this project's config is not rewritten.
+ARGS="${TMP}/custom-args"
+write_version "${ARGS}"
+TOOL_A="${ARGS}/.repo-kit/tools/py-indexer"
+seed_bin "${TOOL_A}"
+seed_venv "${TOOL_A}"
+mkdir -p "${ARGS}/.cursor"
+python3 - "${ARGS}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" "${TOOL_A}/repos.json" <<'PY'
+import json, sys
+from pathlib import Path
+path, exe, config = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+doc = {
+    "mcpServers": {
+        "py-indexer": {
+            "type": "stdio",
+            "command": exe,
+            "args": ["--config", config, "serve", "--extra"],
+        }
+    }
+}
+path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+PY
+cp "${ARGS}/.cursor/mcp.json" "${TMP}/custom-args.json.before"
+pty_run y "${ROOT}/scripts/migrate.sh" "${ARGS}" >"${TMP}/args.out"
+if cmp -s "${ARGS}/.cursor/mcp.json" "${TMP}/custom-args.json.before" \
+  && grep -q 'existing py-indexer MCP entry differs; left untouched' "${TMP}/args.out"; then
+  ok "CLI-only fallback keeps a custom argument list"
+else
+  bad "shared MCP entry with custom arguments was rewritten: $(cat "${TMP}/args.out")"
 fi
 
 if [[ -n "${PY_INDEXER_MCP_PYTHON:-}" ]] \
