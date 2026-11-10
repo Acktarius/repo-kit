@@ -1,0 +1,3 @@
+# Optional MCP dependency. Indexing and CLI search work without it.
+# Pin matched to FastMCP stdio API used by py_indexer.mcp_server.
+mcp==1.30.0

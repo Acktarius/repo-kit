@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "py-indexer": {
+      "args": [
+        "${workspaceFolder}/.repo-kit/tools/py-indexer/bin/py-indexer",
+        "serve"
+      ],
+      "command": "${workspaceFolder}/.repo-kit/tools/py-indexer/.venv/bin/python",
+      "type": "stdio"
+    }
+  }
+}

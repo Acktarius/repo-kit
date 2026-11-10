@@ -1,0 +1,31 @@
+---
+description: Keep docs synchronized with code, planning, and strategy changes
+globs:
+  - "**/*.md"
+  - "docs/**"
+alwaysApply: true
+---
+
+# Documentation synchronization rule
+
+Documentation is part of the deliverable.
+
+When any task changes implementation, design, roadmap, strategy, assumptions, interfaces, storage, cryptography, or developer workflow:
+
+1. Review `docs/` before editing.
+2. Find the most relevant existing document.
+3. Update that document, or append a clearly dated/statused section.
+4. Avoid duplicate docs covering the same topic.
+5. If the task changes previous intent, amend the older documentation to note that it has been superseded.
+6. Keep terminology aligned with the current codebase and plan.
+7. If a code change introduces a new flag, module, flow, dependency, constraint, or tradeoff, document it.
+
+The assistant must prefer:
+- modifying existing docs,
+- adding “Status”, “Decision”, “Impact”, or “Migration notes” sections,
+- preserving decision history.
+
+Before finishing, provide a short documentation impact note:
+- Docs updated: [list]
+- Docs reviewed but unchanged: [list]
+- Reason if unchanged: [one sentence]

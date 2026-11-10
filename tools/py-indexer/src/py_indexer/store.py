@@ -1,13 +1,36 @@
-"""Per-repository SQLite FTS5 store with WAL and schema guards."""
+"""Per-checkout SQLite FTS5 store.
+
+Writers take an exclusive flock on ``<db>.lock`` for the whole index lifecycle
+(see ``checkout_index_lock``). The published database is one file in rollback
+journal mode. A replacement is built in ``<db>.staging`` and published with
+``os.replace`` after fsync. Live WAL/SHM bundles are never renamed.
+
+Crash recovery (under the same lock):
+
+- Staging without ``<db>.staging.complete`` is discarded. The canonical file stays.
+- A ready staging file with that marker is published (crash after fsync, before replace).
+- ``<db>.prev`` is restored only when the canonical file is missing or unusable,
+  then removed. A usable canonical file causes ``.prev`` to be deleted.
+- Lock wait defaults to 60s (``IndexLockTimeout``). The last published file is unchanged.
+
+Readers do not take the lock. A reader that already opened the file keeps that
+inode across ``os.replace``. Later opens see the replacement.
+"""
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - repo-kit targets Linux
+    fcntl = None  # type: ignore[assignment]
 
 from py_indexer import SCHEMA_VERSION
 from py_indexer.chunk import Chunk
@@ -26,6 +49,30 @@ class IndexError_(RuntimeError):
     """Index open / schema failure."""
 
 
+class IndexLockTimeout(TimeoutError):
+    """Timed out waiting for the checkout-wide index lock."""
+
+    def __init__(self, db_path: Path, timeout_sec: float) -> None:
+        self.db_path = db_path
+        self.timeout_sec = timeout_sec
+        super().__init__(
+            f"timed out after {timeout_sec:g}s waiting for the checkout index lock "
+            f"({db_path}.lock). Another py-indexer index is still publishing this "
+            "checkout. Retry after it finishes. The last published database is unchanged."
+        )
+
+
+def policy_mismatch_message(checkout: str, path: Path) -> str:
+    """One database cannot serve two indexing policies for the same checkout."""
+    return (
+        f"index policy mismatch for checkout {checkout}: "
+        f"database {path} was built with a different indexing policy. "
+        "One database per checkout cannot hold two policies at once. "
+        "This request will not use that snapshot. "
+        "Run py-indexer index to replace that same database with the current policy."
+    )
+
+
 @dataclass
 class IndexMeta:
     schema_version: int
@@ -37,14 +84,64 @@ class IndexMeta:
     file_count: int
 
 
-def _connect(path: Path) -> sqlite3.Connection:
+def staging_path(db_path: Path) -> Path:
+    return Path(str(db_path) + ".staging")
+
+
+def _complete_marker(db_path: Path) -> Path:
+    return Path(str(db_path) + ".staging.complete")
+
+
+def _prev_path(db_path: Path) -> Path:
+    return Path(str(db_path) + ".prev")
+
+
+def _sidecar_paths(path: Path) -> list[Path]:
+    return [Path(str(path) + suffix) for suffix in ("-wal", "-shm", "-journal")]
+
+
+def _unlink_quiet(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return
+
+
+def _unlink_bundle(path: Path) -> None:
+    _unlink_quiet(path)
+    for side in _sidecar_paths(path):
+        _unlink_quiet(side)
+
+
+def _fsync_file(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _connect(path: Path, *, delete_journal: bool = False) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         conn = sqlite3.connect(str(path), timeout=60.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=60000")
+        # Published databases stay single-file. Do not switch a live file to WAL:
+        # replacing an open WAL bundle is not safe for concurrent readers.
+        if delete_journal:
+            conn.execute("PRAGMA journal_mode=DELETE")
     except sqlite3.DatabaseError as exc:
         raise IndexError_(f"corrupt index at {path}: {exc}") from exc
     return conn
@@ -123,7 +220,7 @@ def _init_schema(
     )
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        (META_STATUS, "ready"),
+        (META_STATUS, "building"),
     )
 
 
@@ -146,7 +243,7 @@ def open_index(
     if not path.exists():
         if not create:
             raise IndexError_(f"missing index for {repo_id}: {path}")
-        conn = _connect(path)
+        conn = _connect(path, delete_journal=True)
         try:
             # Verify FTS5
             conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_probe USING fts5(x)")
@@ -184,9 +281,10 @@ def open_index(
             )
         if stored_fp != fingerprint:
             conn.close()
-            raise IndexError_(
-                f"index settings changed for {checkout_s}; re-run index to replace {path}"
-            )
+            raise IndexError_(policy_mismatch_message(checkout_s, path))
+        if status == "building":
+            conn.close()
+            raise IndexError_(f"index for {repo_id} is incomplete at {path}")
         if status == "corrupt":
             conn.close()
             raise IndexError_(f"index for {repo_id} marked corrupt")
@@ -309,12 +407,150 @@ def rebuild_empty(
     fingerprint: str,
 ) -> sqlite3.Connection:
     """Replace a broken index with a fresh empty schema (caller deletes old file first)."""
-    if path.exists():
-        path.unlink()
-    for suffix in ("-wal", "-shm"):
-        side = Path(str(path) + suffix)
-        if side.exists():
-            side.unlink()
+    _unlink_bundle(path)
     return open_index(
         path, repo_id, checkout=checkout, fingerprint=fingerprint, create=True
     )
+
+
+def snapshot_ready(path: Path) -> bool:
+    """True when ``path`` is a finished index (status ready, current schema)."""
+    if not path.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=60.0)
+    except sqlite3.DatabaseError:
+        return False
+    try:
+        conn.row_factory = sqlite3.Row
+        status = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (META_STATUS,)
+        ).fetchone()
+        schema = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (META_SCHEMA,)
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        return False
+    finally:
+        conn.close()
+    if status is None or schema is None:
+        return False
+    try:
+        schema_ok = int(schema["value"]) == SCHEMA_VERSION
+    except (TypeError, ValueError):
+        return False
+    return schema_ok and str(status["value"]) == "ready"
+
+
+def discard_staging(db_path: Path) -> None:
+    """Remove an unpublished staging bundle and its completion marker."""
+    _unlink_bundle(staging_path(db_path))
+    _unlink_quiet(_complete_marker(db_path))
+
+
+def publish_staging(db_path: Path) -> None:
+    """Atomically replace the canonical database with a finished staging file.
+
+    The staging connection must already be closed. The file is a single
+    rollback-journal database (no WAL sidecar). ``os.replace`` publishes it.
+    Existing readers keep the previous inode. Leftover ``-wal``/``-shm`` names
+    and ``.prev`` files are removed after the replace; open file descriptors
+    to the old inode stay valid.
+    """
+    staging = staging_path(db_path)
+    if not staging.is_file():
+        raise IndexError_(f"missing staging index for publish: {staging}")
+    _fsync_file(staging)
+    marker = _complete_marker(db_path)
+    marker.write_text("ok\n", encoding="utf-8")
+    _fsync_file(marker)
+    _fsync_dir(db_path.parent)
+    os.replace(staging, db_path)
+    _fsync_dir(db_path.parent)
+    _unlink_quiet(marker)
+    for side in _sidecar_paths(db_path):
+        _unlink_quiet(side)
+    _unlink_bundle(_prev_path(db_path))
+    _unlink_bundle(staging)
+
+
+def recover_index_artifacts(db_path: Path) -> None:
+    """Apply crash recovery for one checkout database. Caller holds the lock."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    staging = staging_path(db_path)
+    marker = _complete_marker(db_path)
+    if marker.is_file() and staging.is_file() and snapshot_ready(staging):
+        os.replace(staging, db_path)
+        try:
+            _fsync_dir(db_path.parent)
+        except OSError:
+            pass
+    elif staging.exists() or any(side.exists() for side in _sidecar_paths(staging)):
+        _unlink_bundle(staging)
+    _unlink_quiet(marker)
+
+    prev = _prev_path(db_path)
+    prev_exists = prev.exists() or any(side.exists() for side in _sidecar_paths(prev))
+    if not prev_exists:
+        return
+    if snapshot_ready(db_path):
+        _unlink_bundle(prev)
+        return
+    if prev.is_file() and snapshot_ready(prev):
+        os.replace(prev, db_path)
+        for suffix in ("-wal", "-shm", "-journal"):
+            src = Path(str(prev) + suffix)
+            if src.exists():
+                os.replace(src, Path(str(db_path) + suffix))
+        return
+    _unlink_bundle(prev)
+
+
+def backup_database(src: Path, dest: Path) -> None:
+    """Copy ``src`` into a new single-file database at ``dest``."""
+    _unlink_bundle(dest)
+    src_conn = sqlite3.connect(str(src), timeout=60.0)
+    try:
+        src_conn.execute("PRAGMA busy_timeout=60000")
+        dest_conn = sqlite3.connect(str(dest), timeout=60.0)
+        try:
+            src_conn.backup(dest_conn)
+            dest_conn.execute("PRAGMA journal_mode=DELETE")
+            dest_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+    for side in _sidecar_paths(dest):
+        _unlink_quiet(side)
+
+
+@contextmanager
+def checkout_index_lock(db_path: Path, timeout_sec: float = 60.0) -> Iterator[None]:
+    """Exclusive interprocess lock for one checkout's index lifecycle.
+
+    The lock file is ``<canonical-db>.lock`` and is not removed (waiters may
+    still have it open). Locking is per open-file description via ``flock``.
+    """
+    if fcntl is None:
+        raise IndexError_("checkout index lock requires fcntl (Linux)")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = Path(str(db_path) + ".lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o644)
+    deadline = time.monotonic() + timeout_sec
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise IndexLockTimeout(db_path, timeout_sec) from None
+                time.sleep(0.05)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)

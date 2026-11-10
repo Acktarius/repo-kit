@@ -81,8 +81,20 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+_MCP_API = "mcp.server.fastmcp.FastMCP"
+
+
+def _mcp_api_imports() -> bool:
+    """True only when the FastMCP symbol ``serve`` actually imports."""
+    try:
+        from mcp.server.fastmcp import FastMCP  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def _print_app_id() -> int:
-    # Probe FTS5 without requiring a config file.
+    # Probe FTS5 without requiring a config file. CLI readiness does not imply MCP.
     fts5 = False
     try:
         import sqlite3
@@ -92,6 +104,7 @@ def _print_app_id() -> int:
         fts5 = True
     except Exception:  # noqa: BLE001
         fts5 = False
+    mcp_ready = bool(fts5 and _mcp_api_imports())
     print(
         json.dumps(
             {
@@ -100,6 +113,9 @@ def _print_app_id() -> int:
                 "compat_version": COMPAT_VERSION,
                 "schema_version": SCHEMA_VERSION,
                 "fts5": fts5,
+                "cli_ready": fts5,
+                "mcp_ready": mcp_ready,
+                "mcp_api": _MCP_API,
             },
             indent=2,
         )

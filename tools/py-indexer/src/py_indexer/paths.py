@@ -105,11 +105,14 @@ def checkout_fingerprint(
     max_file_bytes: int,
     include: list[str],
     exclude: list[str],
+    policy: dict | None = None,
 ) -> str:
-    """Hash of settings that change what one checkout's index contains.
+    """Hash of the effective indexing policy for one checkout.
 
     The checkout directory is not part of this hash. It is the database identity,
     so a later index of the same directory replaces that file instead of adding another.
+    ``policy`` carries selection-rule version, legacy excludes, ``.py-indexer-ignore``,
+    and Git ignore inputs. Two different policies cannot both own the one database.
     """
     payload = {
         "schema_version": schema_version,
@@ -118,6 +121,7 @@ def checkout_fingerprint(
         "max_file_bytes": max_file_bytes,
         "include": include,
         "exclude": exclude,
+        "policy": policy or {},
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

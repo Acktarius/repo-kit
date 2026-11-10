@@ -1,22 +1,41 @@
-"""Incremental indexing into per-repo SQLite databases."""
+"""Incremental indexing into the one database for a checkout.
+
+The writer holds ``checkout_index_lock`` across recovery, identity/policy
+revalidation, staging, and publication. ``BEGIN IMMEDIATE`` still wraps the
+SQL write, but only on the staging connection. The canonical file is replaced
+with ``os.replace`` after the staging database is closed and fsynced.
+
+``PY_INDEXER_TEST_FAIL_BEFORE_PUBLISH=1`` raises after a successful staging
+build and before replace (tests). ``PY_INDEXER_TEST_PUBLISH_DELAY`` sleeps for
+that many seconds in the same window. Neither is set in normal use.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
+import time
 
 from py_indexer.chunk import chunk_lines, content_hash
 from py_indexer.config import AppConfig
 from py_indexer.exclude import iter_candidate_files, language_for
 from py_indexer.gitinfo import git_head
 from py_indexer.store import (
-    IndexError_,
+    backup_database,
+    checkout_index_lock,
     delete_file,
+    discard_staging,
     list_files,
     locked_write,
     open_index,
+    publish_staging,
     read_meta,
+    recover_index_artifacts,
+    set_meta,
+    snapshot_ready,
+    staging_path,
     stamp_success,
     upsert_file,
+    META_STATUS,
 )
 
 
@@ -29,61 +48,62 @@ def _file_hash_and_text(path: Path, max_bytes: int) -> tuple[str, str, int, int]
     return content_hash(text), text, st.st_size, getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))
 
 
-def _aside_path(db_path: Path) -> Path:
-    return db_path.with_suffix(db_path.suffix + ".prev")
-
-
-def _unlink_db_bundle(path: Path) -> None:
-    if path.exists():
-        path.unlink()
-    for suffix in ("-wal", "-shm"):
-        side = Path(str(path) + suffix)
-        if side.exists():
-            side.unlink()
+def _test_publish_gate() -> None:
+    delay = os.environ.get("PY_INDEXER_TEST_PUBLISH_DELAY", "").strip()
+    if delay:
+        time.sleep(float(delay))
+    if os.environ.get("PY_INDEXER_TEST_FAIL_BEFORE_PUBLISH") == "1":
+        raise RuntimeError("injected failure before index publish")
 
 
 def index_repository(cfg: AppConfig, repo_id: str) -> dict:
     repo = cfg.get(repo_id)
     db_path = cfg.db_path(repo_id)
-    fingerprint = cfg.content_fingerprint(repo_id)
-
     conn = None
-    if db_path.exists():
+    with checkout_index_lock(db_path):
+        recover_index_artifacts(db_path)
+        # Policy is read again after the lock so a concurrent writer cannot
+        # publish a different snapshot underneath this decision.
+        fingerprint = cfg.content_fingerprint(repo_id)
+        discard_staging(db_path)
+        incremental = False
+        if snapshot_ready(db_path):
+            try:
+                existing = open_index(
+                    db_path,
+                    repo_id,
+                    checkout=repo.root,
+                    fingerprint=fingerprint,
+                    create=False,
+                )
+            except Exception:
+                existing = None
+            if existing is not None:
+                existing.close()
+                incremental = True
         try:
-            conn = open_index(
-                db_path,
-                repo_id,
-                checkout=repo.root,
-                fingerprint=fingerprint,
-                create=False,
-            )
-        except IndexError_:
-            conn = None
-
-    if conn is None:
-        # Preserve previous file until a replacement is successfully built.
-        aside = None
-        if db_path.exists():
-            aside = _aside_path(db_path)
-            _unlink_db_bundle(aside)
-            db_path.rename(aside)
-            for suffix in ("-wal", "-shm"):
-                src = Path(str(db_path) + suffix)
-                # After rename of main file, wal/shm may still use old name; move if present
-                # (SQLite usually keeps them beside the active name; after rename they may remain.)
-                if src.exists():
-                    src.rename(Path(str(aside) + suffix))
-        try:
-            conn = open_index(
-                db_path,
-                repo_id,
-                checkout=repo.root,
-                fingerprint=fingerprint,
-                create=True,
-            )
+            if incremental:
+                backup_database(db_path, staging_path(db_path))
+                conn = open_index(
+                    staging_path(db_path),
+                    repo_id,
+                    checkout=repo.root,
+                    fingerprint=fingerprint,
+                    create=False,
+                )
+            else:
+                conn = open_index(
+                    staging_path(db_path),
+                    repo_id,
+                    checkout=repo.root,
+                    fingerprint=fingerprint,
+                    create=True,
+                )
             stats = _index_into(conn, cfg, repo_id)
-            if aside is not None:
-                _unlink_db_bundle(aside)
+            conn.close()
+            conn = None
+            _test_publish_gate()
+            publish_staging(db_path)
             return stats
         except Exception:
             if conn is not None:
@@ -91,26 +111,9 @@ def index_repository(cfg: AppConfig, repo_id: str) -> dict:
                     conn.close()
                 except Exception:  # noqa: BLE001
                     pass
-            _unlink_db_bundle(db_path)
-            if aside is not None and aside.exists():
-                aside.rename(db_path)
-                for suffix in ("-wal", "-shm"):
-                    src = Path(str(aside) + suffix)
-                    if src.exists():
-                        src.rename(Path(str(db_path) + suffix))
+                conn = None
+            discard_staging(db_path)
             raise
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:  # noqa: BLE001
-                    pass
-
-    assert conn is not None
-    try:
-        return _index_into(conn, cfg, repo_id)
-    finally:
-        conn.close()
 
 
 def _index_into(conn, cfg: AppConfig, repo_id: str) -> dict:
@@ -119,6 +122,7 @@ def _index_into(conn, cfg: AppConfig, repo_id: str) -> dict:
     added = modified = unchanged = deleted = 0
 
     with locked_write(conn):
+        set_meta(conn, META_STATUS, "building")
         existing = list_files(conn)
         for rel, path in iter_candidate_files(
             repo.root,

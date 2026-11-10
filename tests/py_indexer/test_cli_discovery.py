@@ -31,6 +31,9 @@ class AppIdTests(unittest.TestCase):
         self.assertEqual(doc["name"], "py-indexer")
         self.assertEqual(doc["compat_version"], "0.2.1")
         self.assertTrue(doc["fts5"])
+        self.assertTrue(doc["cli_ready"])
+        self.assertIsInstance(doc["mcp_ready"], bool)
+        self.assertEqual(doc["mcp_api"], "mcp.server.fastmcp.FastMCP")
 
 
 class DiscoveryTests(unittest.TestCase):

@@ -24,11 +24,16 @@ Steps for <= 1.0.1 -> 1.0.2:
   - write .repo-kit/version
   - refresh base module .cursor/ assets (force overwrite)
 
-If an older project-local py-indexer install or cache directory is present, migrate asks
-once whether to remove those old paths. Answering y is enough. repos.json and current
-~/.cache/py-indexer/indexes/*.sqlite3 files are kept.
+If an older project-local py-indexer install is present, migrate lists those files
+and asks before removing them. Answering y is the cleanup. REPO_KIT_TOOL_ASSUME_YES
+does not answer that question. Removal runs only when a shared py-indexer CLI is
+already installed, and only for positively identified legacy files. repos.json,
+excludes.txt, customized requirements, unknown files inside a legacy directory,
+and every directory under ~/.cache/py-indexer/indexes/ are left in place.
+If .cursor/mcp.json is invalid, or its py-indexer entry was not migrated and still
+names a legacy path, that path is not deleted.
 
-Re-run when already up to date is a no-op unless --force (cursor refresh only).
+Re-run when already up to date skips cursor refresh unless --force.
 The py-indexer cleanup question still runs when old paths are present.
 
 Examples:
@@ -88,9 +93,9 @@ echo
 if version_ge "${INSTALLED_VERSION}" "${KIT_VERSION}"; then
   if [[ "${FORCE_CURSOR}" -eq 0 ]]; then
     echo "up to date (${INSTALLED_VERSION} >= ${KIT_VERSION})"
-    exit 0
+  else
+    echo "up to date; refreshing base .cursor/ assets (--force)"
   fi
-  echo "up to date; refreshing base .cursor/ assets (--force)"
 else
   # 1.0.0 -> 1.0.1: relocate chat handoff from root .chat/ to .repo-kit/chat/
   if version_lt "${INSTALLED_VERSION}" "1.0.1"; then
@@ -113,9 +118,9 @@ else
   INSTALLED_VERSION="${KIT_VERSION}"
 fi
 
-# Presence-based: ask once when an older py-indexer install or cache layout is still on disk.
-# A yes here is the cleanup consent. No VERSION bump and no extra environment variable.
-_advise_py_indexer_legacy "${TARGET_DIR}/.repo-kit/tools/py-indexer"
+# Advice is separate from deletion. A yes is not honored without a verified shared
+# CLI, and ASSUME_YES does not count as that yes.
+_py_indexer_legacy_cleanup "${TARGET_DIR}"
 echo
 
 # Refresh base .cursor/ assets after layout migration or --force.

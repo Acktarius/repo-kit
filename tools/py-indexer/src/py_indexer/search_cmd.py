@@ -9,6 +9,7 @@ from pathlib import Path
 
 from py_indexer.budgets import Budgets
 from py_indexer.config import AppConfig
+from py_indexer.exclude import git_ignored_paths, indexed_path_visible, load_exclude_rules
 from py_indexer.store import IndexError_, open_index, read_meta
 
 _FTS_SPECIAL = re.compile(r'[\s"^~*():{}[\]\-]+')
@@ -169,7 +170,22 @@ def search(
             except sqlite3.OperationalError as exc:
                 warnings.append(f"search failed for {rid}: {exc}")
                 rows = []
+            rules = load_exclude_rules(
+                config_dir=cfg.config_dir,
+                repo_root=repo.root,
+                config_exclude=repo.exclude,
+            )
+            hidden = git_ignored_paths(repo.root, [str(row["path"]) for row in rows])
+            omitted = 0
             for row in rows:
+                if not indexed_path_visible(
+                    str(row["path"]),
+                    rules=rules,
+                    include=repo.include,
+                    git_ignored=hidden,
+                ):
+                    omitted += 1
+                    continue
                 text = row["text"]
                 score = -float(row["rank"]) + _boost(row["path"], text, query)
                 snippet, trunc = budgets.clamp_snippet(text)
@@ -187,6 +203,11 @@ def search(
                         truncated=trunc,
                         language=row["language"],
                     )
+                )
+            if omitted:
+                warnings.append(
+                    f"omitted {omitted} indexed path(s) for {rid} "
+                    "excluded by the current indexing policy"
                 )
         finally:
             conn.close()

@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Project-local py-indexer entry point.
+
+Runnable both ways Cursor/MCP needs:
+  - directly:  ./bin/py-indexer …
+  - via venv:  .venv/bin/python bin/py-indexer …
+
+Locates the sibling ``py_indexer`` package from this file's path (not cwd)
+and prefers the tool-local ``.venv`` interpreter when present.
+
+Absent ``.venv``: fall back to the current interpreter (stdlib CLI still works).
+Broken ``.venv`` (missing / dangling / non-executable interpreter, or exec
+failure): exit nonzero with a stderr diagnostic — never silent fallback.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+
+def _tool_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _fail(message: str, code: int = 1) -> None:
+    """Print a concise diagnostic on stderr and exit (keep stdout MCP-clean)."""
+    print(f"error: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def _venv_recreate_hint(venv_dir: Path) -> str:
+    return f"Recreate with: python3 -m venv {venv_dir}"
+
+
+# Scoped to one tool virtualenv path. An inherited marker for a different
+# environment must not be treated as "already retried".
+_REEXEC_ENV = "PY_INDEXER_VENV_REEXEC"
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
+
+
+def _already_retried(venv_dir: Path) -> bool:
+    raw = os.environ.get(_REEXEC_ENV, "")
+    if not raw:
+        return False
+    return _same_path(Path(raw), venv_dir)
+
+
+def _prefer_venv(root: Path) -> None:
+    """Re-exec under tool .venv when available and not already in use.
+
+    Compare ``sys.prefix`` to the tool-local virtualenv directory. Comparing
+    resolved ``sys.executable`` paths is wrong: venv binaries are often
+    symlinks to the system interpreter, so both resolve equal even when the
+    process is *not* running inside that venv.
+
+    An executable ``.venv/bin/python`` is not proof the environment activates
+    (missing ``pyvenv.cfg`` leaves ``sys.prefix`` unchanged and would loop).
+    At most one re-exec is attempted for this venv; a second entry with the
+    wrong prefix fails instead of calling ``os.execv`` again.
+    """
+    venv_dir = root / ".venv"
+    if not venv_dir.exists():
+        # Intentionally absent → keep current interpreter (CLI without mcp).
+        return
+
+    if not venv_dir.is_dir():
+        _fail(
+            f"tool virtualenv path exists but is not a directory: {venv_dir}\n"
+            f"{_venv_recreate_hint(venv_dir)}"
+        )
+
+    if _same_path(Path(sys.prefix), venv_dir):
+        return
+
+    venv_python = venv_dir / "bin" / "python"
+
+    if venv_python.is_symlink() and not venv_python.exists():
+        _fail(
+            f"tool virtualenv interpreter is a dangling symlink: {venv_python}\n"
+            f"{_venv_recreate_hint(venv_dir)}"
+        )
+    if not venv_python.exists():
+        _fail(
+            f"tool virtualenv exists but interpreter is missing: {venv_python}\n"
+            f"{_venv_recreate_hint(venv_dir)}"
+        )
+    if not os.access(venv_python, os.X_OK):
+        _fail(
+            f"tool virtualenv interpreter is not executable: {venv_python}\n"
+            f"Fix mode bits or {_venv_recreate_hint(venv_dir).lower()}"
+        )
+
+    pyvenv_cfg = venv_dir / "pyvenv.cfg"
+    if not pyvenv_cfg.is_file():
+        _fail(
+            f"tool virtualenv is missing pyvenv.cfg ({pyvenv_cfg}); "
+            f"its interpreter would not activate this environment.\n"
+            f"{_venv_recreate_hint(venv_dir)}"
+        )
+
+    if _already_retried(venv_dir):
+        _fail(
+            f"tool virtualenv interpreter did not activate {venv_dir} "
+            f"(sys.prefix is {sys.prefix}). Refusing to re-exec again.\n"
+            f"{_venv_recreate_hint(venv_dir)}"
+        )
+
+    os.environ[_REEXEC_ENV] = str(venv_dir.resolve())
+    argv = [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]]
+    try:
+        os.execv(argv[0], argv)
+    except OSError as exc:
+        _fail(
+            f"failed to execute tool virtualenv interpreter {venv_python}: {exc}\n"
+            f"{_venv_recreate_hint(venv_dir)}"
+        )
+
+
+def main() -> int:
+    root = _tool_root()
+    _prefer_venv(root)
+    # Make the copied package importable without an activated env or cwd.
+    root_s = str(root)
+    if root_s not in sys.path:
+        sys.path.insert(0, root_s)
+    from py_indexer.cli import main as cli_main
+
+    return cli_main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

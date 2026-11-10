@@ -18,12 +18,20 @@ echo "== unit tests (stdlib, offline) =="
 (
   cd "${ROOT}/tests/py_indexer"
   PYTHONPATH="${ROOT}/tools/py-indexer/src" python3 -m unittest \
-    test_core test_cli_discovery -v
+    test_core test_cli_discovery test_index_lock -v
 )
 
 echo
 echo "== tools-cli installer regressions (offline; SKIP_DEPS) =="
 bash "${ROOT}/tests/tools-cli.sh"
+
+echo
+echo "== migration cleanup =="
+bash "${ROOT}/tests/py-indexer-migrate.sh"
+
+echo
+echo "== installed app isolation =="
+bash "${ROOT}/tests/py-indexer-install.sh"
 
 echo
 echo "== MCP integration =="

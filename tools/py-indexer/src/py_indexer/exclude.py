@@ -111,6 +111,9 @@ SECRETISH_SUFFIXES = (
     ".jks",
 )
 
+# Bump when hard-coded selection behavior changes in a way file contents do not show.
+SELECTION_RULES_VERSION = 1
+
 SECRETISH_ALLOW_BASENAMES = {
     ".env.example",
     ".env.sample",
@@ -558,3 +561,138 @@ def iter_candidate_files(
                 continue
             if _accept_file(rel, path):
                 yield rel, path
+
+
+def _overlay_record(path: Path) -> dict:
+    """Bytes that affect the index, or ``present: False`` when the file is absent."""
+    try:
+        if not path.is_file():
+            return {"present": False}
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"present": False}
+    return {"present": True, "text": text.replace("\r\n", "\n").replace("\r", "\n")}
+
+
+def collect_gitignore_entries(root: Path) -> list[dict[str, str]]:
+    """Checkout ``.gitignore`` files, skipping hard-coded dependency directories."""
+    root = root.resolve()
+    found: list[dict[str, str]] = []
+    if not root.is_dir():
+        return found
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if name not in HARD_DIR_NAMES and not (current / name).is_symlink()
+        )
+        if ".gitignore" not in filenames:
+            continue
+        path = current / ".gitignore"
+        if path.is_symlink() or not path.is_file():
+            continue
+        rec = _overlay_record(path)
+        if rec.get("present"):
+            found.append({"path": path.relative_to(root).as_posix(), "text": rec["text"]})
+    found.sort(key=lambda item: item["path"])
+    return found
+
+
+def global_excludes_material() -> dict:
+    """``core.excludesFile`` contents, when Git can name that file."""
+    try:
+        proc = subprocess.run(
+            ["git", "config", "--global", "--get", "core.excludesFile"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"present": False}
+    if proc.returncode != 0:
+        return {"present": False}
+    raw = proc.stdout.strip()
+    if not raw:
+        return {"present": False}
+    path = Path(os.path.expanduser(raw))
+    rec = _overlay_record(path)
+    rec["path"] = str(path)
+    return rec
+
+
+def policy_material(config_dir: Path | None, repo_root: Path) -> dict:
+    """Deterministic indexing-policy inputs for one requesting project and checkout.
+
+    Legacy ``excludes.txt`` lives beside that project's ``repos.json``.
+    ``.py-indexer-ignore`` and Git ignore files live in the checkout, so every
+    project that points at the checkout sees the same checkout-local ignores.
+    A worktree's shared ``info/exclude`` (outside this directory when ``.git``
+    is a file) is still applied at index time by Git and again at read time.
+    """
+    legacy = {"present": False}
+    if config_dir is not None:
+        legacy = _overlay_record(Path(config_dir) / "excludes.txt")
+    root = Path(repo_root)
+    return {
+        "selection_rules_version": SELECTION_RULES_VERSION,
+        "default_excludes": "\n".join(_packaged_default_exclude_lines()),
+        "legacy_excludes": legacy,
+        "py_indexer_ignore": _overlay_record(root / ".py-indexer-ignore"),
+        "gitignores": collect_gitignore_entries(root),
+        "git_info_exclude": _overlay_record(root / ".git" / "info" / "exclude"),
+        "global_excludes": global_excludes_material(),
+    }
+
+
+def _gitignore_fallback(root: Path, rels: list[str]) -> set[str]:
+    matcher = GitIgnoreMatcher(root)
+    ignored: set[str] = set()
+    for rel in rels:
+        parts = rel.split("/")
+        for i in range(len(parts) - 1):
+            parent = "/".join(parts[: i + 1])
+            matcher.load_nested(parent, root / parent)
+        if matcher.ignored(rel, is_dir=False):
+            ignored.add(rel)
+    return ignored
+
+
+def git_ignored_paths(root: Path, rels: list[str]) -> set[str]:
+    """Paths Git currently ignores, including global excludes when Git is available."""
+    if not rels or not is_git_work_tree(root):
+        return set()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "check-ignore", "--exclude-standard", "-z", "--stdin"],
+            input=("\0".join(rels) + "\0").encode(),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return _gitignore_fallback(root, rels)
+    if proc.returncode not in (0, 1):
+        return _gitignore_fallback(root, rels)
+    ignored: set[str] = set()
+    for item in proc.stdout.split(b"\0"):
+        if item:
+            ignored.add(item.decode("utf-8", errors="replace"))
+    return ignored
+
+
+def indexed_path_visible(
+    rel: str,
+    *,
+    rules: IgnoreRuleSet,
+    include: list[str],
+    git_ignored: set[str],
+) -> bool:
+    """False when the requesting policy would not index ``rel``."""
+    if path_is_excluded(rel, exclude_rules=rules, is_dir=False):
+        return False
+    globs = include or DEFAULT_INCLUDE_GLOBS
+    if not _match_any(rel, globs):
+        return False
+    return rel not in git_ignored

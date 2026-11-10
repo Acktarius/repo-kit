@@ -1,0 +1,62 @@
+---
+description: Keep architecture and technical design docs aligned with code and strategy changes
+alwaysApply: true
+---
+
+# Architecture synchronization rule
+
+Architecture documentation must be kept in sync with implementation and technical direction.
+
+When code or design changes affect system structure, boundaries, data flow, storage, interfaces, cryptography, or operational behavior:
+
+1. Review `docs/` for architecture, design, migration, storage, RPC, or component documentation.
+2. Update the most relevant existing document first.
+3. Create a new architecture note only when no current document covers the change.
+4. Keep diagrams, component names, and terminology aligned with the codebase.
+5. If a prior design assumption is no longer valid, mark it as superseded or outdated instead of leaving it ambiguous.
+
+## Trigger conditions
+
+This rule applies when a task changes any of the following:
+- Module boundaries or responsibilities
+- Daemon, wallet, RPC, or API behavior
+- Database engine, schema assumptions, persistence model, or storage layout
+- Cryptographic scheme usage, hybrid flow, key handling, or verification flow
+- Consensus-relevant behavior or protocol-level assumptions
+- Build system, dependency model, or platform constraints
+- Inter-process communication, threading, or performance-sensitive pathways
+- Security assumptions, trust boundaries, or failure handling
+
+## Required architecture actions
+
+When triggered, the assistant must:
+- Identify affected docs in `docs/`
+- Update architecture descriptions, interfaces, invariants, and tradeoffs
+- Record why the design changed, not only what changed
+- Add migration notes when backward compatibility or phased rollout matters
+- Correct stale statements that would mislead future contributors
+
+## Documentation quality bar
+
+Architecture updates should include, where relevant:
+- Context
+- Current design
+- Rationale
+- Constraints
+- Tradeoffs
+- Compatibility impact
+- Open questions
+
+## Completion gate
+
+A task affecting architecture is not complete until one of these is true:
+- Relevant docs in `docs/` were updated, or
+- The assistant explicitly states that architecture docs were reviewed and no update was needed, with a one-sentence reason
+
+## Preferred output note
+
+At the end of the task, include a short architecture impact summary:
+- Architecture docs updated: [list]
+- Architecture docs reviewed but unchanged: [list]
+- Compatibility impact: [none/low/medium/high]
+- Reason if unchanged: [one sentence]

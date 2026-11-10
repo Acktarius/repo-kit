@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 .venv/
 tests/.venv*/
+
+# setuptools / pip outputs for the py-indexer package. Source lives in src/py_indexer.
+tools/py-indexer/build/
+tools/py-indexer/**/*.egg-info/

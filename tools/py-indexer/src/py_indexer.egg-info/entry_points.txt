@@ -1,2 +1,0 @@
-[console_scripts]
-py-indexer = py_indexer.cli:main

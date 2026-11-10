@@ -149,6 +149,23 @@ else
   bad "PATH markers=${markers} after=${markers2}"
 fi
 
+# Existing managed block whose bin directory changed is rewritten in place.
+python3 - "${HOME}/.bashrc" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("# bin: ", "# bin: /old/py-indexer-bin\n# bin-was: ", 1)
+path.write_text(text, encoding="utf-8")
+PY
+"${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer --force >/dev/null
+if grep -Fqx "# bin: ${XDG_BIN_HOME}" "${HOME}/.bashrc" \
+  && [[ "$(grep -c '^# repo-kit py-indexer PATH$' "${HOME}/.bashrc")" -eq 1 ]]; then
+  ok "PATH block updated when its bin directory changed"
+else
+  bad "PATH block was not updated for the current bin directory"
+fi
+
 # --- preserve repos.json even with --force ---
 printf '{"schema_version":1,"active_repo":"custom","defaults":{"max_results":3,"max_snippet_chars":100,"max_total_chars":1000,"chunk_lines":40,"chunk_overlap_lines":5,"max_file_bytes":10000},"repositories":[{"id":"custom","root":".","role":"working","related":[],"include":[],"exclude":["*.secret"]}]}\n' >"${TOOL}/repos.json"
 sum_before="$(sha256sum "${TOOL}/repos.json")"
@@ -295,23 +312,27 @@ else
   bad "sync-cursor tool install failed"
 fi
 
-# --- installed app survives kit path rename (copy-based offline install) ---
-KIT_MOVED="${TMP}/kit-moved"
-cp -a "${ROOT}/tools/py-indexer/src/py_indexer" \
-  "${XDG_DATA_HOME}/py-indexer/venv/lib/"*/site-packages/py_indexer.bak 2>/dev/null || true
-# Prove executable does not depend on kit checkout path:
-MOVED_ROOT="${TMP}/moved-kit"
-mkdir -p "${MOVED_ROOT}"
-# Just verify --app-id still works after we could move the original kit:
-"${EXE}" --app-id >/dev/null && ok "shared app runs independently of cwd" || bad "shared app broken"
+# Package bytes live in the user virtualenv. Source removal is tests/py-indexer-install.sh.
+installed="$(find "${XDG_DATA_HOME}/py-indexer/venv" -path '*/site-packages/py_indexer/__init__.py' -print -quit)"
+if [[ -n "${installed}" && "${installed}" != "${ROOT}/tools/py-indexer/"* ]]; then
+  ok "shared app package lives in the user virtualenv"
+else
+  bad "shared app package is not in the user virtualenv: ${installed}"
+fi
 
-# Index + search smoke
+# Index + search smoke. A failed search fails the test.
+printf 'export const pyIndexerSmokeToken = 1;\n' >"${TARGET}/src-smoke.ts"
 (
   cd "${TARGET}"
   "${EXE}" index --all >/dev/null
-  "${EXE}" search 'custom' --json >/dev/null || true
+  "${EXE}" search 'pyIndexerSmokeToken' --json >"${TMP}/search.json"
   "${EXE}" status >/dev/null
-) && ok "index/status via shared exe" || bad "index/status failed"
+) && python3 - "${TMP}/search.json" <<'PY' && ok "index/search/status via shared exe" || bad "index/search/status failed"
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+assert doc.get("hits"), doc
+assert any("pyIndexerSmokeToken" in hit.get("text", "") for hit in doc["hits"])
+PY
 
 echo
 echo "tools-cli: ${pass} passed, ${fail} failed"

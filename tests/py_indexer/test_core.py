@@ -329,6 +329,45 @@ class IndexSearchTests(unittest.TestCase):
         index_repository(mutated_cfg, "working")
         self.assertTrue(before.is_file())
 
+    def test_legacy_excludes_do_not_reuse_permissive_snapshot(self) -> None:
+        _write(self.target / "src" / "secret-legacy.ts", "export const legacySecretToken = 1;\n")
+        _write(self.target / "src" / "keep-legacy.ts", "export const legacyKeepToken = 1;\n")
+        other = self.tmp / "proj-b"
+        other_tool = other / ".repo-kit" / "tools" / "py-indexer"
+        other_tool.mkdir(parents=True)
+        cfg_b = json.loads(self.cfg_path.read_text(encoding="utf-8"))
+        cfg_b["repositories"][0]["root"] = str(self.target)
+        cfg_b["repositories"][0]["related"] = []
+        (other_tool / "repos.json").write_text(json.dumps(cfg_b), encoding="utf-8")
+        broad = load_config(other_tool / "repos.json", project_root=other)
+        _write(self.tool / "excludes.txt", "src/secret-legacy.ts\n")
+        narrow = load_config(self.cfg_path, project_root=self.target)
+        self.assertEqual(narrow.db_path("working"), broad.db_path("working"))
+        self.assertNotEqual(
+            narrow.content_fingerprint("working"),
+            broad.content_fingerprint("working"),
+        )
+        index_repository(broad, "working")
+        secret = search(narrow, "legacySecretToken", repo_ids=["working"])
+        self.assertEqual(secret.hits, [])
+        self.assertTrue(any("index policy mismatch" in w for w in secret.warnings))
+        keep = search(narrow, "legacyKeepToken", repo_ids=["working"])
+        self.assertEqual(keep.hits, [])
+        self.assertTrue(any("index policy mismatch" in w for w in keep.warnings))
+        owned = search(broad, "legacySecretToken", repo_ids=["working"])
+        self.assertTrue(owned.hits)
+        base = narrow.content_fingerprint("working")
+        _write(self.target / ".py-indexer-ignore", "src/keep-legacy.ts\n")
+        fp_ignore = load_config(self.cfg_path, project_root=self.target).content_fingerprint(
+            "working"
+        )
+        self.assertNotEqual(base, fp_ignore)
+        _write(self.target / ".gitignore", "src/keep-legacy.ts\n")
+        fp_git = load_config(self.cfg_path, project_root=self.target).content_fingerprint(
+            "working"
+        )
+        self.assertNotEqual(fp_ignore, fp_git)
+
     def test_unusual_query_and_budgets(self) -> None:
         q = sanitize_fts_query('^^^ """ OR AND * ((boom~~')
         self.assertNotIn("*", q)

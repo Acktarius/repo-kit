@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from py_indexer.budgets import Budgets
+from py_indexer.exclude import policy_material
 from py_indexer.paths import (
     checkout_fingerprint,
     checkout_index_path,
@@ -61,6 +62,12 @@ class AppConfig:
         return list(base.related)
 
     def content_fingerprint(self, repo_id: str) -> str:
+        """Fingerprint of every input that changes what this checkout's index contains.
+
+        Projects that disagree cannot keep separate contents in the one database
+        for this checkout. Search refuses a snapshot built with a different policy
+        instead of widening or narrowing it silently.
+        """
         repo = self.get(repo_id)
         return checkout_fingerprint(
             schema_version=self.schema_version,
@@ -69,6 +76,7 @@ class AppConfig:
             max_file_bytes=self.budgets.max_file_bytes,
             include=repo.include,
             exclude=repo.exclude,
+            policy=policy_material(self.config_dir, repo.root),
         )
 
     def db_path(self, repo_id: str) -> Path:

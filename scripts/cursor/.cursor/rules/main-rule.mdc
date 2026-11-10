@@ -1,0 +1,47 @@
+---
+alwaysApply: true
+---
+
+# Main Skill: Professional C++11 Coding
+
+You are a professional C++11 coder. Pay careful attention to details and correctness in every implementation.
+
+## Core expectations
+
+- Write clean, maintainable, efficient C++11 code.
+- Prefer modern C++11 idioms where appropriate, while staying compatible with the project compiler and build configuration.
+- Evaluate code after implementing it.
+- Check for already existing code, utilities, helpers, and patterns before adding new code to avoid dead code, duplication, and redundancy.
+- Organise code with proper headers and consistent structure.
+- Reuse existing abstractions instead of introducing unnecessary new ones.
+
+## Naming conventions
+
+- Use **camelCase** for all method names, variable names, and function names (e.g. `connectPeers`, `isPeerUsed`, `fetchPeerList`).
+- Use **PascalCase** for class names, struct names, and type aliases (e.g. `P2pContext`, `PeerlistEntry`).
+- Use **UPPER_SNAKE_CASE** for constants and macros (e.g. `P2P_DEFAULT_PORT`).
+- Use `m_` prefix for member variables (e.g. `m_stopRequested`, `m_peerlist`).
+- Do **not** use snake_case for methods or variables — even if surrounding legacy code does. New code is always camelCase.
+
+## Memory and performance discipline
+
+- Analyse ownership, lifetime, and memory usage before choosing data structures.
+- Prefer **RAII** — tie every resource (memory, files, sockets, locks) to object lifetime. Acquire in constructor, release in destructor.
+- Prefer stack allocation, move semantics, and references where appropriate.
+- Avoid unnecessary copies, allocations, and temporary objects.
+- Use `const`, references, and `std::move` carefully to reduce overhead.
+- Choose containers and algorithms that match the required access pattern and memory profile.
+- Avoid memory leaks, dangling pointers, and undefined behaviour.
+- Use smart pointers only when dynamic ownership is required.
+
+## Code quality checklist
+
+Before finishing implementation, verify:
+
+- Existing code was checked first to avoid duplication.
+- Headers are organised consistently with the project style.
+- Code compiles under the project build configuration.
+- Memory usage and ownership are appropriate.
+- Edge cases, error handling, and resource cleanup were considered.
+- No unnecessary includes, functions, classes, or dead code were introduced.
+- All new names follow the naming conventions above (camelCase methods, PascalCase types, `m_` members).

@@ -1,0 +1,30 @@
+---
+description: When the user wants guided ops/deploy help, give one step at a time and wait for confirmation before the next step.
+alwaysApply: true
+---
+
+# Step-by-step guidance mode
+
+When the user asks for **step-by-step**, **one step at a time**, **wait for confirmation**, or similar operational/deploy guidance:
+
+## Do
+
+1. Give **exactly one** step — one command, one edit, or one check.
+2. **Number** the step (e.g. **Step 3 — …**).
+3. **Stop.** Do not preview later steps, optional branches, or “while you’re at it” extras.
+4. Continue **only** after the user replies with **`go`**, **`done`**, **`ok`**, **`continue`**, or pastes output from that step.
+5. If they paste output, interpret it briefly, then give **the next single step** only.
+
+## Do not
+
+- Dump multi-step runbooks in one message.
+- Run commands for the user unless they explicitly asked you to execute (default: suggest commands they can paste).
+- Advance because the next steps seem obvious.
+
+## Default mode
+
+If they did **not** ask for step-by-step, answer normally (concise multi-step is fine).
+
+## Reference
+
+Full convention: `docs/step-by-step-guidance.md`

@@ -200,9 +200,11 @@ class GeneratedMcpConfigE2E(unittest.IsolatedAsyncioTestCase):
         entry = doc["mcpServers"]["py-indexer"]
         command = entry["command"]
         args = list(entry["args"])
-        self.assertEqual(command, str(self.exe.resolve()) if Path(command).exists() else command)
-        # Accept either exact link path or resolved path.
-        self.assertTrue(Path(command).name == "py-indexer", command)
+        command_path = Path(command)
+        self.assertTrue(command_path.is_absolute(), command)
+        self.assertTrue(command_path.exists(), command)
+        self.assertTrue(os.path.samefile(command_path, self.exe), (command, self.exe))
+        self.assertEqual(command_path.resolve(), self.exe.resolve())
         self.assertEqual(args, ["--config", str(self.tool / "repos.json"), "serve"], args)
         return self.StdioServerParameters(
             command=command,

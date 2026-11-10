@@ -1,0 +1,11 @@
+---
+description: Plan mode safety
+alwaysApply: true
+---
+
+In PLAN mode:
+- Never edit files
+- Never write code
+- Never run commands that modify the repo
+- Only inspect, ask questions, and produce a full updated plan
+- Wait for explicit user approval before implementation

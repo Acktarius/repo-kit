@@ -1105,6 +1105,9 @@ if doc.get("name") != "py-indexer":
     sys.exit(1)
 if not doc.get("fts5"):
     sys.exit(1)
+# Missing cli_ready is an older probe. An explicit false is not CLI-ready.
+if doc.get("cli_ready") is False:
+    sys.exit(1)
 ver = str(doc.get("compat_version") or doc.get("version") or "")
 
 def parts(v):
@@ -1166,41 +1169,208 @@ _py_indexer_find_any_ours() {
   return 1
 }
 
+# Shell wrapper so the launcher survives spaces in HOME / XDG paths.
+# A raw "#!<interpreter>" shebang is split on whitespace by the kernel.
+_py_indexer_write_launcher() {
+  local py="$1"
+  local dest="$2"
+  python3 - "${py}" "${dest}" <<'PY'
+import os, sys
+py, dest = sys.argv[1], sys.argv[2]
+quoted = "'" + py.replace("'", "'\\''") + "'"
+text = "#!/bin/sh\nexec " + quoted + " -m py_indexer \"$@\"\n"
+with open(dest, "w", encoding="utf-8") as fh:
+    fh.write(text)
+os.chmod(dest, 0o755)
+PY
+}
+
+_py_indexer_venv_python() {
+  local exe="$1"
+  local resolved bin
+  resolved="$(readlink -f "${exe}" 2>/dev/null || printf '%s\n' "${exe}")"
+  bin="$(dirname "${resolved}")"
+  if [[ -x "${bin}/python" ]]; then
+    printf '%s\n' "${bin}/python"
+    return 0
+  fi
+  return 1
+}
+
+# Report MCP by importing the API serve uses, not by package metadata alone.
+_py_indexer_mcp_import_ok() {
+  local py="$1"
+  "${py}" -c 'from mcp.server.fastmcp import FastMCP' >/dev/null 2>&1
+}
+
+_offer_py_indexer_mcp_repair() {
+  local exe="$1"
+  local py json
+  json="$(_py_indexer_probe "${exe}" || true)"
+  if [[ -n "${json}" ]] && python3 -c 'import json,sys; d=json.loads(sys.argv[1]); raise SystemExit(0 if d.get("mcp_ready") is True else 1)' "${json}"; then
+    echo "  mcp       ready (mcp.server.fastmcp.FastMCP)"
+    return 0
+  fi
+  if ! py="$(_py_indexer_venv_python "${exe}")"; then
+    warn "shared py-indexer at ${exe} is CLI-only; its virtualenv python was not found, so mcp was not installed"
+    return 0
+  fi
+  if _py_indexer_mcp_import_ok "${py}"; then
+    echo "  mcp       ready (mcp.server.fastmcp.FastMCP)"
+    return 0
+  fi
+  if [[ "${REPO_KIT_TOOL_SKIP_DEPS:-0}" == "1" ]]; then
+    warn "shared py-indexer is CLI-only (installed offline without mcp; REPO_KIT_TOOL_SKIP_DEPS=1). Not an MCP installation. serve needs: ${py} -m pip install 'mcp==1.30.0'"
+    return 0
+  fi
+  echo "  mcp       missing mcp.server.fastmcp.FastMCP in ${py}"
+  if [[ ! -t 0 ]] && [[ "${REPO_KIT_TOOL_ASSUME_YES:-0}" != "1" ]]; then
+    warn "non-interactive: left the shared app CLI-only; re-run to install mcp==1.30.0"
+    return 0
+  fi
+  if ! prompt_yn_interactive "Install mcp==1.30.0 into the existing virtualenv so py-indexer serve works (may use network)?"; then
+    warn "MCP dependencies left missing; CLI indexing still works, serve does not"
+    return 0
+  fi
+  "${py}" -m pip install 'mcp==1.30.0'
+  if _py_indexer_mcp_import_ok "${py}"; then
+    echo "  mcp       ready (mcp.server.fastmcp.FastMCP)"
+  else
+    warn "mcp install finished but mcp.server.fastmcp.FastMCP still does not import; serve is not operational"
+  fi
+}
+
+_ensure_py_indexer_link() {
+  local venv_exe link
+  venv_exe="$(_py_indexer_venv_dir)/bin/py-indexer"
+  link="$(_py_indexer_exe_path)"
+  [[ -x "${venv_exe}" ]] || return 0
+  mkdir -p "$(dirname "${link}")"
+  if [[ -e "${link}" && ! -L "${link}" ]]; then
+    warn "not replacing ${link} (existing file is not the managed symlink)"
+    return 0
+  fi
+  ln -sfn "${venv_exe}" "${link}"
+}
+
 _ensure_py_indexer_path() {
   local bin_dir="$1"
-  local marker="# repo-kit py-indexer PATH"
   local profile="${HOME}/.bashrc"
+  local state prompt
 
-  case ":${PATH}:" in
-    *":${bin_dir}:"*)
-      echo "  PATH ok   ${bin_dir} already on PATH"
-      return 0
-      ;;
-  esac
+  if python3 -c 'import os,sys; b=sys.argv[1]; raise SystemExit(0 if b in os.environ.get("PATH","").split(":") else 1)' "${bin_dir}"; then
+    echo "  PATH ok   ${bin_dir} already on PATH"
+  else
+    echo "  note      ${bin_dir} is not on PATH in this process"
+    echo "            GUI/Cursor MCP uses the absolute executable and does not need PATH."
+  fi
 
-  echo "  note      ${bin_dir} is not on PATH in this process"
-  echo "            GUI/Cursor MCP uses the absolute executable and does not need PATH."
+  state="$(python3 - "${profile}" "${bin_dir}" <<'PY'
+import os, sys
+profile, bin_dir = sys.argv[1], sys.argv[2]
+start = "# repo-kit py-indexer PATH"
+end = "# repo-kit py-indexer PATH end"
+if not os.path.isfile(profile):
+    print("absent")
+    raise SystemExit(0)
+text = open(profile, encoding="utf-8", errors="replace").read().splitlines()
+try:
+    i = next(n for n, line in enumerate(text) if line.strip() == start)
+except StopIteration:
+    print("absent")
+    raise SystemExit(0)
+region = text[i:i + 12]
+recorded = None
+for line in region:
+    if line.startswith("# bin:"):
+        recorded = line[len("# bin:"):].lstrip()
+        break
+if recorded is None:
+    print("differ")
+elif recorded == bin_dir:
+    print("match")
+else:
+    print("differ")
+PY
+)"
+
+  if [[ "${state}" == "match" ]]; then
+    echo "  reuse     PATH marker already matches ${bin_dir} in ${profile}"
+    return 0
+  fi
+
+  if [[ "${state}" == "differ" ]]; then
+    prompt="Update the repo-kit py-indexer PATH block in ${profile} to ${bin_dir}?"
+  else
+    prompt="Add ${bin_dir} to PATH in ${profile} (idempotent marker)?"
+  fi
   if [[ ! -t 0 ]] && [[ "${REPO_KIT_TOOL_ASSUME_YES:-0}" != "1" ]]; then
     warn "non-interactive: not modifying shell profile; add ${bin_dir} to PATH yourself"
     echo "  activate:  export PATH=\"${bin_dir}:\$PATH\""
     return 0
   fi
-  if ! prompt_yn_interactive "Add ${bin_dir} to PATH in ${profile} (idempotent marker)?"; then
+  if ! prompt_yn_interactive "${prompt}"; then
     warn "skipped PATH profile update"
     echo "  activate:  export PATH=\"${bin_dir}:\$PATH\""
     return 0
   fi
 
-  touch "${profile}"
-  if grep -Fqx "${marker}" "${profile}" 2>/dev/null; then
-    echo "  reuse     PATH marker already present in ${profile}"
+  python3 - "${profile}" "${bin_dir}" <<'PY'
+import os, sys
+profile, bin_dir = sys.argv[1], sys.argv[2]
+if "\n" in bin_dir or "\r" in bin_dir:
+    raise SystemExit("bin directory contains a newline")
+start = "# repo-kit py-indexer PATH"
+end = "# repo-kit py-indexer PATH end"
+quoted = "'" + bin_dir.replace("'", "'\\''") + "'"
+block = [
+    start,
+    "# bin: " + bin_dir,
+    f"_repo_kit_py_indexer_bin={quoted}",
+    'case ":${PATH}:" in',
+    '*":${_repo_kit_py_indexer_bin}:"*) ;;',
+    '*) export PATH="${_repo_kit_py_indexer_bin}:${PATH}" ;;',
+    "esac",
+    end,
+]
+text = ""
+if os.path.isfile(profile):
+    text = open(profile, encoding="utf-8", errors="replace").read()
+lines = text.splitlines()
+start_at = None
+for n, line in enumerate(lines):
+    if line.strip() == start:
+        start_at = n
+        break
+if start_at is None:
+    body = "\n".join(block)
+    prefix = text
+    if prefix and not prefix.endswith("\n"):
+        prefix += "\n"
+    if prefix and not prefix.endswith("\n\n"):
+        prefix += "\n"
+    out = prefix + body + "\n"
+else:
+    end_at = None
+    for n in range(start_at + 1, min(start_at + 12, len(lines))):
+        if lines[n].strip() == end or lines[n].lstrip().startswith("case "):
+            end_at = n
+            if lines[n].strip() != end:
+                break
+    if end_at is None:
+        end_at = start_at
+    lines[start_at:end_at + 1] = block
+    out = "\n".join(lines)
+    if text.endswith("\n") or out:
+        out += "\n"
+tmp = profile + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    fh.write(out)
+os.replace(tmp, profile)
+PY
+  if [[ "${state}" == "differ" ]]; then
+    echo "  updated   PATH block in ${profile}"
   else
-    {
-      echo ""
-      echo "${marker}"
-      echo "# Idempotent: only prepend if missing"
-      echo "case \":\${PATH}:\" in *\":${bin_dir}:\"*) ;; *) export PATH=\"${bin_dir}:\${PATH}\" ;; esac"
-    } >>"${profile}"
     echo "  added     PATH block to ${profile}"
   fi
   echo "  activate now in this terminal:"
@@ -1262,21 +1432,14 @@ dest = pathlib.Path(site) / "py_indexer"
 if dest.exists():
     shutil.rmtree(dest)
 shutil.copytree(pkg_src, dest)
-script = venv / "bin" / "py-indexer"
-script.write_text(
-    "#!" + str(venv / "bin" / "python") + "\n"
-    "from py_indexer.cli import main\n"
-    "raise SystemExit(main())\n",
-    encoding="utf-8",
-)
-script.chmod(0o755)
 PY
-    warn "installed py-indexer offline without mcp (REPO_KIT_TOOL_SKIP_DEPS=1); MCP serve needs: ${py} -m pip install 'mcp==1.30.0'"
+    _py_indexer_write_launcher "${py}" "${venv}/bin/py-indexer"
   else
     if ! prompt_yn_interactive "Install/upgrade shared py-indexer into ${venv} (may use network for mcp==1.30.0)?"; then
       die "refused shared py-indexer install; aborting (MCP would be unusable)"
     fi
     "${py}" -m pip install --upgrade "${src}"
+    _py_indexer_write_launcher "${py}" "${venv}/bin/py-indexer"
   fi
 
   [[ -x "${venv}/bin/py-indexer" ]] || die "console script missing after install: ${venv}/bin/py-indexer"
@@ -1291,8 +1454,7 @@ PY
     || die "installed py-indexer failed compatibility check: ${json}"
 
   echo "  installed ${exe}"
-  _ensure_py_indexer_path "${bin_dir}"
-  # Caller captures via global.
+  # Caller captures via global. PATH and MCP repair run in _ensure_py_indexer_shared.
   PY_INDEXER_EXE="${exe}"
 }
 
@@ -1307,6 +1469,9 @@ _ensure_py_indexer_shared() {
   if verified="$(_py_indexer_find_verified)"; then
     echo "  reuse     shared py-indexer: ${verified}"
     PY_INDEXER_EXE="${verified}"
+    _ensure_py_indexer_link
+    _ensure_py_indexer_path "$(_py_indexer_bin_dir)"
+    _offer_py_indexer_mcp_repair "${PY_INDEXER_EXE}"
     return 0
   fi
 
@@ -1339,6 +1504,9 @@ _ensure_py_indexer_shared() {
   _install_py_indexer_shared_app
   [[ -n "${PY_INDEXER_EXE}" && -x "${PY_INDEXER_EXE}" ]] \
     || die "shared py-indexer install did not set PY_INDEXER_EXE"
+  _ensure_py_indexer_link
+  _ensure_py_indexer_path "$(_py_indexer_bin_dir)"
+  _offer_py_indexer_mcp_repair "${PY_INDEXER_EXE}"
 }
 
 # Seed repos.json from kit example when missing; never overwrite an existing file.
@@ -1424,8 +1592,9 @@ _merge_py_indexer_mcp_json() {
   local mcp_path="${TARGET_DIR}/.cursor/mcp.json"
   local fragment_path="${TARGET_DIR}/.repo-kit/tools/py-indexer/mcp.fragment.json"
   local config_path="${TARGET_DIR}/.repo-kit/tools/py-indexer/repos.json"
-  local desired rc
+  local desired rc merge_out
 
+  PY_INDEXER_MCP_STATUS=""
   [[ -x "${exe}" ]] || die "py-indexer executable not usable: ${exe}"
   mkdir -p "$(dirname "${mcp_path}")" "$(dirname "${fragment_path}")"
 
@@ -1464,28 +1633,42 @@ with open(tmp, "w", encoding="utf-8") as fh:
 os.replace(tmp, path)
 PY
     echo "  add        .cursor/mcp.json (py-indexer)"
+    PY_INDEXER_MCP_STATUS="MERGED"
     return 0
   fi
 
   set +e
-  python3 - "${mcp_path}" "${desired}" "${TARGET_DIR}" <<'PY'
+  merge_out="$(python3 - "${mcp_path}" "${desired}" "${TARGET_DIR}" <<'PY'
 import json, os, sys
 
 path, desired, target = sys.argv[1], json.loads(sys.argv[2]), sys.argv[3]
+target = target.rstrip("/")
+tool = target + "/.repo-kit/tools/py-indexer"
+legacy_keys = {"type", "command", "args"}
+legacy_cmds = {
+    "${workspaceFolder}/.repo-kit/tools/py-indexer/.venv/bin/python",
+    tool + "/.venv/bin/python",
+}
+legacy_scripts = {
+    "${workspaceFolder}/.repo-kit/tools/py-indexer/bin/py-indexer",
+    tool + "/bin/py-indexer",
+}
 
-def is_legacy(existing):
-    cmd = str(existing.get("command") or "").replace("${workspaceFolder}", target)
+def is_exact_legacy(existing):
+    """Repo-kit's old generated entry for this target, with no extra fields."""
+    if not isinstance(existing, dict) or set(existing.keys()) != legacy_keys:
+        return False
+    if existing.get("type") != "stdio":
+        return False
+    cmd = existing.get("command")
     args = existing.get("args")
-    if not isinstance(args, list):
+    if not isinstance(cmd, str) or cmd not in legacy_cmds:
         return False
-    args_n = [str(a).replace("${workspaceFolder}", target) for a in args]
-    if not cmd.endswith("/.repo-kit/tools/py-indexer/.venv/bin/python"):
+    if not isinstance(args, list) or len(args) != 2:
         return False
-    if len(args_n) != 2:
+    if not all(isinstance(item, str) for item in args):
         return False
-    if not args_n[0].endswith("/.repo-kit/tools/py-indexer/bin/py-indexer"):
-        return False
-    return args_n[1] == "serve"
+    return args[0] in legacy_scripts and args[1] == "serve"
 
 try:
     with open(path, encoding="utf-8") as fh:
@@ -1512,7 +1695,7 @@ if existing is not None:
     if json.loads(json.dumps(existing, sort_keys=True)) == json.loads(json.dumps(desired, sort_keys=True)):
         print("UNCHANGED")
         sys.exit(0)
-    if isinstance(existing, dict) and is_legacy(existing):
+    if is_exact_legacy(existing):
         servers["py-indexer"] = desired
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -1532,8 +1715,10 @@ with open(tmp, "w", encoding="utf-8") as fh:
 os.replace(tmp, path)
 print("MERGED")
 PY
+)"
   rc=$?
   set -e
+  PY_INDEXER_MCP_STATUS="${merge_out%%$'\n'*}"
 
   case "${rc}" in
     0) ;;
@@ -1550,14 +1735,6 @@ PY
       die "mcp.json merge failed (exit ${rc})"
       ;;
   esac
-}
-
-_py_indexer_legacy_present() {
-  local tool_root="$1"
-  [[ -e "${tool_root}/bin/py-indexer" ]] \
-    || [[ -d "${tool_root}/py_indexer" ]] \
-    || [[ -d "${tool_root}/.venv" ]] \
-    || [[ -d "${tool_root}/index" ]]
 }
 
 # Yes only when the user types yes. Install consent and REPO_KIT_TOOL_ASSUME_YES do not count.
@@ -1579,52 +1756,270 @@ _prompt_yn_explicit_no() {
   esac
 }
 
-_advise_py_indexer_legacy() {
+# List positively identified legacy runtime files. Does not delete.
+_py_indexer_legacy_plan() {
   local tool_root="$1"
-  local cache_indexes name entry
-  local -a removals=()
+  python3 - "${tool_root}" <<'PY'
+import json, os, re, sys
+from pathlib import Path
+
+tool_root = Path(sys.argv[1])
+req = (
+    b"# Optional MCP dependency. Indexing and CLI search work without it.\n"
+    b"# Pin matched to FastMCP stdio API used by py_indexer.mcp_server.\n"
+    b"mcp==1.30.0\n"
+)
+mcp_example = (
+    b"{\n"
+    b'  "mcpServers": {\n'
+    b'    "py-indexer": {\n'
+    b'      "type": "stdio",\n'
+    b'      "command": "${workspaceFolder}/.repo-kit/tools/py-indexer/.venv/bin/python",\n'
+    b'      "args": [\n'
+    b'        "${workspaceFolder}/.repo-kit/tools/py-indexer/bin/py-indexer",\n'
+    b'        "serve"\n'
+    b"      ]\n"
+    b"    }\n"
+    b"  }\n"
+    b"}\n"
+)
+pkg_files = {
+    "__init__.py", "__main__.py", "budgets.py", "chunk.py", "cli.py", "config.py",
+    "exclude.py", "gitinfo.py", "index_cmd.py", "mcp_server.py", "paths.py",
+    "read_cmd.py", "search_cmd.py", "status_cmd.py", "store.py",
+}
+safe_index = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.sqlite3(-wal|-shm)?$")
+remove, keep = [], []
+
+def plain_dir(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
+
+def add_remove(path: Path) -> None:
+    remove.append(str(path))
+
+def add_keep(path: Path, reason: str) -> None:
+    keep.append({"path": str(path), "reason": reason})
+
+bin_dir = tool_root / "bin"
+if bin_dir.exists() or bin_dir.is_symlink():
+    if not plain_dir(bin_dir):
+        add_keep(bin_dir, "not a plain directory; left in place")
+    else:
+        children = list(bin_dir.iterdir())
+        launcher = bin_dir / "py-indexer"
+        if (
+            len(children) == 1
+            and children[0].name == "py-indexer"
+            and launcher.is_file()
+            and not launcher.is_symlink()
+        ):
+            add_remove(bin_dir)
+        else:
+            add_keep(bin_dir, "contains files other than the legacy launcher; left in place")
+
+pkg = tool_root / "py_indexer"
+if pkg.exists() or pkg.is_symlink():
+    if not plain_dir(pkg):
+        add_keep(pkg, "not a plain directory; left in place")
+    else:
+        unknown = False
+        for dirpath, dirnames, filenames in os.walk(pkg):
+            rel_dir = Path(dirpath).relative_to(pkg)
+            if rel_dir == Path("."):
+                if any(name != "__pycache__" for name in dirnames):
+                    unknown = True
+                if any(name not in pkg_files for name in filenames):
+                    unknown = True
+            else:
+                if any(part != "__pycache__" for part in rel_dir.parts):
+                    unknown = True
+                if any(not name.endswith(".pyc") for name in filenames):
+                    unknown = True
+        if unknown:
+            add_keep(pkg, "contains files that are not the shipped legacy package; left in place")
+        else:
+            add_remove(pkg)
+
+venv = tool_root / ".venv"
+if venv.exists() or venv.is_symlink():
+    cfg = venv / "pyvenv.cfg"
+    py = venv / "bin" / "python"
+    if plain_dir(venv) and cfg.is_file() and not cfg.is_symlink() and py.exists():
+        add_remove(venv)
+    else:
+        add_keep(venv, "not an identified virtualenv (pyvenv.cfg + bin/python); left in place")
+
+index = tool_root / "index"
+if index.exists() or index.is_symlink():
+    if not plain_dir(index):
+        add_keep(index, "not a plain directory; left in place")
+    else:
+        bad = False
+        for child in index.iterdir():
+            if child.is_dir() or child.is_symlink() or not safe_index.fullmatch(child.name):
+                bad = True
+                break
+        if bad:
+            add_keep(index, "contains entries other than legacy <id>.sqlite3 databases; left in place")
+        else:
+            add_remove(index)
+
+def maybe_exact_file(name: str, expected: bytes) -> None:
+    path = tool_root / name
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or not path.is_file():
+        add_keep(path, "not a regular file; left in place")
+        return
+    if path.read_bytes() == expected:
+        add_remove(path)
+    else:
+        add_keep(path, "contents differ from the shipped legacy file; left in place")
+
+maybe_exact_file("requirements.txt", req)
+maybe_exact_file("mcp.example.json", mcp_example)
+print(json.dumps({"remove": remove, "keep": keep}))
+PY
+}
+
+_py_indexer_legacy_cleanup() {
+  local target="$1"
+  local tool_root="${target}/.repo-kit/tools/py-indexer"
+  local cache_indexes plan exe kind path filtered
 
   if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
     cache_indexes="${XDG_CACHE_HOME}/py-indexer/indexes"
   else
     cache_indexes="${HOME}/.cache/py-indexer/indexes"
   fi
-
-  if [[ -d "${tool_root}" ]]; then
-    for name in bin py_indexer .venv index requirements.txt mcp.example.json; do
-      if [[ -e "${tool_root}/${name}" || -L "${tool_root}/${name}" ]]; then
-        removals+=("${tool_root}/${name}")
-      fi
-    done
-  fi
-  # Old layout stored indexes in per-project directories. Current layout is flat *.sqlite3 files.
   if [[ -d "${cache_indexes}" ]]; then
+    local entry
     for entry in "${cache_indexes}"/*; do
       [[ -d "${entry}" ]] || continue
-      removals+=("${entry}")
+      echo "  keep      cache directory left in place (not a legacy project index): ${entry}"
     done
   fi
 
-  if [[ ${#removals[@]} -eq 0 ]]; then
+  [[ -d "${tool_root}" ]] || return 0
+  plan="$(_py_indexer_legacy_plan "${tool_root}")"
+  python3 - "${plan}" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+if not doc["remove"] and not doc["keep"]:
+    raise SystemExit(0)
+print("  legacy    old py-indexer project-local install files:")
+for item in doc["keep"]:
+    print(f"  keep      {item['path']} ({item['reason']})")
+for path in doc["remove"]:
+    print(f"            {path}")
+print("            repos.json and excludes.txt are kept. Cache *.sqlite3 files are kept.")
+PY
+
+  if ! python3 -c 'import json,sys; d=json.loads(sys.argv[1]); raise SystemExit(0 if d["remove"] else 1)' "${plan}"; then
     return 0
   fi
 
-  echo "  legacy    old py-indexer indexes or project-local install files:"
-  for entry in "${removals[@]}"; do
-    echo "            ${entry}"
-  done
-  if [[ -f "${tool_root}/excludes.txt" ]]; then
-    echo "            excludes.txt is kept. Fold extra patterns into repos.json exclude when you want, then delete that file yourself."
+  if ! exe="$(_py_indexer_find_verified)"; then
+    echo "  keep      no verified shared py-indexer; project-local runtime left in place"
+    return 0
   fi
-  echo "            repos.json is kept. Current cache databases (*.sqlite3) are kept."
-  if _prompt_yn_explicit_no "Remove the old py-indexer paths listed above?"; then
-    for entry in "${removals[@]}"; do
-      rm -rf "${entry}"
-      echo "  removed   ${entry}"
-    done
-  else
+
+  if ! _prompt_yn_explicit_no "Remove the old py-indexer paths listed above?"; then
     echo "  skip      old py-indexer files left in place"
+    return 0
   fi
+
+  if [[ -f "${target}/.cursor/mcp.json" ]]; then
+    _merge_py_indexer_mcp_json "${exe}"
+  else
+    PY_INDEXER_MCP_STATUS="ABSENT"
+  fi
+
+  case "${PY_INDEXER_MCP_STATUS}" in
+    UNPARSEABLE*)
+      echo "  keep      mcp.json is invalid; not deleting files it might reference"
+      return 0
+      ;;
+  esac
+
+  filtered="$(python3 - "${plan}" "${PY_INDEXER_MCP_STATUS}" "${target}/.cursor/mcp.json" "${tool_root}" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+plan = json.loads(sys.argv[1])
+status, mcp_path, tool_root = sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4])
+remove = [Path(item) for item in plan["remove"]]
+refs = []
+if status == "DIVERGENT" and mcp_path.is_file():
+    try:
+        doc = json.loads(mcp_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        doc = {}
+    entry = {}
+    if isinstance(doc, dict):
+        servers = doc.get("mcpServers")
+        if isinstance(servers, dict) and isinstance(servers.get("py-indexer"), dict):
+            entry = servers["py-indexer"]
+    values = []
+
+    def walk(obj):
+        if isinstance(obj, str):
+            values.append(obj)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item)
+        elif isinstance(obj, dict):
+            for item in obj.values():
+                walk(item)
+
+    walk(entry)
+    # ${workspaceFolder} in this file is the project that owns .cursor/mcp.json.
+    workspace = str(mcp_path.parent.parent)
+    root_s = os.path.abspath(tool_root)
+    for value in values:
+        value = value.replace("${workspaceFolder}", workspace)
+        if not value.startswith("/"):
+            continue
+        ref_s = os.path.abspath(value)
+        try:
+            if os.path.commonpath([root_s, ref_s]) == root_s:
+                refs.append(ref_s)
+        except ValueError:
+            continue
+
+def covers(removal: Path, ref: str) -> bool:
+    removal_s = os.path.abspath(removal)
+    try:
+        return os.path.commonpath([removal_s, ref]) == removal_s
+    except ValueError:
+        return False
+
+for path in remove:
+    if any(covers(path, ref) for ref in refs):
+        print("BLOCK\t" + str(path))
+    else:
+        print("REMOVE\t" + str(path))
+PY
+)"
+  while IFS=$'\t' read -r kind path; do
+    [[ -n "${kind}" ]] || continue
+    case "${kind}" in
+      REMOVE)
+        case "${path}" in
+          "${tool_root}/"*)
+            rm -rf -- "${path}"
+            echo "  removed   ${path}"
+            ;;
+          *)
+            echo "  keep      refused path outside the tool directory: ${path}"
+            ;;
+        esac
+        ;;
+      BLOCK)
+        echo "  keep      ${path} (still referenced by .cursor/mcp.json)"
+        ;;
+    esac
+  done <<<"${filtered}"
 }
 
 install_py_indexer_tool() {
@@ -1639,7 +2034,7 @@ install_py_indexer_tool() {
   _ensure_py_indexer_gitignore
   _copy_py_indexer_cursor_rule
   _merge_py_indexer_mcp_json "${PY_INDEXER_EXE}"
-  _advise_py_indexer_legacy "${tool_root}"
+  _py_indexer_legacy_cleanup "${TARGET_DIR}"
 
   echo "  py-indexer ready (shared app + project config)"
   echo "  next: edit ${tool_root#"${TARGET_DIR}"/}/repos.json, then: py-indexer index --all"
