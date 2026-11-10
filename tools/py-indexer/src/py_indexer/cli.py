@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from py_indexer import APP_NAME, COMPAT_VERSION, SCHEMA_VERSION, __version__
+from py_indexer import APP_NAME, CAPABILITY, COMPAT_VERSION, SCHEMA_VERSION, __version__
 from py_indexer.config import ConfigError, load_config
 from py_indexer.paths import cache_home
 from py_indexer.index_cmd import index_all, index_repository
@@ -112,6 +112,7 @@ def _print_app_id() -> int:
                 "version": __version__,
                 "compat_version": COMPAT_VERSION,
                 "schema_version": SCHEMA_VERSION,
+                "capability": CAPABILITY,
                 "fts5": fts5,
                 "cli_ready": fts5,
                 "mcp_ready": mcp_ready,

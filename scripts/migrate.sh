@@ -27,11 +27,14 @@ Steps for <= 1.0.1 -> 1.0.2:
 If an older project-local py-indexer install is present, migrate lists those files
 and asks before removing them. Answering y is the cleanup. REPO_KIT_TOOL_ASSUME_YES
 does not answer that question. Removal runs only when a shared py-indexer CLI is
-already installed, and only for positively identified legacy files. repos.json,
-excludes.txt, customized requirements, unknown files inside a legacy directory,
-and every directory under ~/.cache/py-indexer/indexes/ are left in place.
-If .cursor/mcp.json is invalid, or its py-indexer entry was not migrated and still
-names a legacy path, that path is not deleted.
+already installed. A launcher or package directory is removed only when every file
+matches the shipped legacy bytes. A virtualenv is never removed automatically.
+repos.json, excludes.txt, customized requirements, unknown or modified files, and
+every directory under ~/.cache/py-indexer/indexes/ are left in place.
+The legacy MCP registration is left unchanged until the shared app can import
+mcp.server.fastmcp.FastMCP. Until then its launcher, package, and virtualenv stay,
+and the shared CLI is reported separately. If .cursor/mcp.json is invalid, nothing
+referenced by it is deleted.
 
 Re-run when already up to date skips cursor refresh unless --force.
 The py-indexer cleanup question still runs when old paths are present.

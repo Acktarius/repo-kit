@@ -599,11 +599,48 @@ def collect_gitignore_entries(root: Path) -> list[dict[str, str]]:
     return found
 
 
-def global_excludes_material() -> dict:
-    """``core.excludesFile`` contents, when Git can name that file."""
+def _git_path(root: Path, name: str) -> Path | None:
+    """Resolve a Git path, including linked worktrees (``.git`` may be a file)."""
     try:
         proc = subprocess.run(
-            ["git", "config", "--global", "--get", "core.excludesFile"],
+            ["git", "-C", str(root), "rev-parse", "--git-path", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    raw = proc.stdout.strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path(root) / path
+    return path
+
+
+def git_info_exclude_material(root: Path) -> dict:
+    """``info/exclude`` via Git, so a linked worktree does not read ``.git`` as a directory."""
+    path = _git_path(root, "info/exclude")
+    if path is None:
+        git_dir = root / ".git"
+        if git_dir.is_dir():
+            path = git_dir / "info" / "exclude"
+        else:
+            return {"present": False}
+    rec = _overlay_record(path)
+    rec["path"] = str(path)
+    return rec
+
+
+def core_excludes_material(root: Path) -> dict:
+    """Effective ``core.excludesFile`` for this repository (local, then global)."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "config", "--get", "core.excludesFile"],
             check=False,
             capture_output=True,
             text=True,
@@ -617,6 +654,8 @@ def global_excludes_material() -> dict:
     if not raw:
         return {"present": False}
     path = Path(os.path.expanduser(raw))
+    if not path.is_absolute():
+        path = Path(root) / path
     rec = _overlay_record(path)
     rec["path"] = str(path)
     return rec
@@ -628,8 +667,9 @@ def policy_material(config_dir: Path | None, repo_root: Path) -> dict:
     Legacy ``excludes.txt`` lives beside that project's ``repos.json``.
     ``.py-indexer-ignore`` and Git ignore files live in the checkout, so every
     project that points at the checkout sees the same checkout-local ignores.
-    A worktree's shared ``info/exclude`` (outside this directory when ``.git``
-    is a file) is still applied at index time by Git and again at read time.
+    A worktree's shared ``info/exclude`` is resolved with
+    ``git rev-parse --git-path``, including when ``.git`` is a file.
+    ``core.excludesFile`` is the value Git uses for this repository.
     """
     legacy = {"present": False}
     if config_dir is not None:
@@ -641,8 +681,8 @@ def policy_material(config_dir: Path | None, repo_root: Path) -> dict:
         "legacy_excludes": legacy,
         "py_indexer_ignore": _overlay_record(root / ".py-indexer-ignore"),
         "gitignores": collect_gitignore_entries(root),
-        "git_info_exclude": _overlay_record(root / ".git" / "info" / "exclude"),
-        "global_excludes": global_excludes_material(),
+        "git_info_exclude": git_info_exclude_material(root),
+        "core_excludes": core_excludes_material(root),
     }
 
 
@@ -665,7 +705,7 @@ def git_ignored_paths(root: Path, rels: list[str]) -> set[str]:
         return set()
     try:
         proc = subprocess.run(
-            ["git", "-C", str(root), "check-ignore", "--exclude-standard", "-z", "--stdin"],
+            ["git", "-C", str(root), "check-ignore", "-z", "--stdin"],
             input=("\0".join(rels) + "\0").encode(),
             capture_output=True,
             timeout=30,

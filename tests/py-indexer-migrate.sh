@@ -131,8 +131,10 @@ fi
 NONINT="${TMP}/nonint"
 write_version "${NONINT}"
 seed_bin "${NONINT}/.repo-kit/tools/py-indexer"
+printf '%s' "${REQ_TEXT}" >"${NONINT}/.repo-kit/tools/py-indexer/requirements.txt"
 REPO_KIT_TOOL_ASSUME_YES=1 "${ROOT}/scripts/migrate.sh" "${NONINT}" </dev/null >"${TMP}/nonint.out"
 if [[ -f "${NONINT}/.repo-kit/tools/py-indexer/bin/py-indexer" ]] \
+  && [[ -f "${NONINT}/.repo-kit/tools/py-indexer/requirements.txt" ]] \
   && grep -q 'skip' "${TMP}/nonint.out"; then
   ok "noninteractive ASSUME_YES does not delete"
 else
@@ -246,13 +248,14 @@ other = sys.argv[2]
 assert other in doc["mcpServers"]["py-indexer"]["command"], doc
 PY
 if [[ -f "${OTHER}/.repo-kit/tools/py-indexer/.venv/bin/python" ]] \
-  && [[ ! -e "${OURS}/.repo-kit/tools/py-indexer/bin/py-indexer" ]]; then
-  ok "other checkout registration stays; this project's unreferenced launcher can go"
+  && [[ -f "${OURS}/.repo-kit/tools/py-indexer/bin/py-indexer" ]] \
+  && grep -q 'does not match the shipped legacy launcher' "${TMP}/other.out"; then
+  ok "other checkout registration stays; unverified launcher stays"
 else
   bad "other checkout registration was rewritten: $(cat "${TMP}/other.out")"
 fi
 
-# --- exact legacy entry migrates, known files go, config stays ---
+# --- CLI-only donor does not take over a working legacy MCP registration ---
 HAPPY="${TMP}/happy"
 write_version "${HAPPY}"
 TOOL_H="${HAPPY}/.repo-kit/tools/py-indexer"
@@ -281,21 +284,185 @@ doc = {
 }
 (target / ".cursor/mcp.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 PY
+happy_before="$(cat "${HAPPY}/.cursor/mcp.json")"
 pty_run y "${ROOT}/scripts/migrate.sh" "${HAPPY}" >"${TMP}/happy.out"
-python3 - "${HAPPY}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" <<'PY'
+python3 - "${HAPPY}/.cursor/mcp.json" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
 entry = doc["mcpServers"]["py-indexer"]
-assert entry["command"] == sys.argv[2], entry
-assert entry["args"][0] == "--config" and entry["args"][2] == "serve"
+assert entry["command"].endswith(".venv/bin/python"), entry
+assert entry["args"][1] == "serve", entry
+assert "--config" not in entry["args"], entry
 assert doc["mcpServers"]["keep"]["command"] == "true"
 PY
-if [[ ! -e "${TOOL_H}/bin" && ! -e "${TOOL_H}/.venv" && ! -e "${TOOL_H}/py_indexer" \
-  && ! -e "${TOOL_H}/index" && ! -e "${TOOL_H}/requirements.txt" \
-  && -f "${TOOL_H}/repos.json" && -f "${TOOL_H}/excludes.txt" ]]; then
-  ok "exact legacy MCP migrated and only known runtime files removed"
+if [[ "$(cat "${HAPPY}/.cursor/mcp.json")" == "${happy_before}" ]] \
+  && [[ -e "${TOOL_H}/bin/py-indexer" && -e "${TOOL_H}/.venv" && -e "${TOOL_H}/py_indexer" ]] \
+  && [[ ! -e "${TOOL_H}/index" && ! -e "${TOOL_H}/requirements.txt" ]] \
+  && [[ -f "${TOOL_H}/repos.json" && -f "${TOOL_H}/excludes.txt" ]] \
+  && grep -q 'legacy MCP remains active' "${TMP}/happy.out"; then
+  ok "CLI-only migration keeps the legacy registration, launcher, package, and venv"
 else
-  bad "happy-path cleanup mismatch: $(cat "${TMP}/happy.out")"
+  bad "CLI-only migration rewrote MCP or deleted its runtime: $(cat "${TMP}/happy.out")"
+fi
+
+# --- unknown file inside a virtualenv, and a modified shipped module ---
+VENV_UNKNOWN="${TMP}/venv-unknown"
+write_version "${VENV_UNKNOWN}"
+TOOL_V="${VENV_UNKNOWN}/.repo-kit/tools/py-indexer"
+seed_venv "${TOOL_V}"
+printf 'user note\n' >"${TOOL_V}/.venv/user-note.txt"
+pty_run y "${ROOT}/scripts/migrate.sh" "${VENV_UNKNOWN}" >"${TMP}/venv-unknown.out"
+if [[ -f "${TOOL_V}/.venv/user-note.txt" && -f "${TOOL_V}/.venv/pyvenv.cfg" ]] \
+  && grep -q 'ownership cannot be verified' "${TMP}/venv-unknown.out"; then
+  ok "unknown virtualenv file keeps the virtualenv"
+else
+  bad "virtualenv with an unknown file was removed: $(cat "${TMP}/venv-unknown.out")"
+fi
+
+MOD="${TMP}/modified-pkg"
+write_version "${MOD}"
+TOOL_P="${MOD}/.repo-kit/tools/py-indexer"
+mkdir -p "${TOOL_P}/py_indexer"
+while IFS= read -r rel; do
+  git -C "${ROOT}" show "063b9df^:${rel}" >"${TOOL_P}/py_indexer/$(basename "${rel}")"
+done < <(git -C "${ROOT}" ls-tree -r --name-only 063b9df^ -- tools/py-indexer/files/.repo-kit/tools/py-indexer/py_indexer)
+printf '\n# local edit\n' >>"${TOOL_P}/py_indexer/__init__.py"
+pty_run y "${ROOT}/scripts/migrate.sh" "${MOD}" >"${TMP}/modified.out"
+if [[ -f "${TOOL_P}/py_indexer/__init__.py" ]] \
+  && grep -q 'modified or could not be verified' "${TMP}/modified.out"; then
+  ok "modified legacy module keeps the package directory"
+else
+  bad "modified legacy package was removed: $(cat "${TMP}/modified.out")"
+fi
+
+EXACT="${TMP}/exact-bytes"
+write_version "${EXACT}"
+TOOL_E="${EXACT}/.repo-kit/tools/py-indexer"
+mkdir -p "${TOOL_E}/bin" "${TOOL_E}/py_indexer"
+git -C "${ROOT}" show "063b9df^:tools/py-indexer/files/.repo-kit/tools/py-indexer/bin/py-indexer" \
+  >"${TOOL_E}/bin/py-indexer"
+chmod +x "${TOOL_E}/bin/py-indexer"
+while IFS= read -r rel; do
+  git -C "${ROOT}" show "063b9df^:${rel}" >"${TOOL_E}/py_indexer/$(basename "${rel}")"
+done < <(git -C "${ROOT}" ls-tree -r --name-only 063b9df^ -- tools/py-indexer/files/.repo-kit/tools/py-indexer/py_indexer)
+pty_run y "${ROOT}/scripts/migrate.sh" "${EXACT}" >"${TMP}/exact.out"
+if [[ ! -e "${TOOL_E}/bin" && ! -e "${TOOL_E}/py_indexer" ]]; then
+  ok "byte-matched launcher and package are removed when no MCP registration uses them"
+else
+  bad "byte-matched legacy runtime was kept: $(cat "${TMP}/exact.out")"
+fi
+
+# A registration already pointed at the CLI-only shared executable is restored.
+RESTORE="${TMP}/restore"
+write_version "${RESTORE}"
+TOOL_S="${RESTORE}/.repo-kit/tools/py-indexer"
+seed_bin "${TOOL_S}"
+seed_venv "${TOOL_S}"
+mkdir -p "${RESTORE}/.cursor"
+python3 - "${RESTORE}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" <<'PY'
+import json, sys
+from pathlib import Path
+path, exe = Path(sys.argv[1]), sys.argv[2]
+doc = {
+    "mcpServers": {
+        "py-indexer": {
+            "type": "stdio",
+            "command": exe,
+            "args": ["--config", "/tmp/repos.json", "serve"],
+        }
+    }
+}
+path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+PY
+pty_run y "${ROOT}/scripts/migrate.sh" "${RESTORE}" >"${TMP}/restore.out"
+python3 - "${RESTORE}/.cursor/mcp.json" <<'PY'
+import json, sys
+entry = json.load(open(sys.argv[1], encoding="utf-8"))["mcpServers"]["py-indexer"]
+assert entry["command"].endswith(".venv/bin/python"), entry
+assert entry["args"][1] == "serve", entry
+assert "--config" not in entry["args"], entry
+PY
+if [[ -e "${TOOL_S}/bin/py-indexer" && -d "${TOOL_S}/.venv" ]] \
+  && grep -q 'restored the legacy MCP registration' "${TMP}/restore.out"; then
+  ok "CLI-only registration is restored to the legacy runtime"
+else
+  bad "broken registration was left pointing at the CLI-only app: $(cat "${TMP}/restore.out")"
+fi
+
+if [[ -n "${PY_INDEXER_MCP_PYTHON:-}" ]] \
+  && "${PY_INDEXER_MCP_PYTHON}" -c 'from mcp.server.fastmcp import FastMCP' >/dev/null 2>&1; then
+  MCP_HOME="${TMP}/mcp-home"
+  MCP_DATA="${TMP}/mcp-data"
+  MCP_CACHE="${TMP}/mcp-cache"
+  MCP_BIN="${TMP}/mcp-bin"
+  MCP_PKG="${TMP}/mcp-pkg"
+  mkdir -p "${MCP_HOME}" "${MCP_DATA}" "${MCP_CACHE}" "${MCP_BIN}" "${MCP_PKG}"
+  cp -a "${ROOT}/tools/py-indexer/src/py_indexer" "${MCP_PKG}/py_indexer"
+  # A venv created from another venv does not see that venv's site-packages.
+  # Point the shared launcher at the already provisioned interpreter.
+  cat >"${MCP_BIN}/py-indexer" <<EOF
+#!/bin/sh
+export PYTHONPATH='${MCP_PKG}'
+exec '${PY_INDEXER_MCP_PYTHON}' -m py_indexer "\$@"
+EOF
+  chmod +x "${MCP_BIN}/py-indexer"
+  HOME="${MCP_HOME}" XDG_DATA_HOME="${MCP_DATA}" XDG_CACHE_HOME="${MCP_CACHE}" \
+    XDG_BIN_HOME="${MCP_BIN}" "${MCP_BIN}/py-indexer" --app-id >"${TMP}/mcp-ready-app.json"
+  python3 - "${TMP}/mcp-ready-app.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+assert doc.get("mcp_ready") is True, doc
+assert doc.get("capability") == "staging-publish", doc
+PY
+  READY="${TMP}/mcp-ready"
+  write_version "${READY}"
+  TOOL_R="${READY}/.repo-kit/tools/py-indexer"
+  mkdir -p "${TOOL_R}/bin" "${TOOL_R}/py_indexer" "${TOOL_R}/.venv/bin" "${READY}/.cursor"
+  git -C "${ROOT}" show "063b9df^:tools/py-indexer/files/.repo-kit/tools/py-indexer/bin/py-indexer" \
+    >"${TOOL_R}/bin/py-indexer"
+  chmod +x "${TOOL_R}/bin/py-indexer"
+  while IFS= read -r rel; do
+    git -C "${ROOT}" show "063b9df^:${rel}" >"${TOOL_R}/py_indexer/$(basename "${rel}")"
+  done < <(git -C "${ROOT}" ls-tree -r --name-only 063b9df^ -- tools/py-indexer/files/.repo-kit/tools/py-indexer/py_indexer)
+  printf 'home = /tmp\n' >"${TOOL_R}/.venv/pyvenv.cfg"
+  printf '#!/bin/sh\nexit 0\n' >"${TOOL_R}/.venv/bin/python"
+  chmod +x "${TOOL_R}/.venv/bin/python"
+  python3 - "${READY}" <<'PY'
+import json, sys
+from pathlib import Path
+target = Path(sys.argv[1])
+doc = {
+    "mcpServers": {
+        "py-indexer": {
+            "type": "stdio",
+            "command": "${workspaceFolder}/.repo-kit/tools/py-indexer/.venv/bin/python",
+            "args": ["${workspaceFolder}/.repo-kit/tools/py-indexer/bin/py-indexer", "serve"],
+        }
+    }
+}
+(target / ".cursor/mcp.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+PY
+  (
+    export HOME="${MCP_HOME}" XDG_DATA_HOME="${MCP_DATA}" XDG_CACHE_HOME="${MCP_CACHE}" XDG_BIN_HOME="${MCP_BIN}"
+    pty_run y "${ROOT}/scripts/migrate.sh" "${READY}"
+  ) >"${TMP}/mcp-ready.out"
+  if ! python3 - "${READY}/.cursor/mcp.json" "${MCP_BIN}/py-indexer" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+entry = doc["mcpServers"]["py-indexer"]
+if entry.get("command") != sys.argv[2] or entry.get("args", [None, None, None])[2] != "serve":
+    raise SystemExit(1)
+PY
+  then
+    bad "MCP-ready migration did not switch registration: $(cat "${TMP}/mcp-ready.out")"
+  elif [[ ! -e "${TOOL_R}/bin" && ! -e "${TOOL_R}/py_indexer" && -d "${TOOL_R}/.venv" ]] \
+    && grep -q 'ownership cannot be verified' "${TMP}/mcp-ready.out"; then
+    ok "MCP-ready migration switches registration and keeps the unverified virtualenv"
+  else
+    bad "MCP-ready migration mismatch: $(cat "${TMP}/mcp-ready.out")"
+  fi
+else
+  echo "NOT RUN: MCP-ready legacy migration (no provisioned interpreter with mcp.server.fastmcp.FastMCP)"
 fi
 
 echo

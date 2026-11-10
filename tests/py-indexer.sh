@@ -18,7 +18,7 @@ echo "== unit tests (stdlib, offline) =="
 (
   cd "${ROOT}/tests/py_indexer"
   PYTHONPATH="${ROOT}/tools/py-indexer/src" python3 -m unittest \
-    test_core test_cli_discovery test_index_lock -v
+    test_core test_cli_discovery test_index_lock test_git_ignore -v
 )
 
 echo
@@ -72,9 +72,11 @@ elif [[ "${STRICT}" == "1" ]]; then
   echo "supply an interpreter with mcp==1.30.x, or set PY_INDEXER_MCP_BOOTSTRAP=1" >&2
   exit 1
 else
-  echo "SKIP: MCP integration (set PY_INDEXER_MCP_PYTHON to a python with mcp==1.30.x)"
-  echo "      optional: PY_INDEXER_MCP_BOOTSTRAP=1 to pip-install into a temp venv (network)"
-  echo "      optional: PY_INDEXER_MCP_STRICT=1 to fail instead of skipping"
+  echo "NOT RUN: MCP integration (no provisioned interpreter; set PY_INDEXER_MCP_PYTHON to a python with mcp==1.30.x)"
+  echo "         optional: PY_INDEXER_MCP_BOOTSTRAP=1 to pip-install into a temp venv (network)"
+  echo "         optional: PY_INDEXER_MCP_STRICT=1 to fail instead of leaving this not run"
+  echo "py-indexer offline suite passed; MCP e2e was not run and is not a pass"
+  exit 0
 fi
 
-echo "py-indexer suite ok"
+echo "py-indexer suite ok (offline tests and MCP e2e)"

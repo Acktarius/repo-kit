@@ -114,9 +114,12 @@ class GeneratedMcpConfigE2E(unittest.IsolatedAsyncioTestCase):
 
         self.tool = self.workspace / ".repo-kit" / "tools" / "py-indexer"
         self.mcp_json = self.workspace / ".cursor" / "mcp.json"
-        self.assertTrue(self.mcp_json.is_file(), "installer must write .cursor/mcp.json")
         self.exe = self.xdg_bin / "py-indexer"
         self.assertTrue(self.exe.is_file() or self.exe.is_symlink())
+        # CLI-only install must not point Cursor at an executable that cannot serve.
+        if self.mcp_json.is_file():
+            early = json.loads(self.mcp_json.read_text(encoding="utf-8"))
+            self.assertNotIn("py-indexer", early.get("mcpServers", {}))
 
         # Inject mcp from the supplied interpreter into the shared user venv (offline).
         venv = self.xdg_data / "py-indexer" / "venv"
@@ -143,6 +146,16 @@ class GeneratedMcpConfigE2E(unittest.IsolatedAsyncioTestCase):
             timeout=30,
         )
         self.assertEqual(probe.returncode, 0, probe.stderr)
+        ready = subprocess.run(
+            [str(ROOT / "scripts" / "init.sh"), str(self.workspace), "--tool", "py-indexer", "--force"],
+            cwd=str(self.foreign_cwd),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+        )
+        self.assertEqual(ready.returncode, 0, ready.stdout + ready.stderr)
+        self.assertTrue(self.mcp_json.is_file(), "MCP-ready re-run must write .cursor/mcp.json")
 
         src = self.workspace / "src" / "fixture.ts"
         src.parent.mkdir(parents=True, exist_ok=True)

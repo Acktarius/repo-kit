@@ -1057,8 +1057,9 @@ prompt_yn_interactive() {
 
 # --- py-indexer (user-wide application + per-project config) -----------------
 
-# Kit-required compat_version (must match tools/py-indexer/manifest.sh).
-_PY_INDEXER_REQUIRED_COMPAT="0.2.1"
+# Kit-required compat_version and capability (must match tools/py-indexer).
+_PY_INDEXER_REQUIRED_COMPAT="0.2.2"
+_PY_INDEXER_REQUIRED_CAPABILITY="staging-publish"
 
 _py_indexer_data_home() {
   if [[ -n "${XDG_DATA_HOME:-}" ]]; then
@@ -1094,9 +1095,10 @@ _py_indexer_probe() {
 _py_indexer_compat_ok() {
   local json="$1"
   local required="${2:-${_PY_INDEXER_REQUIRED_COMPAT}}"
-  python3 - "${json}" "${required}" <<'PY'
+  local capability="${3:-${_PY_INDEXER_REQUIRED_CAPABILITY}}"
+  python3 - "${json}" "${required}" "${capability}" <<'PY'
 import json, sys
-raw, required = sys.argv[1], sys.argv[2]
+raw, required, capability = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     doc = json.loads(raw)
 except Exception:
@@ -1105,8 +1107,10 @@ if doc.get("name") != "py-indexer":
     sys.exit(1)
 if not doc.get("fts5"):
     sys.exit(1)
-# Missing cli_ready is an older probe. An explicit false is not CLI-ready.
-if doc.get("cli_ready") is False:
+# 0.2.1 probes omit cli_ready and capability. Both are required now.
+if doc.get("cli_ready") is not True:
+    sys.exit(1)
+if doc.get("capability") != capability:
     sys.exit(1)
 ver = str(doc.get("compat_version") or doc.get("version") or "")
 
@@ -1253,10 +1257,157 @@ _ensure_py_indexer_link() {
   ln -sfn "${venv_exe}" "${link}"
 }
 
+# Probe or rewrite the managed PATH block. Does not source the profile.
+# Prints one of: absent, match, differ, ambiguous, added, updated, refused.
+_py_indexer_path_edit() {
+  local mode="$1"
+  local profile="$2"
+  local bin_dir="$3"
+  python3 - "${mode}" "${profile}" "${bin_dir}" <<'PY'
+import os, subprocess, sys
+
+mode, profile, bin_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+start = "# repo-kit py-indexer PATH"
+end = "# repo-kit py-indexer PATH end"
+window = 30
+
+def block_for(bin_dir: str) -> list[str]:
+    quoted = "'" + bin_dir.replace("'", "'\\''") + "'"
+    return [
+        start,
+        "# bin: " + bin_dir,
+        f"_repo_kit_py_indexer_bin={quoted}",
+        'case ":${PATH}:" in',
+        '*":${_repo_kit_py_indexer_bin}:"*) ;;',
+        '*) export PATH="${_repo_kit_py_indexer_bin}:${PATH}" ;;',
+        "esac",
+        end,
+    ]
+
+def classify(lines: list[str]) -> tuple[str, int | None, int | None]:
+    """Return (kind, start_at, end_at). kind is absent, block, oneline, or ambiguous."""
+    starts = [n for n, line in enumerate(lines) if line.strip() == start]
+    if not starts:
+        return ("absent", None, None)
+    if len(starts) != 1:
+        return ("ambiguous", None, None)
+    i = starts[0]
+    end_at = [
+        i + 1 + k
+        for k, line in enumerate(lines[i + 1 : i + 1 + window])
+        if line.strip() == end
+    ]
+    if len(end_at) > 1:
+        return ("ambiguous", None, None)
+    if len(end_at) == 1:
+        return ("block", i, end_at[0])
+    j = i + 1
+    while j < len(lines) and j <= i + 8:
+        stripped = lines[j].strip()
+        if stripped == "" or stripped.startswith("#"):
+            j += 1
+            continue
+        if stripped.startswith("case ") and "esac" in stripped and stripped.endswith("esac"):
+            return ("oneline", i, j)
+        return ("ambiguous", None, None)
+    return ("ambiguous", None, None)
+
+def recorded_bin(lines: list[str], start_at: int, end_at: int) -> str | None:
+    for line in lines[start_at : end_at + 1]:
+        if line.startswith("# bin:"):
+            return line[len("# bin:") :].lstrip()
+    return None
+
+def state_of(kind: str, lines: list[str], start_at: int | None, end_at: int | None) -> str:
+    if kind == "absent":
+        return "absent"
+    if kind == "ambiguous" or start_at is None or end_at is None:
+        return "ambiguous"
+    if kind == "block":
+        recorded = recorded_bin(lines, start_at, end_at)
+        return "match" if recorded == bin_dir else "differ"
+    region = "\n".join(lines[start_at : end_at + 1])
+    return "match" if bin_dir in region else "differ"
+
+def explain_ambiguous() -> None:
+    print(
+        "PATH block in "
+        + profile
+        + " is missing an end marker or is not the one-line case form; left untouched."
+    )
+    print("  repair: edit " + profile + " yourself. Remove the old block from")
+    print("          '" + start + "' through its case/esac, then re-run.")
+    print("          Or append this block once those lines are gone:")
+    print("  activate:  export PATH=\"" + bin_dir + ":$PATH\"")
+
+if "\n" in bin_dir or "\r" in bin_dir:
+    print("refused")
+    raise SystemExit("bin directory contains a newline")
+
+text = ""
+if os.path.isfile(profile):
+    text = open(profile, encoding="utf-8", errors="replace").read()
+lines = text.splitlines()
+kind, start_at, end_at = classify(lines)
+state = state_of(kind, lines, start_at, end_at)
+
+if mode == "probe":
+    print(state)
+    raise SystemExit(0)
+
+if state == "ambiguous":
+    explain_ambiguous()
+    print("ambiguous")
+    raise SystemExit(0)
+if state == "match":
+    print("match")
+    raise SystemExit(0)
+
+block = block_for(bin_dir)
+if state == "absent":
+    prefix = text
+    if prefix and not prefix.endswith("\n"):
+        prefix += "\n"
+    if prefix and not prefix.endswith("\n\n"):
+        prefix += "\n"
+    out = prefix + "\n".join(block) + "\n"
+    label = "added"
+else:
+    assert start_at is not None and end_at is not None
+    updated = lines[:start_at] + block + lines[end_at + 1 :]
+    out = "\n".join(updated)
+    if text.endswith("\n") or out:
+        out += "\n"
+    label = "updated"
+
+parent = os.path.dirname(profile) or "."
+os.makedirs(parent, exist_ok=True)
+tmp = profile + ".repo-kit-tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    fh.write(out)
+check = subprocess.run(["bash", "-n", tmp], capture_output=True, text=True)
+if check.returncode != 0:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    sys.stderr.write(check.stderr)
+    print(
+        "bash -n failed for the rewritten "
+        + profile
+        + "; left the existing file untouched."
+    )
+    print("refused")
+    raise SystemExit(2)
+os.replace(tmp, profile)
+print(label)
+PY
+}
+
 _ensure_py_indexer_path() {
   local bin_dir="$1"
   local profile="${HOME}/.bashrc"
-  local state prompt
+  local state prompt result rc
 
   if python3 -c 'import os,sys; b=sys.argv[1]; raise SystemExit(0 if b in os.environ.get("PATH","").split(":") else 1)' "${bin_dir}"; then
     echo "  PATH ok   ${bin_dir} already on PATH"
@@ -1265,39 +1416,18 @@ _ensure_py_indexer_path() {
     echo "            GUI/Cursor MCP uses the absolute executable and does not need PATH."
   fi
 
-  state="$(python3 - "${profile}" "${bin_dir}" <<'PY'
-import os, sys
-profile, bin_dir = sys.argv[1], sys.argv[2]
-start = "# repo-kit py-indexer PATH"
-end = "# repo-kit py-indexer PATH end"
-if not os.path.isfile(profile):
-    print("absent")
-    raise SystemExit(0)
-text = open(profile, encoding="utf-8", errors="replace").read().splitlines()
-try:
-    i = next(n for n, line in enumerate(text) if line.strip() == start)
-except StopIteration:
-    print("absent")
-    raise SystemExit(0)
-region = text[i:i + 12]
-recorded = None
-for line in region:
-    if line.startswith("# bin:"):
-        recorded = line[len("# bin:"):].lstrip()
-        break
-if recorded is None:
-    print("differ")
-elif recorded == bin_dir:
-    print("match")
-else:
-    print("differ")
-PY
-)"
-
-  if [[ "${state}" == "match" ]]; then
-    echo "  reuse     PATH marker already matches ${bin_dir} in ${profile}"
-    return 0
-  fi
+  state="$(_py_indexer_path_edit probe "${profile}" "${bin_dir}")"
+  case "${state}" in
+    match)
+      echo "  reuse     PATH marker already matches ${bin_dir} in ${profile}"
+      return 0
+      ;;
+    ambiguous)
+      warn "PATH block in ${profile} was left untouched"
+      _py_indexer_path_edit apply "${profile}" "${bin_dir}" | sed '/^ambiguous$/d'
+      return 0
+      ;;
+  esac
 
   if [[ "${state}" == "differ" ]]; then
     prompt="Update the repo-kit py-indexer PATH block in ${profile} to ${bin_dir}?"
@@ -1315,59 +1445,15 @@ PY
     return 0
   fi
 
-  python3 - "${profile}" "${bin_dir}" <<'PY'
-import os, sys
-profile, bin_dir = sys.argv[1], sys.argv[2]
-if "\n" in bin_dir or "\r" in bin_dir:
-    raise SystemExit("bin directory contains a newline")
-start = "# repo-kit py-indexer PATH"
-end = "# repo-kit py-indexer PATH end"
-quoted = "'" + bin_dir.replace("'", "'\\''") + "'"
-block = [
-    start,
-    "# bin: " + bin_dir,
-    f"_repo_kit_py_indexer_bin={quoted}",
-    'case ":${PATH}:" in',
-    '*":${_repo_kit_py_indexer_bin}:"*) ;;',
-    '*) export PATH="${_repo_kit_py_indexer_bin}:${PATH}" ;;',
-    "esac",
-    end,
-]
-text = ""
-if os.path.isfile(profile):
-    text = open(profile, encoding="utf-8", errors="replace").read()
-lines = text.splitlines()
-start_at = None
-for n, line in enumerate(lines):
-    if line.strip() == start:
-        start_at = n
-        break
-if start_at is None:
-    body = "\n".join(block)
-    prefix = text
-    if prefix and not prefix.endswith("\n"):
-        prefix += "\n"
-    if prefix and not prefix.endswith("\n\n"):
-        prefix += "\n"
-    out = prefix + body + "\n"
-else:
-    end_at = None
-    for n in range(start_at + 1, min(start_at + 12, len(lines))):
-        if lines[n].strip() == end or lines[n].lstrip().startswith("case "):
-            end_at = n
-            if lines[n].strip() != end:
-                break
-    if end_at is None:
-        end_at = start_at
-    lines[start_at:end_at + 1] = block
-    out = "\n".join(lines)
-    if text.endswith("\n") or out:
-        out += "\n"
-tmp = profile + ".tmp"
-with open(tmp, "w", encoding="utf-8") as fh:
-    fh.write(out)
-os.replace(tmp, profile)
-PY
+  set +e
+  result="$(_py_indexer_path_edit apply "${profile}" "${bin_dir}" 2>&1)"
+  rc=$?
+  set -e
+  if [[ "${rc}" -ne 0 || "${result}" == *refused* ]]; then
+    warn "did not modify ${profile}"
+    printf '%s\n' "${result}"
+    return 0
+  fi
   if [[ "${state}" == "differ" ]]; then
     echo "  updated   PATH block in ${profile}"
   else
@@ -1376,7 +1462,7 @@ PY
   echo "  activate now in this terminal:"
   echo "    export PATH=\"${bin_dir}:\$PATH\""
   echo "  or: source ${profile}"
-  echo "  (this script cannot update the parent shell's PATH)"
+  echo "  (this script does not source the profile)"
 }
 
 _install_py_indexer_shared_app() {
@@ -1586,6 +1672,177 @@ _copy_py_indexer_cursor_rule() {
   _copy_file "${src}" "${dest}"
 }
 
+_py_indexer_mcp_ready() {
+  local exe="$1"
+  local json
+  json="$(_py_indexer_probe "${exe}" || true)"
+  [[ -n "${json}" ]] || return 1
+  python3 -c 'import json,sys; d=json.loads(sys.argv[1]); raise SystemExit(0 if d.get("mcp_ready") is True else 1)' "${json}"
+}
+
+# Leave an existing serve registration alone until the shared app can import FastMCP.
+# A CLI-only executable is not written into .cursor/mcp.json.
+_hold_py_indexer_mcp() {
+  local exe="$1"
+  local mcp_path="${TARGET_DIR}/.cursor/mcp.json"
+  local fragment_path="${TARGET_DIR}/.repo-kit/tools/py-indexer/mcp.fragment.json"
+  local config_path="${TARGET_DIR}/.repo-kit/tools/py-indexer/repos.json"
+  local tool_root="${TARGET_DIR}/.repo-kit/tools/py-indexer"
+  local desired hold_out status
+
+  mkdir -p "$(dirname "${fragment_path}")"
+  desired="$(python3 - "${exe}" "${config_path}" <<'PY'
+import json, sys
+command, config = sys.argv[1], sys.argv[2]
+print(json.dumps({
+    "type": "stdio",
+    "command": command,
+    "args": ["--config", config, "serve"],
+}, indent=2, sort_keys=True))
+PY
+)"
+  python3 - "${fragment_path}" "${desired}" <<'PY'
+import json, os, sys
+path, desired = sys.argv[1], json.loads(sys.argv[2])
+doc = {"mcpServers": {"py-indexer": desired}}
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, path)
+PY
+  echo "  wrote     ${fragment_path#"${TARGET_DIR}"/} (not active until the shared app is MCP-ready)"
+
+  hold_out="$(python3 - "${mcp_path}" "${exe}" "${tool_root}" "${TARGET_DIR}" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+mcp_path, exe, tool_root, target = sys.argv[1:]
+tool = Path(tool_root)
+mcp = Path(mcp_path)
+legacy = {
+    "type": "stdio",
+    "command": "${workspaceFolder}/.repo-kit/tools/py-indexer/.venv/bin/python",
+    "args": [
+        "${workspaceFolder}/.repo-kit/tools/py-indexer/bin/py-indexer",
+        "serve",
+    ],
+}
+abs_legacy = {
+    "type": "stdio",
+    "command": str(tool / ".venv" / "bin" / "python"),
+    "args": [str(tool / "bin" / "py-indexer"), "serve"],
+}
+legacy_keys = {"type", "command", "args"}
+runtime_ok = (tool / ".venv" / "bin" / "python").exists() and (tool / "bin" / "py-indexer").exists()
+
+def emit(status: str, *lines: str) -> None:
+    for line in lines:
+        print(line)
+    print("STATUS=" + status)
+    raise SystemExit(0)
+
+def is_exact_legacy(existing) -> bool:
+    if not isinstance(existing, dict) or set(existing.keys()) != legacy_keys:
+        return False
+    if existing.get("type") != "stdio":
+        return False
+    cmd = existing.get("command")
+    args = existing.get("args")
+    if not isinstance(cmd, str) or not isinstance(args, list) or len(args) != 2:
+        return False
+    if not all(isinstance(item, str) for item in args) or args[1] != "serve":
+        return False
+    return (cmd, args[0]) in {
+        (legacy["command"], legacy["args"][0]),
+        (abs_legacy["command"], abs_legacy["args"][0]),
+    }
+
+def points_at_shared(existing) -> bool:
+    if not isinstance(existing, dict):
+        return False
+    cmd = existing.get("command")
+    args = existing.get("args")
+    if not isinstance(cmd, str) or not isinstance(args, list):
+        return False
+    if "serve" not in args:
+        return False
+    try:
+        return os.path.realpath(cmd) == os.path.realpath(exe)
+    except OSError:
+        return cmd == exe
+
+if not mcp.is_file():
+    emit(
+        "CLI_ONLY",
+        "  mcp       shared CLI is available at " + exe + "; MCP was not registered",
+        "            because the shared app cannot import mcp.server.fastmcp.FastMCP",
+    )
+
+try:
+    raw = mcp.read_text(encoding="utf-8")
+    doc = json.loads(raw) if raw.strip() else {}
+except Exception as exc:  # noqa: BLE001
+    emit(
+        "UNPARSEABLE:" + str(exc),
+        "  keep      could not parse " + str(mcp) + "; left untouched",
+    )
+
+if not isinstance(doc, dict):
+    emit("UNPARSEABLE:top-level JSON must be an object", "  keep      mcp.json is not an object; left untouched")
+servers = doc.get("mcpServers")
+if servers is None:
+    emit(
+        "CLI_ONLY",
+        "  mcp       shared CLI is available at " + exe + "; MCP was not registered",
+        "            because the shared app cannot import mcp.server.fastmcp.FastMCP",
+    )
+if not isinstance(servers, dict):
+    emit("UNPARSEABLE:mcpServers must be an object", "  keep      mcpServers is not an object; left untouched")
+
+existing = servers.get("py-indexer")
+if existing is None:
+    emit(
+        "CLI_ONLY",
+        "  mcp       shared CLI is available at " + exe + "; MCP was not registered",
+        "            because the shared app cannot import mcp.server.fastmcp.FastMCP",
+    )
+if is_exact_legacy(existing):
+    emit(
+        "LEGACY_ACTIVE",
+        "  mcp       shared CLI is available at " + exe + "; legacy MCP remains active",
+    )
+if points_at_shared(existing):
+    if runtime_ok:
+        servers["py-indexer"] = legacy
+        tmp = str(mcp) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, mcp)
+        emit(
+            "RESTORED_LEGACY",
+            "  mcp       restored the legacy MCP registration; the shared executable is not MCP-ready",
+            "  mcp       shared CLI is available at " + exe + "; legacy MCP remains active",
+        )
+    emit(
+        "CLI_ONLY_BROKEN",
+        "  mcp       registration points at a CLI-only executable, so serve will not work",
+        "            the previous project runtime is gone, so the legacy registration cannot be restored",
+        "            install mcp==1.30.0 into the shared virtualenv, then re-run",
+    )
+emit(
+    "DIVERGENT",
+    "  keep      existing py-indexer MCP entry differs; left untouched",
+    "            reconcile manually with the fragment after the shared app is MCP-ready",
+)
+PY
+)"
+  status="$(printf '%s\n' "${hold_out}" | sed -n 's/^STATUS=//p' | head -n 1)"
+  printf '%s\n' "${hold_out}" | sed '/^STATUS=/d'
+  PY_INDEXER_MCP_STATUS="${status}"
+}
+
 # Merge only the py-indexer MCP server entry into .cursor/mcp.json.
 _merge_py_indexer_mcp_json() {
   local exe="$1"
@@ -1596,6 +1853,10 @@ _merge_py_indexer_mcp_json() {
 
   PY_INDEXER_MCP_STATUS=""
   [[ -x "${exe}" ]] || die "py-indexer executable not usable: ${exe}"
+  if ! _py_indexer_mcp_ready "${exe}"; then
+    _hold_py_indexer_mcp "${exe}"
+    return 0
+  fi
   mkdir -p "$(dirname "${mcp_path}")" "$(dirname "${fragment_path}")"
 
   desired="$(python3 - "${exe}" "${config_path}" <<'PY'
@@ -1760,7 +2021,7 @@ _prompt_yn_explicit_no() {
 _py_indexer_legacy_plan() {
   local tool_root="$1"
   python3 - "${tool_root}" <<'PY'
-import json, os, re, sys
+import hashlib, json, os, re, sys
 from pathlib import Path
 
 tool_root = Path(sys.argv[1])
@@ -1783,10 +2044,25 @@ mcp_example = (
     b"  }\n"
     b"}\n"
 )
-pkg_files = {
-    "__init__.py", "__main__.py", "budgets.py", "chunk.py", "cli.py", "config.py",
-    "exclude.py", "gitinfo.py", "index_cmd.py", "mcp_server.py", "paths.py",
-    "read_cmd.py", "search_cmd.py", "status_cmd.py", "store.py",
+# sha256 of the project-local files shipped before the shared install
+# (063b9df^:tools/py-indexer/files/.repo-kit/tools/py-indexer/).
+launcher_sha = "224d49224db8b64ba51c25a876a6d563ce44f0e5e5d43b0b9c9e1fa217fdba4d"
+pkg_sha = {
+    "__init__.py": "95a9606016c6f9bf4db959d9c894ccf8da015ae3d08962727b4ddd4d0c72ac13",
+    "__main__.py": "b6698a5af5d86627c750eace445f61f14918b40c70880bb0e3cc32adca09c7f2",
+    "budgets.py": "ea666f188cc8dccf15d581f54060d2750724162d050b7ffdd11e7435589a80f7",
+    "chunk.py": "1f244cba8d66a57dc6c8b1509c12ddbc4c93168eba8b74ba5e509e65f37ddfb5",
+    "cli.py": "b05b54817a443a0ed46b28151164be4ccb72125b1a87f1a84d6fe486685b04e4",
+    "config.py": "a69be8cb22678cbad31fe57dd158327f16bc29724cdbb63456b38608f63a0e4c",
+    "exclude.py": "1cbceb676767afdfc12d26d49fe1d911237eb0a7e4b7affb4ed3152ea9b66837",
+    "gitinfo.py": "e09455f9f1a3b2e20d56ec230cdb1bd7b7ee20fe3f838d162ce502be68fc74f3",
+    "index_cmd.py": "49aa3d40ad95541cb15a5b1a36d47338f935790f6147cfc4a9f14e03361e77d3",
+    "mcp_server.py": "7413b4aee1139e1576824b8b11d269d893b19f0ebb43e1153cf9c2fe84e95de8",
+    "paths.py": "5fc3a37a8c6d944d86596b037be1f15cb0710c715060ff291e2633dd03d81e83",
+    "read_cmd.py": "7ed24c5b6b5778e7ab758f1f9c3177a77de4b5ab97feb9b056b2a652e9b7ef91",
+    "search_cmd.py": "450face3392ed4f212515bd9e203c0ad3e087499b55621e2ea10263cfa4d5320",
+    "status_cmd.py": "d78eb453c6619db4f2f63810d3609206700d00f0cf5dfbcfff4be559a4046f3b",
+    "store.py": "34c8bb1068351cfefa727f7ffe756453afc6b8c215d40432ec6d9d44965bb3f0",
 }
 safe_index = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.sqlite3(-wal|-shm)?$")
 remove, keep = [], []
@@ -1800,6 +2076,9 @@ def add_remove(path: Path) -> None:
 def add_keep(path: Path, reason: str) -> None:
     keep.append({"path": str(path), "reason": reason})
 
+def digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
 bin_dir = tool_root / "bin"
 if bin_dir.exists() or bin_dir.is_symlink():
     if not plain_dir(bin_dir):
@@ -1812,10 +2091,17 @@ if bin_dir.exists() or bin_dir.is_symlink():
             and children[0].name == "py-indexer"
             and launcher.is_file()
             and not launcher.is_symlink()
+            and digest(launcher) == launcher_sha
         ):
             add_remove(bin_dir)
-        else:
+        elif any(child.name != "py-indexer" for child in children):
             add_keep(bin_dir, "contains files other than the legacy launcher; left in place")
+        else:
+            add_keep(
+                bin_dir,
+                "bin/py-indexer does not match the shipped legacy launcher; left in place. "
+                "Remove that directory yourself after confirming you use the shared CLI.",
+            )
 
 pkg = tool_root / "py_indexer"
 if pkg.exists() or pkg.is_symlink():
@@ -1823,31 +2109,40 @@ if pkg.exists() or pkg.is_symlink():
         add_keep(pkg, "not a plain directory; left in place")
     else:
         unknown = False
+        modified = False
+        saw_file = False
         for dirpath, dirnames, filenames in os.walk(pkg):
             rel_dir = Path(dirpath).relative_to(pkg)
-            if rel_dir == Path("."):
-                if any(name != "__pycache__" for name in dirnames):
+            if rel_dir != Path("."):
+                unknown = True
+            if any(name != "__pycache__" for name in dirnames):
+                unknown = True
+            for name in filenames:
+                saw_file = True
+                if name not in pkg_sha:
                     unknown = True
-                if any(name not in pkg_files for name in filenames):
-                    unknown = True
-            else:
-                if any(part != "__pycache__" for part in rel_dir.parts):
-                    unknown = True
-                if any(not name.endswith(".pyc") for name in filenames):
-                    unknown = True
+                    continue
+                file_path = Path(dirpath) / name
+                if file_path.is_symlink() or not file_path.is_file() or digest(file_path) != pkg_sha[name]:
+                    modified = True
         if unknown:
             add_keep(pkg, "contains files that are not the shipped legacy package; left in place")
+        elif modified or not saw_file:
+            add_keep(
+                pkg,
+                "a shipped legacy module was modified or could not be verified; left in place. "
+                "Remove that directory yourself after confirming nothing else imports it.",
+            )
         else:
             add_remove(pkg)
 
 venv = tool_root / ".venv"
 if venv.exists() or venv.is_symlink():
-    cfg = venv / "pyvenv.cfg"
-    py = venv / "bin" / "python"
-    if plain_dir(venv) and cfg.is_file() and not cfg.is_symlink() and py.exists():
-        add_remove(venv)
-    else:
-        add_keep(venv, "not an identified virtualenv (pyvenv.cfg + bin/python); left in place")
+    add_keep(
+        venv,
+        "virtualenv ownership cannot be verified; left intact. "
+        "After the shared MCP server works, remove it yourself: rm -rf " + str(venv),
+    )
 
 index = tool_root / "index"
 if index.exists() or index.is_symlink():
@@ -1902,7 +2197,9 @@ _py_indexer_legacy_cleanup() {
 
   [[ -d "${tool_root}" ]] || return 0
   plan="$(_py_indexer_legacy_plan "${tool_root}")"
-  python3 - "${plan}" <<'PY'
+
+  if ! exe="$(_py_indexer_find_verified)"; then
+    python3 - "${plan}" <<'PY'
 import json, sys
 doc = json.loads(sys.argv[1])
 if not doc["remove"] and not doc["keep"]:
@@ -1912,27 +2209,18 @@ for item in doc["keep"]:
     print(f"  keep      {item['path']} ({item['reason']})")
 for path in doc["remove"]:
     print(f"            {path}")
-print("            repos.json and excludes.txt are kept. Cache *.sqlite3 files are kept.")
 PY
-
-  if ! python3 -c 'import json,sys; d=json.loads(sys.argv[1]); raise SystemExit(0 if d["remove"] else 1)' "${plan}"; then
-    return 0
-  fi
-
-  if ! exe="$(_py_indexer_find_verified)"; then
     echo "  keep      no verified shared py-indexer; project-local runtime left in place"
     return 0
   fi
 
-  if ! _prompt_yn_explicit_no "Remove the old py-indexer paths listed above?"; then
-    echo "  skip      old py-indexer files left in place"
-    return 0
-  fi
-
-  if [[ -f "${target}/.cursor/mcp.json" ]]; then
-    _merge_py_indexer_mcp_json "${exe}"
-  else
-    PY_INDEXER_MCP_STATUS="ABSENT"
+  # Decide the MCP registration before offering to delete anything it still runs.
+  if [[ -z "${PY_INDEXER_MCP_STATUS:-}" ]]; then
+    if [[ -f "${target}/.cursor/mcp.json" ]]; then
+      _merge_py_indexer_mcp_json "${exe}"
+    else
+      PY_INDEXER_MCP_STATUS="ABSENT"
+    fi
   fi
 
   case "${PY_INDEXER_MCP_STATUS}" in
@@ -1942,13 +2230,15 @@ PY
       ;;
   esac
 
-  filtered="$(python3 - "${plan}" "${PY_INDEXER_MCP_STATUS}" "${target}/.cursor/mcp.json" "${tool_root}" <<'PY'
+  plan="$(python3 - "${plan}" "${PY_INDEXER_MCP_STATUS}" "${target}/.cursor/mcp.json" "${tool_root}" <<'PY'
 import json, os, sys
 from pathlib import Path
 
 plan = json.loads(sys.argv[1])
 status, mcp_path, tool_root = sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4])
-remove = [Path(item) for item in plan["remove"]]
+root = tool_root.resolve()
+runtime = {root / "bin", root / "py_indexer", root / ".venv"}
+hold = status in {"LEGACY_ACTIVE", "RESTORED_LEGACY", "CLI_ONLY_BROKEN"}
 refs = []
 if status == "DIVERGENT" and mcp_path.is_file():
     try:
@@ -1960,11 +2250,10 @@ if status == "DIVERGENT" and mcp_path.is_file():
         servers = doc.get("mcpServers")
         if isinstance(servers, dict) and isinstance(servers.get("py-indexer"), dict):
             entry = servers["py-indexer"]
-    values = []
 
     def walk(obj):
         if isinstance(obj, str):
-            values.append(obj)
+            refs.append(obj)
         elif isinstance(obj, list):
             for item in obj:
                 walk(item)
@@ -1973,53 +2262,73 @@ if status == "DIVERGENT" and mcp_path.is_file():
                 walk(item)
 
     walk(entry)
-    # ${workspaceFolder} in this file is the project that owns .cursor/mcp.json.
     workspace = str(mcp_path.parent.parent)
-    root_s = os.path.abspath(tool_root)
-    for value in values:
+    expanded = []
+    for value in refs:
         value = value.replace("${workspaceFolder}", workspace)
-        if not value.startswith("/"):
-            continue
-        ref_s = os.path.abspath(value)
-        try:
-            if os.path.commonpath([root_s, ref_s]) == root_s:
-                refs.append(ref_s)
-        except ValueError:
-            continue
+        if value.startswith("/"):
+            expanded.append(os.path.abspath(value))
+    refs = expanded
 
 def covers(removal: Path, ref: str) -> bool:
-    removal_s = os.path.abspath(removal)
     try:
-        return os.path.commonpath([removal_s, ref]) == removal_s
+        return os.path.commonpath([os.path.abspath(removal), ref]) == os.path.abspath(removal)
     except ValueError:
         return False
 
-for path in remove:
+kept = list(plan["keep"])
+remove = []
+for item in plan["remove"]:
+    path = Path(item)
+    if hold and (path.resolve() in runtime or any(path.resolve() == rt or rt in path.resolve().parents for rt in runtime)):
+        kept.append({
+            "path": item,
+            "reason": "legacy MCP remains active, so this runtime stays. Shared CLI is available separately.",
+        })
+        continue
     if any(covers(path, ref) for ref in refs):
-        print("BLOCK\t" + str(path))
-    else:
-        print("REMOVE\t" + str(path))
+        kept.append({"path": item, "reason": "still referenced by .cursor/mcp.json; left in place"})
+        continue
+    remove.append(item)
+print(json.dumps({"remove": remove, "keep": kept}))
 PY
 )"
-  while IFS=$'\t' read -r kind path; do
-    [[ -n "${kind}" ]] || continue
-    case "${kind}" in
-      REMOVE)
-        case "${path}" in
-          "${tool_root}/"*)
-            rm -rf -- "${path}"
-            echo "  removed   ${path}"
-            ;;
-          *)
-            echo "  keep      refused path outside the tool directory: ${path}"
-            ;;
-        esac
+
+  python3 - "${plan}" <<'PY'
+import json, sys
+doc = json.loads(sys.argv[1])
+if not doc["remove"] and not doc["keep"]:
+    raise SystemExit(0)
+print("  legacy    old py-indexer project-local install files:")
+for item in doc["keep"]:
+    print(f"  keep      {item['path']} ({item['reason']})")
+for path in doc["remove"]:
+    print(f"            {path}")
+print("            repos.json and excludes.txt are kept. Cache *.sqlite3 files are kept.")
+print("            Directories that do not match the shipped baseline stay. Remove those yourself.")
+PY
+
+  if ! python3 -c 'import json,sys; d=json.loads(sys.argv[1]); raise SystemExit(0 if d["remove"] else 1)' "${plan}"; then
+    return 0
+  fi
+
+  if ! _prompt_yn_explicit_no "Remove the old py-indexer paths listed above?"; then
+    echo "  skip      old py-indexer files left in place"
+    return 0
+  fi
+
+  while IFS= read -r path; do
+    [[ -n "${path}" ]] || continue
+    case "${path}" in
+      "${tool_root}/"*)
+        rm -rf -- "${path}"
+        echo "  removed   ${path}"
         ;;
-      BLOCK)
-        echo "  keep      ${path} (still referenced by .cursor/mcp.json)"
+      *)
+        echo "  keep      refused path outside the tool directory: ${path}"
         ;;
     esac
-  done <<<"${filtered}"
+  done < <(python3 -c 'import json,sys; [print(p) for p in json.loads(sys.argv[1])["remove"]]' "${plan}")
 }
 
 install_py_indexer_tool() {

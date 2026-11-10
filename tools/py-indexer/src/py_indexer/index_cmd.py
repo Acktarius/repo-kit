@@ -22,6 +22,7 @@ from py_indexer.gitinfo import git_head
 from py_indexer.store import (
     backup_database,
     checkout_index_lock,
+    ensure_wal_replace_allowed,
     delete_file,
     discard_staging,
     list_files,
@@ -61,6 +62,9 @@ def index_repository(cfg: AppConfig, repo_id: str) -> dict:
     db_path = cfg.db_path(repo_id)
     conn = None
     with checkout_index_lock(db_path):
+        # A live WAL reader must be detected before any connection that would
+        # checkpoint or replace that bundle.
+        ensure_wal_replace_allowed(db_path)
         recover_index_artifacts(db_path)
         # Policy is read again after the lock so a concurrent writer cannot
         # publish a different snapshot underneath this decision.

@@ -124,14 +124,21 @@ else
   bad "shared executable missing: ${EXE}"
 fi
 
-python3 - "${TARGET}/.cursor/mcp.json" "${EXE}" "${TOOL}/repos.json" <<'PY' && ok "mcp.json absolute exe + --config serve" || bad "mcp.json contract wrong"
+if [[ -f "${TARGET}/.cursor/mcp.json" ]] && python3 - "${TARGET}/.cursor/mcp.json" <<'PY'
 import json, sys
-doc = json.load(open(sys.argv[1]))
-entry = doc["mcpServers"]["py-indexer"]
-assert entry["type"] == "stdio"
-assert entry["command"] == sys.argv[2], entry
-assert entry["args"] == ["--config", sys.argv[3], "serve"], entry
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+raise SystemExit(0 if "py-indexer" in doc.get("mcpServers", {}) else 1)
 PY
+then
+  bad "CLI-only install registered a py-indexer MCP server"
+else
+  ok "CLI-only install did not register MCP"
+fi
+if echo "${init_out}" | grep -q 'MCP was not registered'; then
+  ok "CLI-only install reported that MCP was not registered"
+else
+  bad "CLI-only install did not say MCP was not registered: ${init_out}"
+fi
 
 if grep -Fq '.repo-kit/tools/py-indexer/repos.json' "${TARGET}/.gitignore"; then
   ok "gitignore covers repos.json"
@@ -160,11 +167,59 @@ path.write_text(text, encoding="utf-8")
 PY
 "${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer --force >/dev/null
 if grep -Fqx "# bin: ${XDG_BIN_HOME}" "${HOME}/.bashrc" \
-  && [[ "$(grep -c '^# repo-kit py-indexer PATH$' "${HOME}/.bashrc")" -eq 1 ]]; then
+  && [[ "$(grep -c '^# repo-kit py-indexer PATH$' "${HOME}/.bashrc")" -eq 1 ]] \
+  && [[ "$(grep -c '^# repo-kit py-indexer PATH end$' "${HOME}/.bashrc")" -eq 1 ]] \
+  && bash -n "${HOME}/.bashrc"; then
   ok "PATH block updated when its bin directory changed"
 else
   bad "PATH block was not updated for the current bin directory"
 fi
+sourced="$(bash --noprofile --norc -c 'source "$1"; printf %s "$PATH"' _ "${HOME}/.bashrc")"
+case ":${sourced}:" in
+  *":${XDG_BIN_HOME}:"*) ok "sourced isolated profile contains the bin directory" ;;
+  *) bad "sourced profile PATH missing bin dir: ${sourced}" ;;
+esac
+
+# Old one-line block is replaced; unrelated lines stay; the result parses.
+cat >"${HOME}/.bashrc" <<'EOF'
+echo keep-me
+# repo-kit py-indexer PATH
+# Idempotent: only prepend if missing
+case ":${PATH}:" in *":/old/bin:"*) ;; *) export PATH="/old/bin:${PATH}" ;; esac
+echo after
+EOF
+"${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer --force >/dev/null
+if bash -n "${HOME}/.bashrc" \
+  && grep -qx 'echo keep-me' "${HOME}/.bashrc" \
+  && grep -qx 'echo after' "${HOME}/.bashrc" \
+  && [[ "$(grep -c '^# repo-kit py-indexer PATH$' "${HOME}/.bashrc")" -eq 1 ]] \
+  && [[ "$(grep -c '^# repo-kit py-indexer PATH end$' "${HOME}/.bashrc")" -eq 1 ]] \
+  && [[ "$(grep -c '^case ' "${HOME}/.bashrc")" -eq 1 ]]; then
+  ok "old one-line PATH block replaced without corrupting the profile"
+else
+  bad "old one-line PATH block rewrite failed: $(cat "${HOME}/.bashrc")"
+fi
+
+# Unrecognized multiline case is left untouched.
+cp "${HOME}/.bashrc" "${TMP}/bashrc-good"
+cat >"${HOME}/.bashrc" <<'EOF'
+echo keep-ambiguous
+# repo-kit py-indexer PATH
+case ":${PATH}:" in
+*) export PATH="/old:${PATH}" ;;
+esac
+echo after-ambiguous
+EOF
+ambiguous_before="$(cat "${HOME}/.bashrc")"
+ambiguous_out="$("${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer --force 2>&1)"
+if [[ "$(cat "${HOME}/.bashrc")" == "${ambiguous_before}" ]] \
+  && bash -n "${HOME}/.bashrc" \
+  && echo "${ambiguous_out}" | grep -q 'left untouched'; then
+  ok "unrecognized PATH block left untouched"
+else
+  bad "unrecognized PATH block was edited: ${ambiguous_out}"
+fi
+cp "${TMP}/bashrc-good" "${HOME}/.bashrc"
 
 # --- preserve repos.json even with --force ---
 printf '{"schema_version":1,"active_repo":"custom","defaults":{"max_results":3,"max_snippet_chars":100,"max_total_chars":1000,"chunk_lines":40,"chunk_overlap_lines":5,"max_file_bytes":10000},"repositories":[{"id":"custom","root":".","role":"working","related":[],"include":[],"exclude":["*.secret"]}]}\n' >"${TOOL}/repos.json"
@@ -200,17 +255,24 @@ fi
   "${EXE}" validate-config >/dev/null
 ) && ok "validate-config via upward discovery (spaces ok)" || bad "upward discovery failed"
 
-# --- divergent mcp preserved; legacy migrated ---
+# --- divergent mcp preserved; legacy MCP stays while the app is CLI-only ---
+mkdir -p "${TARGET}/.cursor"
 python3 - "${TARGET}/.cursor/mcp.json" <<'PY'
 import json
 from pathlib import Path
 p = Path(__import__("sys").argv[1])
-doc = json.loads(p.read_text())
-doc["mcpServers"]["py-indexer"] = {"command": "echo", "args": ["nope"]}
-doc["mcpServers"]["other"] = {"command": "true"}
+doc = {
+    "mcpServers": {
+        "py-indexer": {"command": "echo", "args": ["nope"]},
+        "other": {"command": "true"},
+    }
+}
 p.write_text(json.dumps(doc, indent=2) + "\n")
 PY
 merge_out="$("${ROOT}/scripts/init.sh" "${TARGET}" --tool py-indexer --force 2>&1 || true)"
+if [[ ! -f "${TARGET}/.cursor/mcp.json" ]]; then
+  bad "divergent mcp fixture was not written"
+fi
 python3 - "${TARGET}/.cursor/mcp.json" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1]))
@@ -253,21 +315,25 @@ tool = Path(target) / ".repo-kit/tools/py-indexer"
 (tool / "index").mkdir(exist_ok=True)
 (tool / "excludes.txt").write_text("*.custom-legacy\n")
 PY
+leg_before="$(cat "${LEG}/.cursor/mcp.json")"
 leg_out="$(REPO_KIT_TOOL_ASSUME_YES=1 REPO_KIT_TOOL_SKIP_DEPS=1 \
   "${ROOT}/scripts/init.sh" "${LEG}" --tool py-indexer --force 2>&1)"
-python3 - "${LEG}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" <<'PY'
+python3 - "${LEG}/.cursor/mcp.json" "${LEG}" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1]))
 entry = doc["mcpServers"]["py-indexer"]
-assert entry["command"] == sys.argv[2], entry
-assert entry["args"][0] == "--config"
-assert entry["args"][2] == "serve"
+target = sys.argv[2]
+assert entry["command"].endswith("/.venv/bin/python"), entry
+assert entry["args"][1] == "serve", entry
 assert "keep" in doc["mcpServers"]
+assert target in entry["command"] or "${workspaceFolder}" in entry["command"]
 PY
-if echo "${leg_out}" | grep -qi 'legacy'; then
-  ok "legacy MCP migrated; legacy files advised"
+if [[ "$(cat "${LEG}/.cursor/mcp.json")" == "${leg_before}" ]] \
+  && echo "${leg_out}" | grep -q 'legacy MCP remains active' \
+  && [[ -f "${LEG}/.repo-kit/tools/py-indexer/bin/py-indexer" ]]; then
+  ok "CLI-only install left the legacy MCP registration and launcher"
 else
-  ok "legacy MCP shape replaced (no legacy advisory if files absent)"
+  bad "legacy MCP was migrated onto a CLI-only app: ${leg_out}"
 fi
 # excludes overlay still present
 [[ -f "${LEG}/.repo-kit/tools/py-indexer/excludes.txt" ]] && ok "legacy excludes.txt preserved"

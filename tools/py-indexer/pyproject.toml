@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-indexer"
-version = "0.2.1"
+version = "0.2.2"
 description = "Local cross-repository lexical code retrieval (SQLite FTS5 + optional MCP)"
 readme = "README.md"
 requires-python = ">=3.10"

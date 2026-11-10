@@ -93,8 +93,9 @@ directory, so it gets a different file.
 
 The file stores one indexing policy. That policy is the hash of chunk settings,
 `include` / `exclude`, the selection-rule version, legacy `excludes.txt`,
-`.py-indexer-ignore`, checkout `.gitignore` files, `.git/info/exclude`, and the
-global Git excludes file when Git reports one. If the project you are searching
+`.py-indexer-ignore`, checkout `.gitignore` files, `info/exclude` (resolved with
+`git rev-parse --git-path`, including linked worktrees), and the effective
+`core.excludesFile` Git reports for that repository. If the project you are searching
 from hashes to something else, search and status refuse the snapshot and say so.
 They do not return its hits and they do not create a second database.
 `py-indexer index` replaces that same file with the policy of the project you
@@ -110,18 +111,31 @@ rebuild: recovery, a fresh read of the policy, staging, and publication.
 Wait timeout is 60 seconds. On timeout the published file is left as it was.
 
 The new database is written to `<database>.staging` as a single rollback-journal
-file, fsynced, then published with an atomic replace. The previous file is not
-renamed, and a live WAL bundle is not moved. A reader that already has the file
-open keeps that inode and finishes on it. The next open sees the replacement.
+file. That staging file is a full copy of the database, so peak extra disk use
+is about the size of the index, plus the backup I/O of reading the old file and
+writing the new one. It is fsynced, then published with an atomic replace onto
+the same canonical path. The previous file is not renamed.
+
+A reader that already opened a rollback-journal file keeps that inode and
+finishes on it. The next open sees the replacement.
+
+An older published index may still be in WAL mode, with committed rows only in
+`<database>-wal`. Indexing reads that WAL through SQLite's backup API into the
+staging file, then publishes one rollback-journal database at the same path.
+If another process has the database, `-wal`, or `-shm` open, indexing stops
+before the replace and does not delete those files. Stop that process and run
+`py-indexer index` again. Unlinking a live WAL is not how the upgrade proceeds.
+When nothing else has the old files open, a successful index removes the unused
+`-wal`/`-shm` files after the replace.
 
 If publication fails, staging is deleted and the last canonical file remains.
 After a crash:
 
 - staging without `<database>.staging.complete` is discarded
-- ready staging with that marker is published
+- ready staging with that marker is published, unless a live WAL bundle is still open
 - `<database>.prev` is restored only when the canonical file is missing or unusable
 
-A successful index removes staging, the completion marker, `-wal`/`-shm`, and `.prev`.
+A successful index removes staging, the completion marker, and `.prev`.
 
 ## Migration from project-local installs
 
@@ -129,17 +143,26 @@ Older installs copied `bin/`, `py_indexer/`, `.venv/`, and `index/` into each pr
 
 On init/sync the installer:
 
-1. Ensures the shared application. A CLI-only install (`REPO_KIT_TOOL_SKIP_DEPS=1`)
-   is reported as CLI-only. A normal setup that finds the CLI without
+1. Ensures the shared application. Compatibility is `0.2.2` plus capability
+   `staging-publish`. An older `0.2.1` probe is not reused. The installer asks
+   before upgrading it. `REPO_KIT_TOOL_ASSUME_YES=1` answers that upgrade
+   prompt. A CLI-only install (`REPO_KIT_TOOL_SKIP_DEPS=1`) is reported as
+   CLI-only. A normal setup that finds the CLI without
    `mcp.server.fastmcp.FastMCP` offers to install `mcp==1.30.0` into the existing
    virtualenv. That repair does not reinstall the application. PATH profile edits
-   stay behind their own consent and are updated when the managed block's bin
-   directory changed.
-2. Rewrites only an exact legacy MCP entry for this project: `type`/`command`/`args`
-   alone, command this project's `.venv/bin/python`, args this project's
-   `bin/py-indexer` and `serve` (either `${workspaceFolder}` or this project's
-   absolute path). Extra `env`/`cwd` fields, or another checkout's paths, are
-   left untouched and `mcp.fragment.json` is written for a manual merge.
+   stay behind their own consent. A managed block is replaced only when it has
+   the end marker `# repo-kit py-indexer PATH end`, or when it is the old
+   one-line `case … esac` form. Any other shape is left untouched, with a
+   manual repair note. The new text is checked with `bash -n` before it
+   replaces the profile. The installer does not source the profile.
+2. Registers MCP only when the shared app reports `mcp_ready`. Until then an
+   exact legacy `serve` entry stays as it is, and the installer reports that
+   the shared CLI is available while legacy MCP remains active. If a previous
+   run already pointed that entry at the CLI-only executable and the project
+   launcher and virtualenv are still present, the legacy entry is restored.
+   Extra `env`/`cwd` fields, or another checkout's paths, are left untouched.
+   `mcp.fragment.json` is written for a later manual merge and is not installed
+   while the app is CLI-only.
 3. Preserves `repos.json` and any legacy `excludes.txt` (still honored as an overlay)
 4. Does **not** copy old SQLite DBs into the new cache namespace — run `py-indexer index --all`
 
@@ -148,17 +171,20 @@ ask before deleting any of them. `REPO_KIT_TOOL_ASSUME_YES` does not answer that
 question. Deletion runs only when a shared CLI is already verified, and only for
 these artifacts:
 
-- `bin/` when its only entry is the regular file `bin/py-indexer`
-- `py_indexer/` when it contains only the shipped legacy modules (and `__pycache__`)
-- `.venv/` when it has `pyvenv.cfg` and `bin/python`
+- `bin/` when its only file is `bin/py-indexer` and the bytes match the shipped legacy launcher
+- `py_indexer/` when every file's bytes match the shipped legacy modules
 - `index/` when it contains only `<repo-id>.sqlite3` plus `-wal`/`-shm`
 - `requirements.txt` and `mcp.example.json` when their bytes match the shipped legacy files
 
-Anything else in those directories is left, and the directory is not removed.
-`repos.json` and `excludes.txt` are never removed. Directories under
-`~/.cache/py-indexer/indexes/` are never treated as obsolete. If `.cursor/mcp.json`
-cannot be parsed, nothing is deleted. If the `py-indexer` entry was not migrated
-and still names a legacy path, that path is not deleted.
+`bin/`, `py_indexer/`, and `.venv/` are not removed while the legacy MCP
+registration is still the one Cursor will launch. `.venv/` is never removed
+automatically: a `pyvenv.cfg` does not prove the directory is repo-kit's.
+After the shared MCP server works, remove it yourself with
+`rm -rf .repo-kit/tools/py-indexer/.venv`. A modified or unrecognized file
+keeps its directory; the installer prints that path so you can delete it
+after checking it. `repos.json` and `excludes.txt` are never removed.
+Directories under `~/.cache/py-indexer/indexes/` are never treated as obsolete.
+If `.cursor/mcp.json` cannot be parsed, nothing is deleted.
 
 Fold custom `excludes.txt` patterns into `repos.json` `exclude` when you no longer
 want that overlay, then delete `excludes.txt` yourself. Until you do, that file
@@ -174,6 +200,8 @@ is part of the indexing policy for projects that still have it.
 | `index policy mismatch` | Another project indexed this checkout with different excludes, `excludes.txt`, `.py-indexer-ignore`, or Git ignore inputs. One database cannot hold both. Index from the project whose policy should win. |
 | Divergent MCP entry left alone | Compare `.repo-kit/tools/py-indexer/mcp.fragment.json` and merge manually. |
 | Lock timeout | Another `py-indexer index` holds `<database>.lock`. Wait, then retry. The last published database is unchanged. |
+| `WAL index ... is still in use` | Stop the process named in the error, then run `py-indexer index` again. The canonical file and its `-wal`/`-shm` are left in place. |
+| PATH block left untouched | The marker in `~/.bashrc` is not the managed block or the old one-line `case`. Edit that block yourself, then re-run. |
 
 ## Tests
 

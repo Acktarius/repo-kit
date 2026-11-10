@@ -113,6 +113,51 @@ assert doc["name"] == "py-indexer" and doc["cli_ready"] is True, doc
 PY
 ok "offline launcher runs when XDG paths contain spaces"
 
+# --- a 0.2.1 probe is not reused; upgrade is consented ---
+OLD_HOME="${TMP}/old-home"
+OLD_DATA="${TMP}/old-data"
+OLD_CACHE="${TMP}/old-cache"
+OLD_BIN="${TMP}/old-bin"
+mkdir -p "${OLD_HOME}" "${OLD_DATA}" "${OLD_CACHE}" "${OLD_BIN}"
+cat >"${OLD_BIN}/py-indexer" <<'EOF'
+#!/bin/sh
+cat <<'JSON'
+{
+  "name": "py-indexer",
+  "version": "0.2.1",
+  "compat_version": "0.2.1",
+  "schema_version": 1,
+  "fts5": true
+}
+JSON
+EOF
+chmod +x "${OLD_BIN}/py-indexer"
+OLD_TARGET="${TMP}/old-project"
+mkdir -p "${OLD_TARGET}"
+git -C "${OLD_TARGET}" init -q
+HOME="${OLD_HOME}" XDG_DATA_HOME="${OLD_DATA}" XDG_CACHE_HOME="${OLD_CACHE}" \
+  XDG_BIN_HOME="${OLD_BIN}" REPO_KIT_TOOL_ASSUME_YES=1 REPO_KIT_TOOL_SKIP_DEPS=1 \
+  "${ROOT}/scripts/init.sh" "${OLD_TARGET}" --tool py-indexer >"${TMP}/old-init.out"
+if grep -q 'reuse     shared py-indexer' "${TMP}/old-init.out"; then
+  bad "0.2.1 probe was reused: $(cat "${TMP}/old-init.out")"
+elif grep -q 'incompatible py-indexer' "${TMP}/old-init.out" \
+  && grep -q 'Upgrade shared py-indexer' "${TMP}/old-init.out"; then
+  ok "0.2.1 probe requires a consented upgrade"
+else
+  bad "0.2.1 upgrade path missing: $(cat "${TMP}/old-init.out")"
+fi
+env -u PYTHONPATH HOME="${OLD_HOME}" XDG_DATA_HOME="${OLD_DATA}" \
+  XDG_CACHE_HOME="${OLD_CACHE}" XDG_BIN_HOME="${OLD_BIN}" \
+  "${OLD_BIN}/py-indexer" --app-id >"${TMP}/old-app.json"
+python3 - "${TMP}/old-app.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+assert doc["compat_version"] == "0.2.2", doc
+assert doc["capability"] == "staging-publish", doc
+assert doc["cli_ready"] is True, doc
+PY
+ok "consented upgrade replaces the 0.2.1 probe"
+
 echo
 echo "py-indexer install: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]

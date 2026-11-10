@@ -13,8 +13,14 @@ Crash recovery (under the same lock):
   then removed. A usable canonical file causes ``.prev`` to be deleted.
 - Lock wait defaults to 60s (``IndexLockTimeout``). The last published file is unchanged.
 
-Readers do not take the lock. A reader that already opened the file keeps that
-inode across ``os.replace``. Later opens see the replacement.
+Readers do not take the lock. A reader that already opened a rollback-journal
+file keeps that inode across ``os.replace``. Later opens see the replacement.
+
+A canonical database still in WAL mode, or one that still has ``-wal``/``-shm``
+files, is not replaced and those files are not unlinked while another process
+has them open. Indexing then raises ``IndexWalBusy`` and leaves that bundle
+in place. Stop the old process and run index again. Each publication also
+keeps a full extra copy at ``<database>.staging`` until the replace finishes.
 """
 
 from __future__ import annotations
@@ -47,6 +53,14 @@ META_STATUS = "status"  # ready | building | corrupt
 
 class IndexError_(RuntimeError):
     """Index open / schema failure."""
+
+
+class IndexWalBusy(IndexError_):
+    """A WAL-mode canonical index is still open in another process.
+
+    Replacing the database or unlinking ``-wal``/``-shm`` would drop committed
+    frames those processes still need. The canonical path is left unchanged.
+    """
 
 
 class IndexLockTimeout(TimeoutError):
@@ -442,6 +456,103 @@ def snapshot_ready(path: Path) -> bool:
     return schema_ok and str(status["value"]) == "ready"
 
 
+def _wal_sidecars(db_path: Path) -> list[Path]:
+    return [Path(str(db_path) + suffix) for suffix in ("-wal", "-shm")]
+
+
+def _wal_bundle_present(db_path: Path) -> bool:
+    """True when the canonical file is WAL mode or still has WAL sidecars."""
+    if any(path.exists() for path in _wal_sidecars(db_path)):
+        return True
+    if not db_path.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.3)
+    except sqlite3.OperationalError:
+        # A lock without a sidecar is a rollback-journal reader or writer.
+        # Replacing that file leaves the open inode intact.
+        return False
+    except sqlite3.DatabaseError:
+        return False
+    try:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+    except sqlite3.OperationalError:
+        return any(path.exists() for path in _wal_sidecars(db_path))
+    finally:
+        conn.close()
+    return row is not None and str(row[0]).lower() == "wal"
+
+
+def _file_inodes(paths: list[Path]) -> set[tuple[int, int]]:
+    found: set[tuple[int, int]] = set()
+    for path in paths:
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        found.add((st.st_dev, st.st_ino))
+    return found
+
+
+def _processes_holding_inodes(inodes: set[tuple[int, int]]) -> list[str]:
+    """Pids, other than this one, that have any of ``inodes`` open.
+
+    ``["unknown"]`` when ``/proc`` cannot answer. Fail closed in that case.
+    Stat of ``/proc/<pid>/fd/<n>`` follows the open file, including an inode
+    whose directory entry was already replaced.
+    """
+    if not inodes:
+        return []
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return ["unknown"]
+    me = os.getpid()
+    holders: list[str] = []
+    saw_other_fds = False
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return ["unknown"]
+    other = [entry for entry in entries if entry.name.isdigit() and int(entry.name) != me]
+    for entry in other:
+        try:
+            fds = list((entry / "fd").iterdir())
+        except OSError:
+            continue
+        saw_other_fds = True
+        for fd in fds:
+            try:
+                st = os.stat(fd)
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) in inodes:
+                holders.append(entry.name)
+                break
+    if other and not saw_other_fds:
+        return ["unknown"]
+    return holders
+
+
+def ensure_wal_replace_allowed(db_path: Path) -> None:
+    """Refuse to replace a WAL canonical index that another process has open."""
+    if not _wal_bundle_present(db_path):
+        return
+    holders = _processes_holding_inodes(_file_inodes([db_path, *_wal_sidecars(db_path)]))
+    if not holders:
+        return
+    if holders == ["unknown"]:
+        detail = "this process cannot see whether another program has the files open"
+    else:
+        detail = "pid " + ", ".join(holders)
+    raise IndexWalBusy(
+        f"WAL index at {db_path} is still in use ({detail}). "
+        "Stop py-indexer and any other program using this index, then run "
+        "py-indexer index again. The upgrade will not replace this database "
+        "or remove its -wal/-shm files while they are open. "
+        "Content that is still only in the WAL stays on this path."
+    )
+
+
 def discard_staging(db_path: Path) -> None:
     """Remove an unpublished staging bundle and its completion marker."""
     _unlink_bundle(staging_path(db_path))
@@ -453,13 +564,16 @@ def publish_staging(db_path: Path) -> None:
 
     The staging connection must already be closed. The file is a single
     rollback-journal database (no WAL sidecar). ``os.replace`` publishes it.
-    Existing readers keep the previous inode. Leftover ``-wal``/``-shm`` names
-    and ``.prev`` files are removed after the replace; open file descriptors
-    to the old inode stay valid.
+    A WAL canonical bundle that another process still has open is left in
+    place, including its ``-wal`` and ``-shm`` files. Unused sidecars are
+    removed only after that check. Rollback-journal readers keep the previous
+    inode; later opens see the replacement.
     """
     staging = staging_path(db_path)
     if not staging.is_file():
         raise IndexError_(f"missing staging index for publish: {staging}")
+    ensure_wal_replace_allowed(db_path)
+    previous_inodes = _file_inodes([db_path, *_wal_sidecars(db_path)])
     _fsync_file(staging)
     marker = _complete_marker(db_path)
     marker.write_text("ok\n", encoding="utf-8")
@@ -468,8 +582,12 @@ def publish_staging(db_path: Path) -> None:
     os.replace(staging, db_path)
     _fsync_dir(db_path.parent)
     _unlink_quiet(marker)
-    for side in _sidecar_paths(db_path):
-        _unlink_quiet(side)
+    # A process that still has the pre-replace inode open needs the WAL
+    # sidecars. Leave them. Do not unlink as a substitute for that process
+    # exiting.
+    if not _processes_holding_inodes(previous_inodes):
+        for side in _sidecar_paths(db_path):
+            _unlink_quiet(side)
     _unlink_bundle(_prev_path(db_path))
     _unlink_bundle(staging)
 
@@ -480,6 +598,7 @@ def recover_index_artifacts(db_path: Path) -> None:
     staging = staging_path(db_path)
     marker = _complete_marker(db_path)
     if marker.is_file() and staging.is_file() and snapshot_ready(staging):
+        ensure_wal_replace_allowed(db_path)
         os.replace(staging, db_path)
         try:
             _fsync_dir(db_path.parent)
