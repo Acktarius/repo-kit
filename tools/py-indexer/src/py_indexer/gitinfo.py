@@ -53,18 +53,33 @@ def _status_paths(repo_root: Path) -> set[str] | None:
     return found
 
 
+def _status_covers(path: str, dirty: set[str]) -> bool:
+    """True when ``path`` is dirty, including an untracked parent directory.
+
+    Porcelain reports a wholly untracked directory as ``src/`` rather than
+    each file inside it.
+    """
+    if path in dirty:
+        return True
+    parent = path
+    while "/" in parent:
+        parent = parent.rsplit("/", 1)[0]
+        if parent + "/" in dirty:
+            return True
+    return False
+
+
 def indexed_content_is_dirty(repo_root: Path, indexed_paths: set[str]) -> bool | None:
     """True when an indexed path was uncommitted. None when git cannot answer."""
     dirty = _status_paths(repo_root)
     if dirty is None:
         return None
-    return any(path in dirty for path in indexed_paths)
+    return any(_status_covers(path, dirty) for path in indexed_paths)
 
 
-def worktree_dirty_paths(repo_root: Path, paths: list[str]) -> list[str]:
-    """Dirty paths among ``paths`` only. Empty when git cannot answer."""
+def worktree_dirty_paths(repo_root: Path, paths: list[str]) -> list[str] | None:
+    """Dirty paths among ``paths`` only. None when git cannot answer."""
     dirty = _status_paths(repo_root)
-    if not dirty:
-        return []
-    allowed = set(paths)
-    return sorted(path for path in dirty if path in allowed)
+    if dirty is None:
+        return None
+    return sorted(path for path in paths if _status_covers(path, dirty))

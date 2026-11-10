@@ -78,6 +78,19 @@ weaker. They are not proof that those processes communicate at runtime. A path
 that crosses a `candidate` edge keeps that uncertainty. An empty or bounded
 result does not prove that a change is safe.
 
+Freshness compares the indexed commit with the paths that contributed to the
+answer. A matching commit can still show relevant working-tree edits. The check
+does not hash the repository. A new file that was not part of the returned map
+can add a caller or callee without changing freshness. A change to a hashed
+indexing input, including include/exclude, chunk settings, `excludes.txt`,
+`.py-indexer-ignore`, checkout `.gitignore`, `info/exclude`, or
+`core.excludesFile`, does not match the stored snapshot. Context and awareness
+refuse that snapshot until `py-indexer index`. On a snapshot that remains
+eligible, they hide a source, target, or alternative the current rules reject.
+Files a new rule would add stay absent until indexing runs. A depth boundary is the
+requested direct map, not a claim that nothing else calls the symbol. A budget
+stop means omitted relationships were not counted.
+
 Structural indexing uses pinned Tree-sitter parsers when they are installed.
 `.h` is parsed with the C++ grammar. `.c` stays lexical-only. A missing parser
 does not drop lexical search. The verified matrix is `tree-sitter==0.26.1`
@@ -122,13 +135,14 @@ The file stores one indexing policy. That policy is the hash of chunk settings,
 `.py-indexer-ignore`, checkout `.gitignore` files, `info/exclude` (resolved with
 `git rev-parse --git-path`, including linked worktrees), and the effective
 `core.excludesFile` Git reports for that repository. If the project you are searching
-from hashes to something else, search and status refuse the snapshot and say so.
-They do not return its hits and they do not create a second database.
-`py-indexer index` replaces that same file with the policy of the project you
-run it from. The other project then sees a policy mismatch until it indexes again.
+from hashes to something else, search, status, context, and awareness refuse the
+snapshot and say so. They do not return its hits and they do not create a second
+database. `py-indexer index` replaces that same file with the policy of the
+project you run it from. The other project then sees a policy mismatch until it
+indexes again.
 
-Search also drops a hit the current exclude rules or Git ignore would reject,
-even when the fingerprint matches.
+Search, context, and awareness also drop a hit the current exclude rules or Git
+ignore would reject, even when the fingerprint matches.
 
 ## Index lock and recovery
 
@@ -174,9 +188,10 @@ Older installs copied `bin/`, `py_indexer/`, `.venv/`, and `index/` into each pr
 
 On init/sync the installer:
 
-1. Ensures the shared application. Compatibility is `0.3.2` plus capability
-   `staging-publish`. An older `0.2.1` probe is not reused. The installer asks
-   before upgrading it. `REPO_KIT_TOOL_ASSUME_YES=1` answers that upgrade
+1. Ensures the shared application. Compatibility is `0.3.3` plus capability
+   `staging-publish`. An installed `0.3.2` application is not reused. The
+   installer asks before upgrading it, including when that executable is already
+   on `PATH`. `REPO_KIT_TOOL_ASSUME_YES=1` answers that upgrade
    prompt. A CLI-only install (`REPO_KIT_TOOL_SKIP_DEPS=1`) is reported as
    CLI-only. A normal setup that finds the CLI without
    `mcp.server.fastmcp.FastMCP` offers to install `mcp==1.30.0` into the existing

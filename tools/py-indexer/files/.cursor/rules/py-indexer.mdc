@@ -45,6 +45,9 @@ missing or useless for the question.
 - If structural data is missing, fall back to `search_code`.
 - An empty or truncated map does not prove the change is safe.
 - `.c` files are lexical only. `.h` files are parsed with the C++ grammar, which is not a compiler.
+- Structural coverage can be partial while the snapshot commit is current. Read `structural` and `structural_coverage`. Partial or unavailable analysis is not a complete call map.
+- Freshness is not completeness. `current` means the indexed commit matches and the paths in this map have no uncommitted edits. A new file outside the map can still add a caller or callee. `worktree_changed` means a path in the map changed after indexing. `dirty_at_index` means the index itself was built from uncommitted content. `unknown` means Git could not answer. A depth boundary or a budget stop is not proof that the change is safe.
+- A changed exclude or Git ignore rule refuses the snapshot until `py-indexer index`. On a snapshot that is still eligible, query-time filtering hides matching source, target, and alternative evidence. Files the new rule would add are not in the snapshot until indexing runs.
 
 ## When not to bother
 

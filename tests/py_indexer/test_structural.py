@@ -148,10 +148,9 @@ class StructuralOfflineTests(unittest.TestCase):
                   site_id, path, site_kind, start_line, start_col, end_line, end_col, start_byte, end_byte,
                   enclosing_symbol_id, rule_id, resolution, expression_text, payload_json,
                   evidence_truncated
-                ) VALUES (
-                  1,'src/note.py','call',1,1,1,4,0,4,'sA','lang.call','unresolved','dynamic()',
-                  '{}',0
-                )
+                ) VALUES
+                  (1,'src/note.py','call',1,1,1,4,0,4,'sA','name.many','unresolved','overloaded()','{}',0),
+                  (2,'src/note.py','call',2,1,2,4,0,4,'sA','lang.call','unresolved','dynamic()','{}',0)
                 """
             )
             conn.execute(
@@ -180,8 +179,14 @@ class StructuralOfflineTests(unittest.TestCase):
         self.assertEqual(ambiguous[0]["expansion"], "stopped_ambiguity")
         self.assertGreaterEqual(len(ambiguous[0]["alternatives"]), 1)
         self.assertTrue(aware["unresolved"]["shown"] >= 1)
+        self.assertFalse(aware["truncation"]["truncated"])
+        self.assertEqual(aware["truncation"]["completeness"], "depth")
+        self.assertIsNone(aware["truncation"]["omitted_relationships"])
+        self.assertGreater(aware["truncation"]["expansion_stopped_ambiguity"], 0)
         limited = awareness_report(self.cfg, symbol_id="sA", depth=2, limit=1)
         self.assertTrue(limited["truncation"]["truncated"])
+        self.assertEqual(limited["truncation"]["completeness"], "budget")
+        self.assertIsNone(limited["truncation"]["omitted_relationships"])
 
 
 @unittest.skipUnless(structural_ready(), "pinned tree-sitter parsers are not installed")
@@ -318,6 +323,47 @@ def _line(path: Path, text: str) -> int:
         if text in line:
             return number
     raise AssertionError(text)
+
+
+def _call_rows(cfg, repo: str, checkout: Path) -> list[dict]:
+    from py_indexer.store import open_index
+
+    conn = open_index(
+        cfg.db_path(repo),
+        repo,
+        checkout=checkout,
+        fingerprint=cfg.content_fingerprint(repo),
+    )
+    try:
+        return [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT r.status, r.rule_id, r.reason, r.target_symbol_id,
+                       s.expression_text AS expression_text,
+                       src.qualified_name AS source_name,
+                       tgt.qualified_name AS target_name
+                FROM relationships r
+                LEFT JOIN sites s ON s.site_id = r.source_site_id
+                LEFT JOIN symbols src ON src.symbol_id = r.source_symbol_id
+                LEFT JOIN symbols tgt ON tgt.symbol_id = r.target_symbol_id
+                WHERE r.kind = 'call'
+                """
+            )
+        ]
+    finally:
+        conn.close()
+
+
+def _call(rows: list[dict], source: str, expression: str) -> dict:
+    found = [
+        row
+        for row in rows
+        if row["source_name"] == source and row["expression_text"] == expression
+    ]
+    if len(found) != 1:
+        raise AssertionError(f"{source} {expression}: {found}")
+    return found[0]
 
 
 def _stored(cfg, repo: str, checkout: Path) -> tuple[list[dict], list[dict]]:
@@ -1086,3 +1132,944 @@ std::unordered_map<std::string, Handler> routes = {
         cfg, root = self._svc("abs", {"src/rpc.cpp": cpp})
         _route, symbol, _symbols = self._bound(cfg, root)
         self.assertEqual(symbol["qualified_name"], "other::RpcServer::on_get_height")
+
+    def test_qualified_calls_follow_scope_and_exact_components(self) -> None:
+        cpp = """
+namespace inner { void run() {} }
+namespace outer {
+namespace inner { void run() {} }
+void relative() { inner::run(); }
+}
+void absolute() { ::inner::run(); }
+struct Svc { void run(); };
+void Svc::run() {}
+struct OtherSvc { void run(); };
+void OtherSvc::run() {}
+void use_svc() { Svc::run(); }
+namespace box {
+struct Svc { void stop(); };
+void Svc::stop() {}
+void missing() { Svc::run(); }
+}
+namespace n {
+void run(int);
+void run(char);
+void ambiguous() { n::run(1); }
+}
+struct Pair { void run(int); };
+void Pair::run(int) { return; }
+void call_pair() { Pair::run(1); }
+void call_alias() { Alias::run(); }
+"""
+        cfg, root = self._svc("qual", {"src/q.cpp": cpp})
+        rows = _call_rows(cfg, "svc", root)
+        relative = _call(rows, "outer::relative", "inner::run()")
+        self.assertEqual(relative["status"], "resolved")
+        self.assertEqual(relative["rule_id"], "bind.qualified")
+        self.assertEqual(relative["target_name"], "outer::inner::run")
+        absolute = _call(rows, "absolute", "::inner::run()")
+        self.assertEqual(absolute["status"], "resolved")
+        self.assertEqual(absolute["target_name"], "inner::run")
+        svc = _call(rows, "use_svc", "Svc::run()")
+        self.assertEqual(svc["status"], "resolved")
+        self.assertEqual(svc["target_name"], "Svc::run")
+        missing = _call(rows, "box::missing", "Svc::run()")
+        self.assertEqual(missing["status"], "unresolved")
+        self.assertIsNone(missing["target_name"])
+        overloads = [
+            row
+            for row in rows
+            if row["source_name"] == "n::ambiguous" and row["expression_text"] == "n::run(1)"
+        ]
+        self.assertEqual(len(overloads), 2)
+        self.assertTrue(all(row["status"] == "ambiguous" for row in overloads))
+        self.assertTrue(all(row["target_name"] == "n::run" for row in overloads))
+        paired = _call(rows, "call_pair", "Pair::run(1)")
+        self.assertEqual(paired["status"], "resolved")
+        self.assertEqual(paired["target_name"], "Pair::run")
+        alias = _call(rows, "call_alias", "Alias::run()")
+        self.assertEqual(alias["status"], "unresolved")
+        symbols = {row["symbol_id"]: row for row in _stored(cfg, "svc", root)[1]}
+        ambiguous_id = next(
+            row["symbol_id"] for row in symbols.values() if row["qualified_name"] == "n::ambiguous"
+        )
+        aware = awareness_report(cfg, symbol_id=ambiguous_id, depth=1, limit=20)
+        shown = [edge for edge in aware["relationships"] if edge["kind"] == "call"]
+        self.assertEqual(len(shown), 1)
+        self.assertEqual(shown[0]["status"], "ambiguous")
+        self.assertEqual(shown[0]["expansion"], "stopped_ambiguity")
+        self.assertGreaterEqual(len(shown[0]["alternatives"]), 2)
+
+
+def _commit_all(path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "t"], check=True)
+
+
+def _open_db(cfg, repo: str, checkout: Path):
+    from py_indexer.store import open_index
+
+    return open_index(
+        cfg.db_path(repo),
+        repo,
+        checkout=checkout,
+        fingerprint=cfg.content_fingerprint(repo),
+    )
+
+
+class RetrievalRemediationTests(StructuralOfflineTests):
+    def _index(self):
+        index_repository(self.cfg, "app")
+        return _open_db(self.cfg, "app", self.target)
+
+    def test_incoming_edge_is_emitted_once_with_its_source_site(self) -> None:
+        conn = self._index()
+        try:
+            conn.execute(
+                """
+                INSERT INTO symbols(
+                  symbol_id, identity_key, path, language, kind, name, qualified_name,
+                  signature, params, scope_json, anon_ord, body_hash
+                ) VALUES
+                  ('sCaller','kCaller','src/note.py','python','function','caller','caller','caller()','()','[]',NULL,NULL),
+                  ('sMid','kMid','src/note.py','python','function','mid','mid','mid()','()','[]',NULL,NULL),
+                  ('sLeaf','kLeaf','src/note.py','python','function','leaf','leaf','leaf()','()','[]',NULL,NULL)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO occurrences(
+                  symbol_id, path, role, start_line, start_col, end_line, end_col, start_byte, end_byte
+                ) VALUES
+                  ('sCaller','src/note.py','decl_and_def',1,1,6,1,0,1),
+                  ('sMid','src/note.py','decl_and_def',8,1,10,1,0,1),
+                  ('sLeaf','src/note.py','decl_and_def',12,1,13,1,0,1)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO sites(
+                  site_id, path, site_kind, start_line, start_col, end_line, end_col, start_byte, end_byte,
+                  enclosing_symbol_id, rule_id, resolution, expression_text, payload_json, evidence_truncated
+                ) VALUES
+                  (10,'src/note.py','call',4,1,4,6,0,1,'sCaller','lang.call','unresolved','mid()','{}',0),
+                  (11,'src/note.py','call',9,1,9,7,0,1,'sMid','lang.call','unresolved','leaf()','{}',0),
+                  (12,'src/note.py','call',5,1,5,10,0,1,'sCaller','lang.call','unresolved','mystery()','{}',0)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO relationships(
+                  kind, status, source_site_id, source_symbol_id, target_symbol_id, target_key,
+                  rule_id, reason, evidence_json, evidence_truncated
+                ) VALUES
+                  ('call','resolved',10,'sCaller','sMid','mid','bind.scope','scope','["mid()"]',0),
+                  ('call','resolved',11,'sMid','sLeaf','leaf','bind.scope','scope','["leaf()"]',0)
+                """
+            )
+        finally:
+            conn.close()
+        aware = awareness_report(self.cfg, symbol_id="sLeaf", depth=2, limit=20)
+        ids = [edge["id"] for edge in aware["relationships"]]
+        self.assertEqual(ids, sorted(set(ids), key=ids.index))
+        to_leaf = [edge for edge in aware["relationships"] if edge["target"]["symbol_id"] == "sLeaf"]
+        self.assertEqual(len(to_leaf), 1)
+        self.assertEqual(to_leaf[0]["traversal"], "incoming")
+        self.assertEqual(to_leaf[0]["source"]["symbol_id"], "sMid")
+        self.assertEqual(to_leaf[0]["target"]["symbol_id"], "sLeaf")
+        self.assertEqual(to_leaf[0]["traversal_neighbor"]["id"], "sMid")
+        self.assertEqual(to_leaf[0]["source"]["path"], "src/note.py")
+        self.assertEqual(to_leaf[0]["source"]["start_line"], 9)
+        self.assertEqual(to_leaf[0]["target"]["path"], "src/note.py")
+        self.assertEqual(to_leaf[0]["target"]["start_line"], 12)
+        self.assertNotIn("_source_site_id", to_leaf[0])
+        from_caller = [edge for edge in aware["relationships"] if edge["source"]["symbol_id"] == "sCaller"]
+        self.assertEqual(len(from_caller), 1)
+        self.assertEqual(from_caller[0]["traversal"], "incoming")
+        self.assertEqual(from_caller[0]["target"]["symbol_id"], "sMid")
+        direct = context_report(self.cfg, symbol_id="sCaller")
+        self.assertEqual(direct["truncation"]["completeness"], "depth")
+        self.assertFalse(direct["truncation"]["truncated"])
+        self.assertEqual(direct["truncation"]["depth_limit"], 1)
+        self.assertIsNone(direct["truncation"]["omitted_relationships"])
+        self.assertEqual(
+            [edge["target"]["symbol_id"] for edge in direct["relationships"]],
+            ["sMid"],
+        )
+        unresolved = [edge["target"].get("expression") for edge in direct["unresolved"]["sites"]]
+        self.assertIn("mystery()", unresolved)
+        self.assertNotIn("mid()", unresolved)
+
+    def test_gitignore_change_refuses_the_snapshot(self) -> None:
+        _write(self.target / "src" / "hidden.py", "def hidden_fn():\n    return 1\n")
+        conn = self._index()
+        try:
+            conn.execute(
+                """
+                INSERT INTO symbols(
+                  symbol_id, identity_key, path, language, kind, name, qualified_name,
+                  signature, params, scope_json, anon_ord, body_hash
+                ) VALUES (
+                  'sHide','kHide','src/hidden.py','python','function','hidden_fn',
+                  'hidden_fn','hidden_fn()','()','[]',NULL,NULL
+                )
+                """
+            )
+        finally:
+            conn.close()
+        _write(self.target / ".gitignore", "src/hidden.py\n")
+        report = awareness_report(self.cfg, symbol_id="sHide", depth=2, limit=20)
+        blob = json.dumps(report)
+        self.assertEqual(report["selection"]["status"], "structural_unavailable")
+        self.assertEqual(report["relationships"], [])
+        self.assertNotIn("hidden.py", blob)
+        self.assertNotIn("sHide", blob)
+        self.assertTrue(any("index policy mismatch" in warning for warning in report["warnings"]))
+
+    def test_eligible_snapshot_filters_hidden_targets(self) -> None:
+        _write(self.target / "src" / "hidden.py", "def hidden_fn():\n    return 1\n")
+        _write(self.target / ".gitignore", "src/hidden.py\n")
+        conn = self._index()
+        try:
+            conn.execute(
+                """
+                INSERT INTO files(path, content_hash, size, mtime_ns, language)
+                VALUES ('src/hidden.py', 'hidden', 1, 0, 'python')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO symbols(
+                  symbol_id, identity_key, path, language, kind, name, qualified_name,
+                  signature, params, scope_json, anon_ord, body_hash
+                ) VALUES
+                  ('sCall','kCall','src/note.py','python','function','caller','caller','caller()','()','[]',NULL,NULL),
+                  ('sKeep','kKeep','src/note.py','python','function','keep','keep','keep()','()','[]',NULL,NULL),
+                  ('sHide','kHide','src/hidden.py','python','function','hidden_fn','hidden_fn','hidden_fn()','()','[]',NULL,NULL),
+                  ('sSecret','kSecret','src/hidden.py','python','function','secret','secret','secret()','()','[]',NULL,NULL)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO occurrences(
+                  symbol_id, path, role, start_line, start_col, end_line, end_col, start_byte, end_byte
+                ) VALUES
+                  ('sCall','src/note.py','decl_and_def',1,1,1,1,0,1),
+                  ('sKeep','src/note.py','decl_and_def',2,1,2,1,0,1),
+                  ('sHide','src/hidden.py','decl_and_def',1,1,1,1,0,1),
+                  ('sSecret','src/hidden.py','decl_and_def',2,1,2,1,0,1)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO sites(
+                  site_id, path, site_kind, start_line, start_col, end_line, end_col, start_byte, end_byte,
+                  enclosing_symbol_id, rule_id, resolution, expression_text, payload_json, evidence_truncated
+                ) VALUES
+                  (1,'src/note.py','call',2,1,2,6,0,1,'sCall','lang.call','unresolved','keep()','{}',0),
+                  (2,'src/note.py','call',3,1,3,12,0,1,'sCall','lang.call','unresolved','hidden_fn()','{}',0),
+                  (3,'src/hidden.py','call',1,1,1,8,0,1,'sHide','lang.call','unresolved','secret()','{}',0),
+                  (4,'src/note.py','call',4,1,4,10,0,1,'sCall','lang.call','unresolved','missing()','{}',0),
+                  (5,'src/note.py','call',5,1,5,6,0,1,'sCall','name.many','unresolved','twin()','{}',0)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO relationships(
+                  kind, status, source_site_id, source_symbol_id, target_symbol_id, target_key,
+                  rule_id, reason, evidence_json, evidence_truncated
+                ) VALUES
+                  ('call','resolved',1,'sCall','sKeep','keep','bind.scope','scope','["keep()"]',0),
+                  ('call','candidate',2,'sCall','sHide','hidden_fn','name.unique','unique','["hidden_fn()"]',0),
+                  ('call','resolved',3,'sHide','sSecret','secret','bind.scope','scope','["secret()"]',0),
+                  ('call','ambiguous',5,'sCall','sKeep','twin','name.many','many','[]',0),
+                  ('call','ambiguous',5,'sCall','sHide','twin','name.many','many','[]',0)
+                """
+            )
+        finally:
+            conn.close()
+        report = awareness_report(self.cfg, symbol_id="sCall", depth=2, limit=20)
+        blob = json.dumps(report)
+        self.assertNotIn("hidden.py", blob)
+        self.assertNotIn("sSecret", blob)
+        self.assertNotIn("sHide", blob)
+        kept = [edge for edge in report["relationships"] if edge["status"] == "resolved"]
+        self.assertEqual(report["selection"]["status"], "selected")
+        self.assertEqual([edge["target"]["symbol_id"] for edge in kept], ["sKeep"])
+        self.assertFalse(any("index policy mismatch" in warning for warning in report["warnings"]))
+        self.assertEqual(kept[0]["source"]["path"], "src/note.py")
+        ambiguous = [edge for edge in report["relationships"] if edge["status"] == "ambiguous"]
+        self.assertEqual(len(ambiguous), 1)
+        self.assertEqual(ambiguous[0]["expansion"], "stopped_ambiguity")
+        self.assertEqual([alt["path"] for alt in ambiguous[0]["alternatives"]], ["src/note.py"])
+        self.assertEqual(ambiguous[0]["status"], "ambiguous")
+        expressions = [edge["target"].get("expression") for edge in report["unresolved"]["sites"]]
+        self.assertIn("missing()", expressions)
+        self.assertNotIn("keep()", expressions)
+
+    def test_exact_budget_and_hop_cap_leave_omissions_unknown(self) -> None:
+        conn = self._index()
+        try:
+            conn.execute(
+                """
+                INSERT INTO symbols(
+                  symbol_id, identity_key, path, language, kind, name, qualified_name,
+                  signature, params, scope_json, anon_ord, body_hash
+                ) VALUES
+                  ('sRoot','kRoot','src/note.py','python','function','root','root','root()','()','[]',NULL,NULL),
+                  ('sHop','kHop','src/note.py','python','function','hop','hop','hop()','()','[]',NULL,NULL),
+                  ('sTail','kTail','src/note.py','python','function','tail','tail','tail()','()','[]',NULL,NULL)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO occurrences(
+                  symbol_id, path, role, start_line, start_col, end_line, end_col, start_byte, end_byte
+                ) VALUES
+                  ('sRoot','src/note.py','decl_and_def',1,1,1,1,0,1),
+                  ('sHop','src/note.py','decl_and_def',2,1,2,1,0,1),
+                  ('sTail','src/note.py','decl_and_def',3,1,3,1,0,1)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO relationships(
+                  kind, status, source_site_id, source_symbol_id, target_symbol_id, target_key,
+                  rule_id, reason, evidence_json, evidence_truncated
+                ) VALUES
+                  ('call','resolved',NULL,'sRoot','sHop','hop','bind.scope','scope','[]',0),
+                  ('call','resolved',NULL,'sHop','sTail','tail','bind.scope','scope','[]',0)
+                """
+            )
+        finally:
+            conn.close()
+        limited = awareness_report(self.cfg, symbol_id="sRoot", depth=3, limit=1)
+        self._assert_budget(limited)
+        self.assertEqual([edge["target"]["symbol_id"] for edge in limited["relationships"]], ["sHop"])
+        conn = _open_db(self.cfg, "app", self.target)
+        try:
+            conn.execute("DELETE FROM relationships")
+            conn.executemany(
+                """
+                INSERT INTO relationships(
+                  kind, status, source_site_id, source_symbol_id, target_symbol_id, target_key,
+                  rule_id, reason, evidence_json, evidence_truncated
+                ) VALUES ('call','resolved',NULL,'sRoot','sHop','hop','bind.scope','scope','[]',0)
+                """,
+                [()] * 101,
+            )
+        finally:
+            conn.close()
+        overflow = awareness_report(self.cfg, symbol_id="sRoot", depth=1, limit=80)
+        self._assert_budget(overflow)
+        self.assertLessEqual(len(overflow["relationships"]), 100)
+
+    def test_serialized_report_respects_the_byte_cap(self) -> None:
+        from py_indexer.context_cmd import serialize_report
+        from py_indexer.structural import OUTPUT_BYTE_CAP
+
+        conn = self._index()
+        try:
+            conn.execute(
+                """
+                INSERT INTO symbols(
+                  symbol_id, identity_key, path, language, kind, name, qualified_name,
+                  signature, params, scope_json, anon_ord, body_hash
+                ) VALUES
+                  ('sRoot','kRoot','src/note.py','python','function','root','root','root()','()','[]',NULL,NULL),
+                  ('sHop','kHop','src/note.py','python','function','hop','hop','hop()','()','[]',NULL,NULL)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO occurrences(
+                  symbol_id, path, role, start_line, start_col, end_line, end_col, start_byte, end_byte
+                ) VALUES ('sRoot','src/note.py','decl_and_def',1,1,1,1,0,1)
+                """
+            )
+            evidence = json.dumps(["e" * 1800])
+            conn.executemany(
+                """
+                INSERT INTO relationships(
+                  kind, status, source_site_id, source_symbol_id, target_symbol_id, target_key,
+                  rule_id, reason, evidence_json, evidence_truncated
+                ) VALUES ('call','resolved',NULL,'sRoot','sHop','hop','bind.scope','scope',?,0)
+                """,
+                [(evidence,)] * 40,
+            )
+        finally:
+            conn.close()
+        report = awareness_report(self.cfg, symbol_id="sRoot", depth=1, limit=80)
+        text = serialize_report(report)
+        self.assertLessEqual(len(text.encode("utf-8")), OUTPUT_BYTE_CAP)
+        self.assertEqual(json.loads(text)["selection"]["symbol_id"], "sRoot")
+        self.assertEqual(report["selection"]["status"], "selected")
+        self._assert_budget(report)
+        self.assertEqual(report["truncation"]["reason"], "output_bytes")
+        self.assertTrue(report["snapshots"])
+
+    def test_payload_over_the_cap_round_trips(self) -> None:
+        from py_indexer.relate import _load, _payload
+
+        text, cut = _payload({"callee": "run", "qualifier": "Svc", "blob": "x" * 4000, "args": 1})
+        self.assertTrue(cut)
+        loaded = json.loads(text)
+        self.assertIsInstance(loaded, dict)
+        again = _load(text)
+        self.assertNotEqual(again, {})
+        self.assertTrue(again.get("truncated") or again.get("unavailable"))
+        if again.get("unavailable"):
+            self.assertTrue(again.get("reason"))
+        else:
+            self.assertEqual(again["callee"], "run")
+            self.assertEqual(again["qualifier"], "Svc")
+            self.assertNotIn("blob", again)
+        huge = {
+            key: "y" * 400
+            for key in (
+                "callee",
+                "qualifier",
+                "receiver",
+                "handler",
+                "classification",
+                "path_known",
+                "specifier",
+                "command",
+            )
+        }
+        huge["names"] = ["n" * 80] * 20
+        text2, _cut2 = _payload(huge)
+        json.loads(text2)
+        again2 = _load(text2)
+        self.assertNotEqual(again2, {})
+        self.assertTrue(again2.get("unavailable") or again2.get("truncated"))
+        if again2.get("unavailable"):
+            self.assertIn("reason", again2)
+        malformed = _load('{"callee":')
+        self.assertTrue(malformed.get("unavailable"))
+        self.assertNotEqual(malformed, {})
+        self.assertTrue(_load("[]").get("unavailable"))
+
+    def test_unreadable_selected_repository_is_structured(self) -> None:
+        lib = self.tmp / "lib"
+        web = self.tmp / "web"
+        lib.mkdir()
+        web.mkdir()
+        _git_init(lib)
+        _git_init(web)
+        _write(lib / "src" / "a.py", "def alpha():\n    return 1\n")
+        _write(web / "src" / "b.ts", "export function beta() { return 1 }\n")
+        cfg = _config(
+            web,
+            [
+                {
+                    "id": "web",
+                    "root": ".",
+                    "role": "working",
+                    "related": ["lib"],
+                    "include": [],
+                    "exclude": [],
+                },
+                {
+                    "id": "lib",
+                    "root": str(lib),
+                    "role": "reference",
+                    "related": [],
+                    "include": [],
+                    "exclude": [],
+                },
+            ],
+        )
+        index_repository(cfg, "lib")
+        missing = context_report(cfg, repo="web", path="src/b.ts", line=1)
+        self.assertEqual(missing["selection"]["status"], "structural_unavailable")
+        self.assertEqual(missing["relationships"], [])
+        self.assertTrue(any(snap["repo_id"] == "lib" for snap in missing["snapshots"]))
+        index_repository(cfg, "web")
+        conn = _open_db(cfg, "web", web)
+        try:
+            conn.execute("UPDATE meta SET value = ? WHERE key = 'analysis_fingerprint'", ("stale",))
+        finally:
+            conn.close()
+        bad = context_report(cfg, repo="web", path="src/b.ts", line=1)
+        self.assertEqual(bad["selection"]["status"], "structural_incompatible")
+        self.assertEqual(bad["relationships"], [])
+
+    def test_freshness_uses_only_contributing_paths(self) -> None:
+        from py_indexer.context_cmd import _refresh_snapshot
+
+        _commit_all(self.target)
+        self._index().close()
+        self._insert_note_symbol()
+        current = context_report(self.cfg, symbol_id="sNote")
+        self.assertEqual(current["snapshots"][0]["freshness"], "current")
+        _write(self.target / "src" / "extra.ts", "export const extra = 1\n")
+        untouched = context_report(self.cfg, symbol_id="sNote")
+        self.assertEqual(untouched["snapshots"][0]["freshness"], "current")
+        _write(self.target / "src" / "note.py", "def lexical_only_marker():\n    return 2\n")
+        changed = context_report(self.cfg, symbol_id="sNote")
+        self.assertEqual(changed["snapshots"][0]["freshness"], "worktree_changed")
+
+        fresh = self.tmp / "fresh"
+        fresh.mkdir()
+        _git_init(fresh)
+        _write(fresh / "src" / "note.py", "def lexical_only_marker():\n    return 1\n")
+        cfg = _config(
+            fresh,
+            [{"id": "app", "root": ".", "role": "working", "related": [], "include": [], "exclude": []}],
+        )
+        saved_target, self.target, self.cfg = self.target, fresh, cfg
+        try:
+            index_repository(cfg, "app")
+            _commit_all(fresh)
+            self._insert_note_symbol()
+            dirty = context_report(cfg, symbol_id="sNote")
+            self.assertEqual(dirty["snapshots"][0]["freshness"], "dirty_at_index")
+        finally:
+            self.target, self.cfg = saved_target, self.cfg
+
+        moved = self.tmp / "moved"
+        moved.mkdir()
+        _git_init(moved)
+        _write(moved / "src" / "note.py", "def lexical_only_marker():\n    return 1\n")
+        _commit_all(moved)
+        cfg = _config(
+            moved,
+            [{"id": "app", "root": ".", "role": "working", "related": [], "include": [], "exclude": []}],
+        )
+        index_repository(cfg, "app")
+        self.target, self.cfg = moved, cfg
+        self._insert_note_symbol()
+        _write(moved / "src" / "note.py", "def lexical_only_marker():\n    return 3\n")
+        _commit_all(moved)
+        jumped = context_report(cfg, symbol_id="sNote")
+        self.assertEqual(jumped["snapshots"][0]["freshness"], "commit_moved")
+        shutil.rmtree(moved / ".git")
+        refused = context_report(cfg, symbol_id="sNote")
+        self.assertEqual(refused["selection"]["status"], "structural_unavailable")
+        self.assertEqual(refused["relationships"], [])
+        self.assertTrue(any("index policy mismatch" in warning for warning in refused["warnings"]))
+        calls = []
+
+        def spy(root, paths):
+            calls.append(list(paths))
+            return []
+
+        import py_indexer.context_cmd as context_mod
+
+        original = context_mod.worktree_dirty_paths
+        context_mod.worktree_dirty_paths = spy
+        try:
+            item = {"repo": type("Repo", (), {"root": moved})()}
+            snap = {
+                "warnings": [],
+                "indexed_commit": "abc",
+                "current_commit": "abc",
+                "indexed_dirty": False,
+            }
+            _refresh_snapshot(snap, item, [])
+            self.assertEqual(calls, [])
+            self.assertEqual(snap["freshness"], "current")
+            context_mod.worktree_dirty_paths = lambda root, paths: None
+            unknown = {
+                "warnings": [],
+                "indexed_commit": "abc",
+                "current_commit": "abc",
+                "indexed_dirty": False,
+            }
+            _refresh_snapshot(unknown, item, ["src/note.py"])
+            self.assertEqual(unknown["freshness"], "unknown")
+            self.assertTrue(any("could not answer" in warning for warning in unknown["warnings"]))
+        finally:
+            context_mod.worktree_dirty_paths = original
+
+    def _assert_budget(self, report) -> None:
+        truncation = report["truncation"]
+        unresolved = report["unresolved"]
+        self.assertTrue(truncation["truncated"])
+        self.assertEqual(truncation["completeness"], "budget")
+        self.assertFalse(truncation["omitted_known"])
+        self.assertIsNone(truncation["omitted_relationships"])
+        self.assertIsNone(unresolved["omitted"])
+        self.assertFalse(unresolved["omitted_known"])
+
+    def test_configured_exclude_refuses_the_snapshot(self) -> None:
+        _write(self.target / "src" / "hidden.py", "def hidden_fn():\n    return 1\n")
+        conn = self._index()
+        try:
+            conn.execute(
+                """
+                INSERT INTO symbols(
+                  symbol_id, identity_key, path, language, kind, name, qualified_name,
+                  signature, params, scope_json, anon_ord, body_hash
+                ) VALUES (
+                  'sHide','kHide','src/hidden.py','python','function','hidden_fn',
+                  'hidden_fn','hidden_fn()','()','[]',NULL,NULL
+                )
+                """
+            )
+        finally:
+            conn.close()
+        _write(self.cfg.config_dir / "excludes.txt", "src/hidden.py\n")
+        report = awareness_report(self.cfg, symbol_id="sHide", depth=2, limit=20)
+        blob = json.dumps(report)
+        self.assertEqual(report["selection"]["status"], "structural_unavailable")
+        self.assertEqual(report["relationships"], [])
+        self.assertNotIn("hidden.py", blob)
+        self.assertNotIn("sHide", blob)
+        self.assertTrue(any("index policy mismatch" in warning for warning in report["warnings"]))
+
+    def test_hidden_source_is_filtered(self) -> None:
+        _write(self.target / "src" / "hidden.py", "def hidden_fn():\n    return 1\n")
+        _write(self.target / ".gitignore", "src/hidden.py\n")
+        conn = self._index()
+        try:
+            conn.execute(
+                """
+                INSERT INTO files(path, content_hash, size, mtime_ns, language)
+                VALUES ('src/hidden.py', 'hidden', 1, 0, 'python')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO symbols(
+                  symbol_id, identity_key, path, language, kind, name, qualified_name,
+                  signature, params, scope_json, anon_ord, body_hash
+                ) VALUES
+                  ('sVisible','kVisible','src/note.py','python','function','visible','visible','visible()','()','[]',NULL,NULL),
+                  ('sSibling','kSibling','src/note.py','python','function','sibling','sibling','sibling()','()','[]',NULL,NULL),
+                  ('sHidden','kHidden','src/hidden.py','python','function','hidden_fn','hidden_fn','hidden_fn()','()','[]',NULL,NULL)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO occurrences(
+                  symbol_id, path, role, start_line, start_col, end_line, end_col, start_byte, end_byte
+                ) VALUES
+                  ('sVisible','src/note.py','decl_and_def',1,1,1,1,0,1),
+                  ('sSibling','src/note.py','decl_and_def',2,1,2,1,0,1),
+                  ('sHidden','src/hidden.py','decl_and_def',1,1,1,1,0,1)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO sites(
+                  site_id, path, site_kind, start_line, start_col, end_line, end_col, start_byte, end_byte,
+                  enclosing_symbol_id, rule_id, resolution, expression_text, payload_json, evidence_truncated
+                ) VALUES
+                  (1,'src/note.py','call',2,1,2,8,0,1,'sSibling','lang.call','unresolved','visible()','{}',0),
+                  (2,'src/hidden.py','call',1,1,1,8,0,1,'sHidden','lang.call','unresolved','visible()','{}',0),
+                  (3,'src/hidden.py','call',2,1,2,8,0,1,'sHidden','lang.call','unresolved','secret()','{}',0)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO relationships(
+                  kind, status, source_site_id, source_symbol_id, target_symbol_id, target_key,
+                  rule_id, reason, evidence_json, evidence_truncated
+                ) VALUES
+                  ('call','resolved',1,'sSibling','sVisible','visible','bind.scope','scope','["visible()"]',0),
+                  ('call','resolved',2,'sHidden','sVisible','visible','bind.scope','scope','["visible()"]',0)
+                """
+            )
+        finally:
+            conn.close()
+        report = awareness_report(self.cfg, symbol_id="sVisible", depth=2, limit=20)
+        blob = json.dumps(report)
+        self.assertEqual(report["selection"]["status"], "selected")
+        sources = [edge["source"]["symbol_id"] for edge in report["relationships"]]
+        self.assertEqual(sources, ["sSibling"])
+        self.assertNotIn("sHidden", blob)
+        self.assertNotIn("hidden.py", blob)
+        self.assertNotIn("secret()", blob)
+        self.assertFalse(any("index policy mismatch" in warning for warning in report["warnings"]))
+
+    def test_omitted_relationship_keeps_its_unresolved_terminal(self) -> None:
+        conn = self._index()
+        try:
+            conn.execute(
+                """
+                INSERT INTO symbols(
+                  symbol_id, identity_key, path, language, kind, name, qualified_name,
+                  signature, params, scope_json, anon_ord, body_hash
+                ) VALUES
+                  ('sRoot','kRoot','src/note.py','python','function','root','root','root()','()','[]',NULL,NULL),
+                  ('sKeep','kKeep','src/note.py','python','function','keep','keep','keep()','()','[]',NULL,NULL),
+                  ('sOther','kOther','src/note.py','python','function','other','other','other()','()','[]',NULL,NULL)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO occurrences(
+                  symbol_id, path, role, start_line, start_col, end_line, end_col, start_byte, end_byte
+                ) VALUES
+                  ('sRoot','src/note.py','decl_and_def',1,1,1,1,0,1),
+                  ('sKeep','src/note.py','decl_and_def',2,1,2,1,0,1),
+                  ('sOther','src/note.py','decl_and_def',3,1,3,1,0,1)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO sites(
+                  site_id, path, site_kind, start_line, start_col, end_line, end_col, start_byte, end_byte,
+                  enclosing_symbol_id, rule_id, resolution, expression_text, payload_json, evidence_truncated
+                ) VALUES
+                  (10,'src/note.py','call',2,1,2,6,0,1,'sRoot','lang.call','unresolved','keep()','{}',0),
+                  (11,'src/note.py','call',3,1,3,7,0,1,'sRoot','lang.call','unresolved','other()','{}',0),
+                  (12,'src/note.py','call',4,1,4,9,0,1,'sRoot','lang.call','unresolved','mystery()','{}',0)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO relationships(
+                  kind, status, source_site_id, source_symbol_id, target_symbol_id, target_key,
+                  rule_id, reason, evidence_json, evidence_truncated
+                ) VALUES
+                  ('call','resolved',10,'sRoot','sKeep','keep','bind.scope','scope','["keep()"]',0),
+                  ('call','resolved',11,'sRoot','sOther','other','bind.scope','scope','["other()"]',0)
+                """
+            )
+        finally:
+            conn.close()
+        report = awareness_report(self.cfg, symbol_id="sRoot", depth=2, limit=1)
+        self._assert_budget(report)
+        self.assertEqual([edge["target"]["symbol_id"] for edge in report["relationships"]], ["sKeep"])
+        expressions = [edge["target"].get("expression") for edge in report["unresolved"]["sites"]]
+        self.assertIn("other()", expressions)
+        self.assertIn("mystery()", expressions)
+        self.assertNotIn("keep()", expressions)
+
+    def test_candidate_incoming_path_stays_candidate(self) -> None:
+        conn = self._index()
+        try:
+            self._insert_chain(
+                conn,
+                ("sHere", "sMid", "sSrc", "sTail"),
+                (
+                    ("sSrc", "sMid", "candidate"),
+                    ("sMid", "sHere", "resolved"),
+                    ("sSrc", "sTail", "resolved"),
+                ),
+            )
+        finally:
+            conn.close()
+        report = awareness_report(self.cfg, symbol_id="sHere", depth=3, limit=20)
+        by_pair = {
+            (edge["source"]["symbol_id"], edge["target"]["symbol_id"]): edge
+            for edge in report["relationships"]
+        }
+        self.assertEqual(by_pair[("sSrc", "sMid")]["path_status"], "candidate")
+        self.assertEqual(by_pair[("sSrc", "sTail")]["path_status"], "candidate")
+        self.assertEqual(by_pair[("sMid", "sHere")]["path_status"], "resolved")
+
+    def test_two_paths_do_not_resolve_the_weaker_one(self) -> None:
+        conn = self._index()
+        try:
+            self._insert_chain(
+                conn,
+                ("sR", "sA", "sB", "sC", "sD"),
+                (
+                    ("sR", "sA", "resolved"),
+                    ("sR", "sB", "candidate"),
+                    ("sA", "sC", "resolved"),
+                    ("sB", "sC", "resolved"),
+                    ("sC", "sD", "resolved"),
+                ),
+            )
+        finally:
+            conn.close()
+        report = awareness_report(self.cfg, symbol_id="sR", depth=3, limit=20)
+        by_pair = {
+            (edge["source"]["symbol_id"], edge["target"]["symbol_id"]): edge
+            for edge in report["relationships"]
+        }
+        self.assertEqual(by_pair[("sA", "sC")]["path_status"], "resolved")
+        self.assertEqual(by_pair[("sC", "sD")]["path_status"], "candidate")
+        self.assertTrue(any(hop["status"] == "candidate" for hop in by_pair[("sC", "sD")]["via"]))
+        for edge in report["relationships"]:
+            if edge["status"] == "candidate" or any(hop["status"] == "candidate" for hop in edge["via"]):
+                self.assertEqual(edge["path_status"], "candidate")
+
+    def test_oversized_sections_stay_inside_the_byte_cap(self) -> None:
+        from py_indexer.context_cmd import _fit, serialize_report
+        from py_indexer.structural import OUTPUT_BYTE_CAP
+
+        def check(body: dict) -> dict:
+            fitted = _fit(body)
+            text = serialize_report(fitted)
+            self.assertLessEqual(len(text.encode("utf-8")), OUTPUT_BYTE_CAP)
+            self.assertEqual(json.loads(text)["truncation"]["completeness"], "budget")
+            self._assert_budget(fitted)
+            return fitted
+
+        huge = "p" * 4000
+        check(
+            {
+                "selection": {
+                    "status": "selected",
+                    "symbol_id": "sRoot",
+                    "signature": "S" * 100000,
+                    "locations": [{"path": huge, "start_line": 1}] * 40,
+                    "candidates": [{"name": huge}] * 20,
+                },
+                "snapshots": [{"repo_id": "app", "warnings": []}],
+                "relationships": [],
+                "unresolved": {"shown": 0, "omitted": 0, "omitted_known": True, "sites": []},
+                "truncation": {"truncated": False, "omitted_relationships": 0, "omitted_known": True},
+                "warnings": [],
+            }
+        )
+        check(
+            {
+                "selection": {"status": "selected", "symbol_id": "sRoot", "locations": [], "candidates": []},
+                "snapshots": [{"repo_id": "app", "warnings": []}],
+                "relationships": [],
+                "unresolved": {"shown": 0, "omitted": 0, "omitted_known": True, "sites": []},
+                "truncation": {"truncated": False, "omitted_relationships": 0, "omitted_known": True},
+                "warnings": ["w" * 8000] * 20,
+            }
+        )
+        fitted_snap = check(
+            {
+                "selection": {"status": "selected", "symbol_id": "sRoot", "locations": [], "candidates": []},
+                "snapshots": [{"repo_id": "app", "indexed_commit": "c" * 90000, "warnings": ["s" * 90000]}],
+                "relationships": [],
+                "unresolved": {"shown": 0, "omitted": 0, "omitted_known": True, "sites": []},
+                "truncation": {"truncated": False, "omitted_relationships": 0, "omitted_known": True},
+                "warnings": [],
+            }
+        )
+        self.assertLess(len(fitted_snap["snapshots"][0]["indexed_commit"]), 90000)
+        check(
+            {
+                "selection": {"status": "selected", "symbol_id": "sRoot", "locations": [], "candidates": []},
+                "snapshots": [{"repo_id": "app", "warnings": []}],
+                "relationships": [],
+                "unresolved": {
+                    "shown": 30,
+                    "omitted": 0,
+                    "omitted_known": True,
+                    "sites": [
+                        {
+                            "id": f"site-{index}",
+                            "status": "unresolved",
+                            "evidence": ["e" * 4000],
+                            "source": {"path": "src/note.py"},
+                            "target": {"expression": "mystery()"},
+                        }
+                        for index in range(30)
+                    ],
+                },
+                "truncation": {"truncated": False, "omitted_relationships": 0, "omitted_known": True},
+                "warnings": [],
+            }
+        )
+
+    def test_every_budget_stop_marks_counts_unknown(self) -> None:
+        from py_indexer.context_cmd import _open_repos, _walk
+
+        conn = self._index()
+        try:
+            self._insert_chain(conn, ("sRoot", "sHop"), (("sRoot", "sHop", "resolved"),))
+        finally:
+            conn.close()
+        clamped = awareness_report(self.cfg, symbol_id="sRoot", depth=99, limit=20)
+        self._assert_budget(clamped)
+        self.assertEqual(clamped["truncation"]["reason"], "hard_cap")
+        self.assertEqual(clamped["depth_limit"], 3)
+
+        conn = _open_db(self.cfg, "app", self.target)
+        try:
+            conn.execute("DELETE FROM relationships")
+            hubs = [f"sH{index}" for index in range(100)]
+            leaves = [f"sL{index}" for index in range(300)]
+            conn.executemany(
+                """
+                INSERT INTO symbols(
+                  symbol_id, identity_key, path, language, kind, name, qualified_name,
+                  signature, params, scope_json, anon_ord, body_hash
+                ) VALUES (?, ?, 'src/note.py','python','function', ?, ?, '()','()','[]',NULL,NULL)
+                """,
+                [(name, "k" + name, name, name + "()") for name in hubs + leaves],
+            )
+            conn.executemany(
+                """
+                INSERT INTO relationships(
+                  kind, status, source_site_id, source_symbol_id, target_symbol_id, target_key,
+                  rule_id, reason, evidence_json, evidence_truncated
+                ) VALUES ('call','resolved',NULL,?,?,'hop','bind.scope','scope','[]',0)
+                """,
+                [("sRoot", name) for name in hubs]
+                + [(hubs[index // 3], leaves[index]) for index in range(300)],
+            )
+        finally:
+            conn.close()
+        opened = _open_repos(self.cfg, ["app"])
+        try:
+            readable = [item for item in opened if item["conn"] is not None]
+            _rels, unresolved, truncation = _walk(
+                self.cfg,
+                readable,
+                {"repo_id": "app", "kind": "symbol", "id": "sRoot"},
+                depth_limit=2,
+                limit=10000,
+            )
+        finally:
+            for item in opened:
+                if item["conn"] is not None:
+                    item["conn"].close()
+        self._assert_budget({"truncation": truncation, "unresolved": unresolved})
+
+    def _insert_chain(self, conn, names: tuple[str, ...], edges: tuple[tuple[str, str, str], ...]) -> None:
+        conn.executemany(
+            """
+            INSERT INTO symbols(
+              symbol_id, identity_key, path, language, kind, name, qualified_name,
+              signature, params, scope_json, anon_ord, body_hash
+            ) VALUES (?, ?, 'src/note.py','python','function', ?, ?, '()','()','[]',NULL,NULL)
+            """,
+            [(name, "k" + name, name, name + "()") for name in names],
+        )
+        conn.executemany(
+            """
+            INSERT INTO occurrences(
+              symbol_id, path, role, start_line, start_col, end_line, end_col, start_byte, end_byte
+            ) VALUES (?, 'src/note.py','decl_and_def',1,1,1,1,0,1)
+            """,
+            [(name,) for name in names],
+        )
+        conn.executemany(
+            """
+            INSERT INTO relationships(
+              kind, status, source_site_id, source_symbol_id, target_symbol_id, target_key,
+              rule_id, reason, evidence_json, evidence_truncated
+            ) VALUES ('call', ?, NULL, ?, ?, ?, 'bind.scope','scope','[]',0)
+            """,
+            [(status, source, target, target) for source, target, status in edges],
+        )
+
+    def _insert_note_symbol(self) -> None:
+        conn = _open_db(self.cfg, "app", self.target)
+        try:
+            conn.execute(
+                """
+                INSERT INTO symbols(
+                  symbol_id, identity_key, path, language, kind, name, qualified_name,
+                  signature, params, scope_json, anon_ord, body_hash
+                ) VALUES (
+                  'sNote','kNote','src/note.py','python','function','lexical_only_marker',
+                  'lexical_only_marker','lexical_only_marker()','()','[]',NULL,NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO occurrences(
+                  symbol_id, path, role, start_line, start_col, end_line, end_col, start_byte, end_byte
+                ) VALUES ('sNote','src/note.py','decl_and_def',1,1,2,1,0,1)
+                """
+            )
+        finally:
+            conn.close()

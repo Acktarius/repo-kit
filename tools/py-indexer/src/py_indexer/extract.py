@@ -795,6 +795,34 @@ def _handle_call(walk: _Walker, node) -> bool:
     return True
 
 
+def _split_qualified_call(source: bytes, func) -> tuple[str, str]:
+    """Split a qualified call into the callee name and its lexical qualifier.
+
+    A leading ``::`` stays on the qualifier so absolute lookup does not become
+    a relative name. Nested ``a::b::run`` keeps qualifier ``a::b``.
+    """
+    leaf = func
+    while leaf is not None and leaf.type in {"qualified_identifier", "scoped_identifier"}:
+        nxt = leaf.child_by_field_name("name")
+        if nxt is None:
+            break
+        if nxt.type in {"qualified_identifier", "scoped_identifier"}:
+            leaf = nxt
+            continue
+        name = _node_text(source, nxt)
+        raw = _node_text(source, func)
+        suffix = "::" + name
+        if not raw.endswith(suffix):
+            return name, ""
+        qualifier = raw[: -len(suffix)]
+        if raw.startswith("::") and not qualifier.startswith("::"):
+            qualifier = "::"
+        return name, qualifier
+    raw = _node_text(source, func)
+    name = raw.split("::")[-1]
+    return name, raw if "::" in raw else ""
+
+
 def _callee(walk: _Walker, func) -> tuple[str, str, str]:
     if func is None:
         return "", "", ""
@@ -810,11 +838,15 @@ def _callee(walk: _Walker, func) -> tuple[str, str, str]:
         elif obj is not None:
             receiver = _node_text(walk.source, obj)
         return name, receiver, ""
-    if func.type in {"field_expression", "scoped_identifier", "qualified_identifier"}:
+    if func.type == "field_expression":
         name_node = func.child_by_field_name("field") or func.child_by_field_name("name")
         scope = func.child_by_field_name("argument") or func.child_by_field_name("scope") or func.child_by_field_name("object")
-        name = _node_text(walk.source, name_node) if name_node is not None else _node_text(walk.source, func).split("::")[-1].split(".")[-1]
+        name = _node_text(walk.source, name_node) if name_node is not None else _node_text(walk.source, func).split(".")[-1]
         qualifier = _node_text(walk.source, scope) if scope is not None else ""
+        receiver = qualifier.split("::")[-1].split(".")[-1] if qualifier else ""
+        return name, receiver, qualifier
+    if func.type in {"scoped_identifier", "qualified_identifier"}:
+        name, qualifier = _split_qualified_call(walk.source, func)
         receiver = qualifier.split("::")[-1].split(".")[-1] if qualifier else ""
         return name, receiver, qualifier
     raw = _node_text(walk.source, func)

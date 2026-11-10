@@ -154,7 +154,7 @@ def rebuild_relationships(conn) -> dict:
     by_id = {row["symbol_id"]: row for row in symbols}
     conn.execute("DELETE FROM relationships")
     rows = []
-    rows.extend(_bind_sites(symbols, sites, by_id))
+    rows.extend(_bind_sites(symbols, sites, by_id, roles))
     rows.extend(_pair_declarations(symbols, roles))
     for row in rows:
         evidence, truncated = _evidence(row.pop("evidence"))
@@ -182,15 +182,28 @@ def rebuild_relationships(conn) -> dict:
     return {"relationships": len(rows), "relationship_rebuild_ms": REBUILD_MS}
 
 
-def _bind_sites(symbols, sites, by_id) -> list[dict]:
+def _bind_sites(symbols, sites, by_id, roles) -> list[dict]:
     out = []
     imports = [site for site in sites if site["site_kind"] == "import"]
     for site in sites:
         if site["site_kind"] not in {"call", "reference"}:
             if site["site_kind"] == "http_route" and site["rule_id"] != "http.cpp.table":
-                out.extend(_handler_binding(site, symbols, sites, by_id, imports))
+                out.extend(_handler_binding(site, symbols, sites, by_id, imports, roles))
             continue
         payload = _load(site["payload_json"])
+        if payload.get("unavailable"):
+            out.append(
+                _rel(
+                    kind="reference" if site["site_kind"] == "reference" else "call",
+                    status="unresolved",
+                    rule_id="lang.call",
+                    reason="call fact is unavailable",
+                    source_site_id=site["site_id"],
+                    source_symbol_id=site["enclosing_symbol_id"],
+                    evidence=[site["expression_text"]],
+                )
+            )
+            continue
         name = payload.get("callee") or payload.get("name") or ""
         status, rule, targets, reason = _resolve_name(
             name,
@@ -199,6 +212,7 @@ def _bind_sites(symbols, sites, by_id) -> list[dict]:
             symbols,
             imports,
             by_id,
+            roles,
         )
         kind = "reference" if site["site_kind"] == "reference" else "call"
         if not targets:
@@ -232,8 +246,10 @@ def _bind_sites(symbols, sites, by_id) -> list[dict]:
     return out
 
 
-def _handler_binding(site, symbols, sites, by_id, imports) -> list[dict]:
+def _handler_binding(site, symbols, sites, by_id, imports, roles) -> list[dict]:
     payload = _load(site["payload_json"])
+    if payload.get("unavailable"):
+        return []
     handler = payload.get("handler") or ""
     if not handler:
         return []
@@ -244,6 +260,7 @@ def _handler_binding(site, symbols, sites, by_id, imports) -> list[dict]:
         symbols,
         imports,
         by_id,
+        roles,
     )
     if status != "resolved" or len(targets) != 1:
         return []
@@ -262,14 +279,17 @@ def _handler_binding(site, symbols, sites, by_id, imports) -> list[dict]:
     ]
 
 
-def _resolve_name(name, payload, site, symbols, imports, by_id):
+def _resolve_name(name, payload, site, symbols, imports, by_id, roles):
     if not name or name.startswith("<anonymous"):
         return "unresolved", "lang.call", [], "callee is not a named binding"
     qualifier = payload.get("qualifier") or ""
     receiver = payload.get("receiver") or ""
     arg_count = payload.get("args")
     if qualifier:
-        return _qualified(name, qualifier, arg_count, symbols)
+        scope = _call_scope(site, by_id)
+        if scope is None:
+            return "unresolved", "bind.qualified", [], "caller scope is not available"
+        return _qualified(name, qualifier, arg_count, symbols, scope, roles)
     if receiver and receiver not in {"this", "self"}:
         return "unresolved", "lang.call", [], "receiver type is not known from syntax"
     scoped = _scope_lookup(name, site, symbols, by_id)
@@ -281,22 +301,130 @@ def _resolve_name(name, payload, site, symbols, imports, by_id):
     return _checkout_name(name, symbols)
 
 
-def _qualified(name, qualifier, arg_count, symbols):
-    qual = qualifier.rstrip(":.")
-    hits = [
+def _call_scope(site, by_id):
+    """Lexical frames around the call. None when the stored scope is unusable.
+
+    An empty list is a known global scope.
+    """
+    enclosing_id = site.get("enclosing_symbol_id")
+    if not enclosing_id or enclosing_id not in by_id:
+        return []
+    return _scope_frame(by_id[enclosing_id].get("scope_json"))
+
+
+def _scope_frame(raw) -> list | None:
+    try:
+        value = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return None
+    if isinstance(value, dict):
+        if value.get("unavailable"):
+            return None
+        scope = value.get("scope")
+        return list(scope) if isinstance(scope, list) else None
+    if isinstance(value, list):
+        return value
+    return None
+
+
+def _scope_names(labels: list) -> list[str]:
+    names = []
+    for label in labels:
+        text = str(label)
+        kind, _, name = text.partition(":")
+        if name and kind in {"namespace", "class", "struct"}:
+            names.append(name)
+        elif text and ":" not in text:
+            names.append(text)
+    return names
+
+
+def _plain_component(part: str) -> bool:
+    return bool(part) and all(char.isalnum() or char == "_" for char in part)
+
+
+def _component_exists(symbols, prefix: list[str], anchor: str) -> bool:
+    head = prefix + [anchor]
+    for row in symbols:
+        if row["qualified_name"].split("::")[: len(head)] == head:
+            return True
+    return False
+
+
+def _exact_qualified(symbols, components: list[str]) -> list:
+    want = "::".join(components)
+    return [
         row
         for row in symbols
-        if row["name"] == name
-        and (
-            row["qualified_name"] == f"{qual}::{name}"
-            or row["qualified_name"] == f"{qual}.{name}"
-            or row["qualified_name"].endswith(f"::{name}")
-            and qual in row["qualified_name"]
-        )
+        if row["qualified_name"] == want and row["kind"] in _FUNCTION_KINDS and row["name"] == components[-1]
     ]
-    if not hits:
-        return "unresolved", "bind.qualified", [], "qualified name has no symbol"
-    return _finish_hits(hits, arg_count, "bind.qualified", "qualified name binding")
+
+
+def _collapse_same_signature(hits, roles) -> list:
+    """Prefer one definition when a declaration and definition share a signature."""
+    groups: dict[tuple, list] = defaultdict(list)
+    for row in hits:
+        groups[(row["qualified_name"], _stored_param_key(row["scope_json"]) or row["params"])].append(row)
+    chosen = []
+    for group in groups.values():
+        definitions = [
+            row
+            for row in group
+            if roles.get(row["symbol_id"], set()) & {"definition", "decl_and_def"}
+        ]
+        if len(definitions) == 1:
+            chosen.append(definitions[0])
+        elif definitions:
+            chosen.extend(definitions)
+        else:
+            chosen.append(group[0])
+    return chosen
+
+
+def _qualified(name, qualifier, arg_count, symbols, scope_labels, roles):
+    """Bind a qualified call from the caller's lexical scope.
+
+    Components match exactly. A relative qualifier stops at the first scope
+    that contains its first component. Absolute qualification starts at the
+    global scope. Aliases, using directives, and inheritance are not searched.
+    """
+    text = str(qualifier).strip()
+    absolute = text.startswith("::")
+    parts = [part for part in text.split("::") if part]
+    if any(not _plain_component(part) for part in parts) or not _plain_component(name):
+        return "unresolved", "bind.qualified", [], "qualifier is not a supported lexical path"
+    if not parts and not absolute:
+        return "unresolved", "bind.qualified", [], "qualifier is not a supported lexical path"
+    frames = _scope_names(scope_labels)
+    if absolute:
+        hits = _exact_qualified(symbols, parts + [name])
+        if not hits:
+            return "unresolved", "bind.qualified", [], "absolute qualifier has no symbol"
+        return _finish_hits(
+            _collapse_same_signature(hits, roles),
+            arg_count,
+            "bind.qualified",
+            "absolute qualified name",
+        )
+    for length in range(len(frames), -1, -1):
+        prefix = frames[:length]
+        if not _component_exists(symbols, prefix, parts[0]):
+            continue
+        hits = _exact_qualified(symbols, prefix + parts + [name])
+        if not hits:
+            return (
+                "unresolved",
+                "bind.qualified",
+                [],
+                "qualifier is in this scope but the member is not",
+            )
+        return _finish_hits(
+            _collapse_same_signature(hits, roles),
+            arg_count,
+            "bind.qualified",
+            "lexical qualified name",
+        )
+    return "unresolved", "bind.qualified", [], "qualifier is not in the caller scope"
 
 
 def _scope_lookup(name, site, symbols, by_id) -> list[dict]:
@@ -483,17 +611,72 @@ def _rel(**kwargs) -> dict:
 
 def _load(raw: str) -> dict:
     try:
-        value = json.loads(raw or "{}")
+        value = json.loads(raw if raw else "{}")
     except json.JSONDecodeError:
-        return {}
-    return value if isinstance(value, dict) else {}
+        return {"unavailable": True, "reason": "malformed payload"}
+    if isinstance(value, dict):
+        return value
+    return {"unavailable": True, "reason": "payload is not an object"}
+
+
+_PAYLOAD_CAP = 1000
+_PAYLOAD_KEEP = (
+    "callee",
+    "qualifier",
+    "receiver",
+    "args",
+    "handler",
+    "classification",
+    "path_known",
+    "specifier",
+    "names",
+    "command",
+)
+
+
+def _payload_text(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _shrink_payload(payload: dict) -> dict:
+    kept = {"truncated": True}
+    for key in _PAYLOAD_KEEP:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if isinstance(value, str) and len(value) > 160:
+            kept[key] = value[:160]
+        elif isinstance(value, list):
+            kept[key] = value[:8]
+        elif isinstance(value, (int, float, bool)) or value is None:
+            kept[key] = value
+        elif isinstance(value, str):
+            kept[key] = value
+    return kept
 
 
 def _payload(payload: dict) -> tuple[str, bool]:
-    raw = json.dumps(payload, ensure_ascii=True, sort_keys=True)
-    if len(raw) <= 1000:
+    """Store a site payload as valid JSON within the byte cap.
+
+    Oversized values are shortened before serialization. The result is never a
+    sliced JSON string and never an empty object standing in for a lost fact.
+    """
+    if not isinstance(payload, dict):
+        return (
+            _payload_text({"unavailable": True, "reason": "payload is not an object"}),
+            True,
+        )
+    raw = _payload_text(payload)
+    if len(raw.encode("utf-8")) <= _PAYLOAD_CAP:
         return raw, False
-    return raw[:1000], True
+    shrunk = _shrink_payload(payload)
+    raw = _payload_text(shrunk)
+    if len(raw.encode("utf-8")) <= _PAYLOAD_CAP:
+        return raw, True
+    return (
+        _payload_text({"unavailable": True, "reason": "payload exceeded the stored fact budget"}),
+        True,
+    )
 
 
 def _evidence(items: list[str]) -> tuple[str, bool]:

@@ -8,4 +8,4 @@ TOOL_PRESERVE=(
   ".repo-kit/tools/py-indexer/repos.json"
 )
 # Minimum shared application compat_version accepted without upgrade prompt.
-TOOL_PY_INDEXER_COMPAT="0.3.2"
+TOOL_PY_INDEXER_COMPAT="0.3.3"

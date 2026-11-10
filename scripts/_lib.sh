@@ -1058,7 +1058,7 @@ prompt_yn_interactive() {
 # --- py-indexer (user-wide application + per-project config) -----------------
 
 # Kit-required compat_version and capability (must match tools/py-indexer).
-_PY_INDEXER_REQUIRED_COMPAT="0.3.2"
+_PY_INDEXER_REQUIRED_COMPAT="0.3.3"
 _PY_INDEXER_REQUIRED_CAPABILITY="staging-publish"
 
 _py_indexer_data_home() {

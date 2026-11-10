@@ -12,7 +12,7 @@ from py_indexer.config import AppConfig, ConfigError
 from py_indexer.exclude import git_ignored_paths, indexed_path_visible, load_exclude_rules
 from py_indexer.gitinfo import git_head, worktree_dirty_paths
 from py_indexer.paths import safe_join
-from py_indexer.relate import weaker
+from py_indexer.relate import _STATUS_RANK, weaker
 from py_indexer.search_cmd import resolve_search_repos
 from py_indexer.store import IndexError_, open_index, read_meta
 from py_indexer.structural import (
@@ -192,6 +192,20 @@ def _assemble(cfg, opened, selector, *, limit, depth_limit, awareness, requested
         warnings.extend(snap["warnings"])
         if item["conn"] is not None and item["state"] in {"ready", "partial"}:
             readable.append(item)
+    if selector["line"] is not None:
+        own = next((item for item in opened if item["repo_id"] == selector["repo"]), None)
+        if own is None or own not in readable:
+            state = own["state"] if own is not None else "unavailable"
+            status = "structural_incompatible" if state == "incompatible" else "structural_unavailable"
+            return _fit(
+                _empty(
+                    tool="awareness" if awareness else "context",
+                    status=status,
+                    snapshots=snapshots,
+                    warnings=warnings,
+                    query=selector["path"],
+                )
+            )
     if not readable:
         state = "structural_unavailable"
         if any(item["state"] == "incompatible" for item in opened):
@@ -229,7 +243,12 @@ def _assemble(cfg, opened, selector, *, limit, depth_limit, awareness, requested
     )
     if limit_clamped or depth_clamped:
         truncation["truncated"] = True
+        truncation["completeness"] = "budget"
         truncation["reason"] = "hard_cap"
+        truncation["omitted_known"] = False
+        truncation["omitted_relationships"] = None
+        unresolved["omitted"] = None
+        unresolved["omitted_known"] = False
     body = {
         "tool": "awareness" if awareness else "context",
         "selection": found["selection"],
@@ -245,6 +264,7 @@ def _assemble(cfg, opened, selector, *, limit, depth_limit, awareness, requested
     }
     if awareness:
         body["depth_limit"] = depth_n
+    _apply_freshness(opened, body)
     return _fit(body)
 
 
@@ -365,62 +385,94 @@ def _select_query(readable, query: str) -> dict:
 
 def _walk(cfg, readable, root, *, depth_limit: int, limit: int) -> tuple[list, dict, dict]:
     produced = []
-    seen = set()
+    expanded: dict[tuple, int] = {}
+    emitted: dict[str, dict] = {}
+    emitted_sites: set = set()
     unresolved_shown = []
     unresolved_extra = 0
     intermediate = 0
     stopped_early = False
+    depth_boundary = False
     omitted_ambiguity = 0
+    unresolved_uncounted = False
     queue = [(root, 0, "resolved", [])]
     by_repo = {item["repo_id"]: item for item in readable}
+    view = _Visibility()
     while queue and len(produced) < limit and intermediate < INTERMEDIATE_CAP:
         node, depth, path_status, via = queue.pop(0)
         intermediate += 1
         key = (node["repo_id"], node["kind"], node["id"])
-        if key in seen:
+        rank = _STATUS_RANK[path_status]
+        previous = expanded.get(key)
+        if previous is not None and rank >= previous:
             continue
-        seen.add(key)
         if depth >= depth_limit:
+            depth_boundary = True
             continue
+        expanded[key] = rank
         item = by_repo.get(node["repo_id"])
         if item is None or item["conn"] is None:
             continue
-        edges = _edges_from(cfg, readable, item, node)
-        if len(edges) > HOP_CANDIDATE_CAP:
-            edges = edges[:HOP_CANDIDATE_CAP]
+        edges, overflow = _edges_from(cfg, readable, item, node, view)
+        if overflow:
             stopped_early = True
         for edge in edges:
+            if not _keep_edge(view, by_repo, edge):
+                continue
             edge_status = edge["status"]
             next_status = weaker(path_status, edge_status)
+            site_id = edge.get("_source_site_id")
+            terminal = bool(edge.get("_terminal"))
+            direction, neighbor = _traversal(node, edge)
+            prior = emitted.get(edge["id"])
+            if prior is not None:
+                if (
+                    prior.get("_path_node") == key
+                    and _STATUS_RANK[next_status] < _STATUS_RANK[prior["path_status"]]
+                ):
+                    prior["path_status"] = next_status
+                    prior["via"] = via + [{"id": edge["id"], "status": edge_status, "kind": edge["kind"]}]
+                    if neighbor and edge_status in {"resolved", "candidate"} and not terminal:
+                        queue.append((neighbor, depth + 1, next_status, prior["via"]))
+                continue
+            edge["traversal"] = direction
+            edge["traversal_neighbor"] = neighbor
             edge["path_status"] = next_status
             edge["depth"] = depth + 1
             edge["via"] = via + [{"id": edge["id"], "status": edge_status, "kind": edge["kind"]}]
-            if edge_status == "unresolved":
+            edge["_path_node"] = key
+            if terminal or edge_status == "unresolved":
+                if terminal and site_id is not None and site_id in emitted_sites:
+                    continue
+                edge.pop("_source_site_id", None)
+                edge.pop("_terminal", None)
                 if len(unresolved_shown) < 20:
                     unresolved_shown.append(edge)
+                    emitted[edge["id"]] = edge
+                    if site_id is not None and not terminal:
+                        emitted_sites.add(site_id)
                 else:
                     unresolved_extra += 1
+                    unresolved_uncounted = True
                 continue
             if len(produced) >= limit:
                 stopped_early = True
-                break
+                continue
+            edge.pop("_source_site_id", None)
+            edge.pop("_terminal", None)
             produced.append(edge)
+            emitted[edge["id"]] = edge
+            if site_id is not None:
+                emitted_sites.add(site_id)
             if edge_status == "ambiguous" or edge.get("expansion") == "stopped_ambiguity":
                 omitted_ambiguity += len(edge.get("alternatives") or [])
                 continue
-            if edge_status in {"resolved", "candidate"} and edge.get("target_symbol_id"):
-                queue.append(
-                    (
-                        {
-                            "repo_id": edge["target_repo_id"],
-                            "kind": "symbol",
-                            "id": edge["target_symbol_id"],
-                        },
-                        depth + 1,
-                        next_status,
-                        edge["via"],
-                    )
-                )
+            if neighbor and edge_status in {"resolved", "candidate"}:
+                queue.append((neighbor, depth + 1, next_status, edge["via"]))
+    for edge in produced + unresolved_shown:
+        edge.pop("_path_node", None)
+        edge.pop("_source_site_id", None)
+        edge.pop("_terminal", None)
     produced.sort(
         key=lambda edge: (
             {"resolved": 0, "candidate": 1, "ambiguous": 2, "unresolved": 3}[edge["status"]],
@@ -430,46 +482,114 @@ def _walk(cfg, readable, root, *, depth_limit: int, limit: int) -> tuple[list, d
             edge["id"],
         )
     )
+    budget = stopped_early or intermediate >= INTERMEDIATE_CAP or (len(produced) >= limit and bool(queue))
+    if budget:
+        completeness = "budget"
+        truncated = True
+        reason = "budget"
+        omitted_known = False
+        omitted = None
+        unresolved_omitted = None
+    elif depth_boundary:
+        completeness = "depth"
+        truncated = False
+        reason = None
+        omitted_known = False
+        omitted = None
+        unresolved_omitted = None
+    else:
+        completeness = "complete"
+        truncated = False
+        reason = None
+        omitted_known = True
+        omitted = 0
+        unresolved_omitted = unresolved_extra
     truncation = {
-        "truncated": stopped_early or intermediate >= INTERMEDIATE_CAP,
-        "reason": "budget" if stopped_early else None,
-        "omitted_relationships": None if stopped_early else 0,
-        "omitted_known": not stopped_early,
+        "truncated": truncated,
+        "completeness": completeness,
+        "reason": reason,
+        "depth_limit": depth_limit,
+        "omitted_relationships": omitted,
+        "omitted_known": omitted_known,
         "expansion_stopped_ambiguity": omitted_ambiguity,
     }
     unresolved = {
         "shown": len(unresolved_shown),
-        "omitted": unresolved_extra if not stopped_early else None,
-        "omitted_known": not stopped_early,
+        "omitted": unresolved_omitted,
+        "omitted_known": unresolved_omitted is not None,
         "sites": unresolved_shown,
     }
     return produced, unresolved, truncation
 
 
-def _edges_from(cfg, readable, item, node) -> list[dict]:
+def _traversal(node, edge) -> tuple[str, dict | None]:
+    """Return incoming/outgoing and the neighbor to queue.
+
+    The relationship's source and target fields stay in semantic order.
+    """
+    source_id = (edge.get("source") or {}).get("symbol_id")
+    target_id = edge.get("target_symbol_id")
+    if (
+        node["kind"] == "symbol"
+        and target_id == node["id"]
+        and source_id
+        and source_id != node["id"]
+    ):
+        return "incoming", {
+            "repo_id": edge["source"].get("repo_id") or node["repo_id"],
+            "kind": "symbol",
+            "id": source_id,
+        }
+    if target_id and edge.get("target_repo_id"):
+        return "outgoing", {
+            "repo_id": edge["target_repo_id"],
+            "kind": "symbol",
+            "id": target_id,
+        }
+    return "outgoing", None
+
+
+def _edges_from(cfg, readable, item, node, view) -> tuple[list[dict], bool]:
     conn = item["conn"]
     edges = []
+    overflow = False
+    by_repo = {entry["repo_id"]: entry for entry in readable}
     if node["kind"] == "symbol":
         rows = conn.execute(
             """
             SELECT * FROM relationships
             WHERE source_symbol_id = ? OR target_symbol_id = ?
+            ORDER BY relationship_id
             LIMIT ?
             """,
             (node["id"], node["id"], HOP_CANDIDATE_CAP + 1),
         ).fetchall()
-        edges.extend(_group_local(item, rows))
+        if len(rows) > HOP_CANDIDATE_CAP:
+            overflow = True
+            rows = rows[:HOP_CANDIDATE_CAP]
+        local = _group_local(item, rows)
+        for edge in local:
+            if _keep_edge(view, by_repo, edge):
+                edges.append(edge)
         sites = conn.execute(
-            "SELECT * FROM sites WHERE enclosing_symbol_id = ?",
-            (node["id"],),
+            """
+            SELECT * FROM sites
+            WHERE enclosing_symbol_id = ?
+            ORDER BY site_id
+            LIMIT ?
+            """,
+            (node["id"], HOP_CANDIDATE_CAP + 1),
         ).fetchall()
+        if len(sites) > HOP_CANDIDATE_CAP:
+            overflow = True
+            sites = sites[:HOP_CANDIDATE_CAP]
     else:
         site = conn.execute("SELECT * FROM sites WHERE site_id = ?", (node["id"],)).fetchone()
         sites = [site] if site is not None else []
     for site in sites:
-        if site is None or not _visible(item, site["path"]):
+        if site is None or not view.allow(item, site["path"]):
             continue
-        cross = _cross(cfg, readable, item, site)
+        cross = _cross(cfg, readable, item, site, view)
         if site["site_kind"] == "http_client" and not cross and (
             site["resolution"] == "unresolved" or site["http_suffix"] or site["http_path"]
         ):
@@ -485,61 +605,133 @@ def _edges_from(cfg, readable, item, node) -> list[dict]:
         }:
             edges.append(_terminal_site(item, site))
         edges.extend(cross)
-    return edges
+    return edges, overflow
 
 
 def _group_local(item, rows) -> list[dict]:
     groups: dict[tuple, list] = defaultdict(list)
     singles = []
+    symbol_ids = []
+    site_ids = []
+    for row in rows:
+        if row["source_symbol_id"]:
+            symbol_ids.append(row["source_symbol_id"])
+        if row["target_symbol_id"]:
+            symbol_ids.append(row["target_symbol_id"])
+        if row["source_site_id"] is not None:
+            site_ids.append(row["source_site_id"])
+    locations = _symbol_locations(item, symbol_ids)
+    sites = _site_locations(item, site_ids)
     for row in rows:
         if row["status"] == "ambiguous" and row["source_site_id"] is not None:
             groups[(row["kind"], row["source_site_id"], row["rule_id"])].append(row)
         else:
-            singles.append(_local_edge(item, row, alternatives=[]))
+            singles.append(_local_edge(item, row, [], locations, sites))
     out = []
     for grouped in groups.values():
         primary = grouped[0]
         alternatives = []
-        for row in grouped[:ALTERNATIVE_CAP]:
+        ordered = sorted(grouped, key=lambda row: (row["target_key"] or "", row["target_symbol_id"] or "", row["relationship_id"]))
+        for row in ordered[:ALTERNATIVE_CAP]:
+            place = locations.get(row["target_symbol_id"]) or {}
             alternatives.append(
                 {
                     "repo_id": item["repo_id"],
                     "symbol_id": row["target_symbol_id"],
                     "name": row["target_key"],
+                    "path": place.get("path"),
+                    "start_line": place.get("start_line"),
                 }
             )
-        edge = _local_edge(item, primary, alternatives)
+        edge = _local_edge(item, primary, alternatives, locations, sites)
         edge["expansion"] = "stopped_ambiguity"
-        edge["alternatives_truncated"] = len(grouped) > ALTERNATIVE_CAP
+        edge["alternatives_truncated"] = len(ordered) > ALTERNATIVE_CAP
         out.append(edge)
     out.extend(singles)
     return out
 
 
-def _local_edge(item, row, alternatives: list) -> dict:
+def _local_edge(item, row, alternatives: list, locations: dict, sites: dict) -> dict:
     target_repo = item["repo_id"]
+    source_place = locations.get(row["source_symbol_id"]) or {}
+    site_place = sites.get(row["source_site_id"]) or {}
+    target_place = locations.get(row["target_symbol_id"]) or {}
+    source = {
+        "repo_id": item["repo_id"],
+        "symbol_id": row["source_symbol_id"],
+        "path": site_place.get("path") or source_place.get("path"),
+        "start_line": site_place.get("start_line") or source_place.get("start_line"),
+    }
+    target = {
+        "repo_id": target_repo,
+        "symbol_id": row["target_symbol_id"],
+        "name": row["target_key"],
+        "path": target_place.get("path"),
+        "start_line": target_place.get("start_line"),
+    }
     return {
         "id": f"{item['repo_id']}:rel:{row['relationship_id']}",
         "kind": row["kind"],
         "status": row["status"],
         "rule_id": row["rule_id"],
         "reason": row["reason"],
-        "source": {
-            "repo_id": item["repo_id"],
-            "symbol_id": row["source_symbol_id"],
-        },
-        "target": {
-            "repo_id": target_repo,
-            "symbol_id": row["target_symbol_id"],
-            "name": row["target_key"],
-        },
+        "source": source,
+        "target": target,
         "target_symbol_id": row["target_symbol_id"],
         "target_repo_id": target_repo if row["target_symbol_id"] else None,
         "alternatives": alternatives,
+        "_source_site_id": row["source_site_id"],
         "evidence": _load_list(row["evidence_json"]),
         "evidence_truncated": bool(row["evidence_truncated"]),
         "expansion": None,
     }
+
+
+def _symbol_locations(item, symbol_ids: list) -> dict:
+    ids = [symbol_id for symbol_id in dict.fromkeys(symbol_ids) if symbol_id]
+    if not ids:
+        return {}
+    marks = ",".join("?" for _ in ids)
+    found = {}
+    rank = {"definition": 0, "decl_and_def": 1, "declaration": 2}
+    rows = item["conn"].execute(
+        f"""
+        SELECT symbol_id, path, start_line, role
+        FROM occurrences
+        WHERE symbol_id IN ({marks})
+        ORDER BY start_line, symbol_id
+        """,
+        ids,
+    ).fetchall()
+    best = {}
+    for row in rows:
+        score = rank.get(row["role"], 9)
+        current = best.get(row["symbol_id"])
+        if current is None or score < current[0]:
+            best[row["symbol_id"]] = (score, row["path"], row["start_line"])
+    for symbol_id, (_score, path, line) in best.items():
+        found[symbol_id] = {"path": path, "start_line": line}
+    missing = [symbol_id for symbol_id in ids if symbol_id not in found]
+    if missing:
+        marks = ",".join("?" for _ in missing)
+        for row in item["conn"].execute(
+            f"SELECT symbol_id, path FROM symbols WHERE symbol_id IN ({marks})",
+            missing,
+        ):
+            found[row["symbol_id"]] = {"path": row["path"], "start_line": None}
+    return found
+
+
+def _site_locations(item, site_ids: list) -> dict:
+    ids = [site_id for site_id in dict.fromkeys(site_ids) if site_id is not None]
+    if not ids:
+        return {}
+    marks = ",".join("?" for _ in ids)
+    rows = item["conn"].execute(
+        f"SELECT site_id, path, start_line FROM sites WHERE site_id IN ({marks})",
+        ids,
+    ).fetchall()
+    return {row["site_id"]: {"path": row["path"], "start_line": row["start_line"]} for row in rows}
 
 
 def _unmatched_http(item, site) -> dict:
@@ -573,6 +765,8 @@ def _unmatched_http(item, site) -> dict:
         "evidence": [label],
         "evidence_truncated": False,
         "expansion": None,
+        "_source_site_id": site["site_id"],
+        "_terminal": True,
     }
 
 
@@ -591,15 +785,17 @@ def _terminal_site(item, site) -> dict:
         "evidence": [site["expression_text"]],
         "evidence_truncated": bool(site["evidence_truncated"]),
         "expansion": None,
+        "_source_site_id": site["site_id"],
+        "_terminal": True,
     }
 
 
-def _cross(cfg, readable, item, site) -> list[dict]:
+def _cross(cfg, readable, item, site, view) -> list[dict]:
     spec = _match_spec(site)
     if spec is None:
         return []
     hits = []
-    for other in readable:
+    for other in sorted(readable, key=lambda entry: entry["repo_id"]):
         if other["conn"] is None:
             continue
         rows = other["conn"].execute(spec["sql"], spec["args"]).fetchall()
@@ -608,11 +804,13 @@ def _cross(cfg, readable, item, site) -> list[dict]:
                 continue
             if row["site_kind"] == site["site_kind"]:
                 continue
-            if not _visible(other, row["path"]):
+            if not view.allow(other, row["path"]):
                 continue
             hits.append((other, row))
             if len(hits) > ALTERNATIVE_CAP:
                 break
+        if len(hits) > ALTERNATIVE_CAP:
+            break
     if not hits:
         return []
     status = "ambiguous" if len(hits) > 1 or _wildcard_pair(site, hits) else "candidate"
@@ -692,7 +890,7 @@ def _match_spec(site) -> dict | None:
         return http
     if site["exec_id"]:
         return {
-            "sql": "SELECT * FROM sites WHERE exec_id = ? LIMIT ?",
+            "sql": "SELECT * FROM sites WHERE exec_id = ? ORDER BY site_id LIMIT ?",
             "args": (site["exec_id"], ALTERNATIVE_CAP + 1),
             "kind": "process_invocation",
             "reason": "executable basename match is not a unique producer binding",
@@ -704,6 +902,7 @@ def _match_spec(site) -> dict | None:
                 "sql": """
                     SELECT * FROM sites
                     WHERE net_port = ? AND net_role = ? AND (net_host = ? OR net_wildcard = 1)
+                    ORDER BY site_id
                     LIMIT ?
                 """,
                 "args": (site["net_port"], opposite, site["net_host"], ALTERNATIVE_CAP + 1),
@@ -711,14 +910,14 @@ def _match_spec(site) -> dict | None:
                 "reason": "literal endpoint match is not a confirmed deployment",
             }
         return {
-            "sql": "SELECT * FROM sites WHERE net_port = ? AND net_role = ? LIMIT ?",
+            "sql": "SELECT * FROM sites WHERE net_port = ? AND net_role = ? ORDER BY site_id LIMIT ?",
             "args": (site["net_port"], opposite, ALTERNATIVE_CAP + 1),
             "kind": "net_endpoint",
             "reason": "port match without a host is ambiguous",
         }
     if site["rpc_command"]:
         return {
-            "sql": "SELECT * FROM sites WHERE rpc_command = ? LIMIT ?",
+            "sql": "SELECT * FROM sites WHERE rpc_command = ? ORDER BY site_id LIMIT ?",
             "args": (site["rpc_command"], ALTERNATIVE_CAP + 1),
             "kind": "rpc_command",
             "reason": "command string match is not a language-level call",
@@ -742,6 +941,7 @@ def _http_match(site) -> dict | None:
             "sql": f"""
                 SELECT * FROM sites
                 WHERE site_kind = ? AND http_path = ? AND {_method_clause()}
+                ORDER BY site_id
                 LIMIT ?
             """,
             "args": (opposite, site["http_path"], method, method, limit),
@@ -760,6 +960,7 @@ def _http_match(site) -> dict | None:
                   OR (http_boundary = 'literal_slash' AND http_suffix IN ({marks}))
                   OR (http_boundary = 'conditional_slash' AND http_suffix = ?)
                 ) AND {_method_clause()}
+                ORDER BY site_id
                 LIMIT ?
             """,
             "args": (opposite, site["http_path"], *suffixes, segment, method, method, limit),
@@ -780,6 +981,7 @@ def _http_match(site) -> dict | None:
         "sql": f"""
             SELECT * FROM sites
             WHERE site_kind = ? AND http_rev >= ? AND http_rev < ? AND {_method_clause()}
+            ORDER BY site_id
             LIMIT ?
         """,
         "args": (opposite, rev, rev + "\uffff", method, method, limit),
@@ -995,6 +1197,129 @@ def _snapshot(cfg, item, requested) -> dict:
     }
 
 
+class _Visibility:
+    """Cache include, exclude, and gitignore decisions for one request."""
+
+    def __init__(self) -> None:
+        self._cache: dict[tuple[str, str], bool] = {}
+
+    def allow(self, item, path: str) -> bool:
+        if not path:
+            return False
+        key = (item["repo_id"], path)
+        if key not in self._cache:
+            self._cache[key] = _visible(item, path)
+        return self._cache[key]
+
+
+def _keep_edge(view: _Visibility, by_repo: dict, edge: dict) -> bool:
+    """Drop an edge whose source, target, or every alternative is now hidden."""
+
+    def allowed(repo_id: str | None, path: str | None) -> bool:
+        if not path:
+            return True
+        item = by_repo.get(repo_id or "")
+        return item is not None and view.allow(item, path)
+
+    source = edge.get("source") or {}
+    target = edge.get("target") or {}
+    if not allowed(source.get("repo_id"), source.get("path")):
+        return False
+    if not allowed(target.get("repo_id"), target.get("path")):
+        return False
+    if edge.get("alternatives"):
+        kept = []
+        for alt in edge["alternatives"]:
+            if allowed(alt.get("repo_id"), alt.get("path")):
+                kept.append(alt)
+        edge["alternatives"] = kept
+        if not kept:
+            return False
+    return True
+
+
+def _freshness_warning(warning: str) -> bool:
+    return (
+        warning.startswith("current commit differs")
+        or warning.startswith("index includes uncommitted")
+        or warning.startswith("relevant working-tree")
+        or warning.startswith("working tree freshness")
+    )
+
+
+def _apply_freshness(opened, body: dict) -> None:
+    paths: dict[str, set[str]] = defaultdict(set)
+    for loc in (body.get("selection") or {}).get("locations") or []:
+        if loc.get("repo_id") and loc.get("path"):
+            paths[loc["repo_id"]].add(loc["path"])
+    buckets = [body.get("relationships") or []]
+    buckets.append((body.get("unresolved") or {}).get("sites") or [])
+    for bucket in buckets:
+        for edge in bucket:
+            for side in ("source", "target"):
+                block = edge.get(side) or {}
+                if block.get("repo_id") and block.get("path"):
+                    paths[block["repo_id"]].add(block["path"])
+            for alt in edge.get("alternatives") or []:
+                if alt.get("repo_id") and alt.get("path"):
+                    paths[alt["repo_id"]].add(alt["path"])
+    by_id = {item["repo_id"]: item for item in opened}
+    for snap in body.get("snapshots") or []:
+        item = by_id.get(snap["repo_id"])
+        if item is None or item.get("repo") is None:
+            continue
+        _refresh_snapshot(snap, item, sorted(paths.get(snap["repo_id"], [])))
+    kept = []
+    seen = set()
+    for warning in body.get("warnings") or []:
+        if _freshness_warning(warning) or warning in seen:
+            continue
+        kept.append(warning)
+        seen.add(warning)
+    for snap in body.get("snapshots") or []:
+        for warning in snap.get("warnings") or []:
+            if warning in seen:
+                continue
+            kept.append(warning)
+            seen.add(warning)
+    body["warnings"] = kept
+
+
+def _refresh_snapshot(snap: dict, item, paths: list[str]) -> None:
+    warnings = [warning for warning in snap.get("warnings") or [] if not _freshness_warning(warning)]
+    indexed = snap.get("indexed_commit")
+    current = snap.get("current_commit")
+    relevant = worktree_dirty_paths(item["repo"].root, paths) if paths else []
+    if paths and relevant is None:
+        snap["freshness"] = "unknown"
+        warnings.append("working tree freshness is unknown because Git could not answer")
+    elif indexed and current and indexed != current:
+        snap["freshness"] = "commit_moved"
+        warnings.append(
+            "current commit differs from the indexed commit; "
+            f"run py-indexer index --repo {item['repo_id']}"
+        )
+    elif relevant:
+        snap["freshness"] = "worktree_changed"
+        warnings.append(
+            "relevant working-tree paths changed after indexing; "
+            f"run py-indexer index --repo {item['repo_id']}"
+        )
+    elif snap.get("indexed_dirty"):
+        snap["freshness"] = "dirty_at_index"
+        warnings.append(
+            "index includes uncommitted content and does not exactly represent "
+            f"{indexed or 'its base commit'}"
+        )
+    elif current and indexed and current == indexed:
+        snap["freshness"] = "current"
+    else:
+        snap["freshness"] = "unknown"
+        if current is None or indexed is None:
+            warnings.append("working tree freshness is unknown because Git could not answer")
+    snap["warnings"] = warnings
+
+
 def _visible(item, path: str) -> bool:
     if not path:
         return False
@@ -1048,17 +1373,126 @@ def _empty(*, tool, status, snapshots, warnings, query) -> dict:
     }
 
 
+def serialize_report(body: dict) -> str:
+    """Canonical CLI and MCP payload. Byte caps use this exact text."""
+    return json.dumps(body, indent=2, ensure_ascii=True, sort_keys=True)
+
+
+def _report_bytes(body: dict) -> int:
+    return len(serialize_report(body).encode("utf-8"))
+
+
 def _fit(body: dict) -> dict:
-    encoded = json.dumps(body, ensure_ascii=True)
-    if len(encoded.encode("utf-8")) <= OUTPUT_BYTE_CAP:
+    for bucket in (body.get("relationships") or [], (body.get("unresolved") or {}).get("sites") or []):
+        for edge in bucket:
+            edge.pop("_source_site_id", None)
+            edge.pop("_terminal", None)
+            edge.pop("_path_node", None)
+    if _report_bytes(body) <= OUTPUT_BYTE_CAP:
         return body
-    while body["relationships"] and len(json.dumps(body, ensure_ascii=True).encode("utf-8")) > OUTPUT_BYTE_CAP:
+    _mark_output_budget(body)
+    while body.get("relationships") and _report_bytes(body) > OUTPUT_BYTE_CAP:
         body["relationships"].pop()
-        body["truncation"]["truncated"] = True
-        body["truncation"]["reason"] = "output_bytes"
-        body["truncation"]["omitted_known"] = False
-        body["truncation"]["omitted_relationships"] = None
+    unresolved = body.setdefault("unresolved", {"shown": 0, "omitted": None, "omitted_known": False, "sites": []})
+    sites = unresolved.get("sites") or []
+    while sites and _report_bytes(body) > OUTPUT_BYTE_CAP:
+        sites.pop()
+        unresolved["sites"] = sites
+        unresolved["shown"] = len(sites)
+    for edge in body.get("relationships") or []:
+        alternatives = edge.get("alternatives") or []
+        while alternatives and _report_bytes(body) > OUTPUT_BYTE_CAP:
+            alternatives.pop()
+            edge["alternatives"] = alternatives
+            edge["alternatives_truncated"] = True
+    _trim_text_sections(body)
+    if _report_bytes(body) > OUTPUT_BYTE_CAP:
+        body["relationships"] = []
+        body["unresolved"] = {
+            "shown": 0,
+            "omitted": None,
+            "omitted_known": False,
+            "sites": [],
+            "unavailable": True,
+            "reason": "response exceeded the serialized byte cap",
+        }
+        body["structural_coverage"] = {
+            "unavailable": True,
+            "reason": "response exceeded the serialized byte cap",
+        }
+        body["warnings"] = ["analysis details omitted because the response budget was exceeded"]
+        body["fallback"] = {"tool": "search_code", "query": None, "analysis": "unavailable"}
+        for snap in body.get("snapshots") or []:
+            snap["warnings"] = ["snapshot detail omitted because the response budget was exceeded"]
+        selection = body.setdefault("selection", {})
+        selection["locations"] = []
+        selection["locations_unavailable"] = True
+        selection["candidates"] = []
+        body["selection"] = selection
+        _trim_text_sections(body)
+    if _report_bytes(body) > OUTPUT_BYTE_CAP:
+        _clip_strings(body, 80)
+        body["fallback"] = {"tool": "search_code", "query": None, "analysis": "unavailable"}
     return body
+
+
+def _mark_output_budget(body: dict) -> None:
+    truncation = body.setdefault("truncation", {})
+    truncation["truncated"] = True
+    truncation["completeness"] = "budget"
+    truncation["reason"] = "output_bytes"
+    truncation["omitted_known"] = False
+    truncation["omitted_relationships"] = None
+    unresolved = body.setdefault("unresolved", {"shown": 0, "omitted": None, "omitted_known": False, "sites": []})
+    unresolved["omitted"] = None
+    unresolved["omitted_known"] = False
+
+
+def _trim_text_sections(body: dict) -> None:
+    warnings = body.get("warnings") or []
+    while warnings and _report_bytes(body) > OUTPUT_BYTE_CAP:
+        warnings.pop()
+        body["warnings"] = warnings
+    selection = body.get("selection") or {}
+    locations = selection.get("locations") or []
+    while locations and _report_bytes(body) > OUTPUT_BYTE_CAP:
+        locations.pop()
+        selection["locations"] = locations
+        selection["locations_omitted_known"] = False
+    candidates = selection.get("candidates") or []
+    while candidates and _report_bytes(body) > OUTPUT_BYTE_CAP:
+        candidates.pop()
+        selection["candidates"] = candidates
+    for key in ("signature", "qualified_name", "name"):
+        value = selection.get(key)
+        while isinstance(value, str) and len(value) > 80 and _report_bytes(body) > OUTPUT_BYTE_CAP:
+            selection[key] = value[: max(80, len(value) // 2)]
+            selection["text_truncated"] = True
+            value = selection[key]
+    for snap in body.get("snapshots") or []:
+        snap_warnings = snap.get("warnings") or []
+        while snap_warnings and _report_bytes(body) > OUTPUT_BYTE_CAP:
+            snap_warnings.pop()
+            snap["warnings"] = snap_warnings
+        for key, value in list(snap.items()):
+            while isinstance(value, str) and len(value) > 80 and _report_bytes(body) > OUTPUT_BYTE_CAP:
+                snap[key] = value[: max(80, len(value) // 2)]
+                snap["text_truncated"] = True
+                value = snap[key]
+
+
+def _clip_strings(value, limit: int):
+    if isinstance(value, str):
+        return value[:limit]
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _clip_strings(item, limit)
+        return value
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            value[key] = _clip_strings(item, limit)
+        return value
+    return value
 
 
 def _load_list(raw: str) -> list:
@@ -1069,6 +1503,6 @@ def _load_list(raw: str) -> list:
     return value if isinstance(value, list) else []
 
 
-def _touch_worktree(root, paths) -> list[str]:
+def _touch_worktree(root, paths) -> list[str] | None:
     """Compare a bounded path set. Used by freshness when callers pass paths."""
     return worktree_dirty_paths(root, paths)

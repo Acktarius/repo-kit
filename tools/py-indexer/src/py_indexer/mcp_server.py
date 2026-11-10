@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from py_indexer.config import ConfigError, load_config
-from py_indexer.context_cmd import awareness_report, context_report
+from py_indexer.context_cmd import awareness_report, context_report, serialize_report
 from py_indexer.read_cmd import read_as_dict, read_code as read_code_impl
 from py_indexer.search_cmd import search, search_as_dict
 from py_indexer.status_cmd import status_report
@@ -92,7 +92,7 @@ def run_stdio_server(
 
     def _retrieval(fn, arguments: dict) -> str:
         try:
-            return json.dumps(fn(cfg, **arguments), indent=2)
+            return serialize_report(fn(cfg, **arguments))
         except Exception as exc:  # noqa: BLE001
             return json.dumps({"error": str(exc), "relationships": []})
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from py_indexer import APP_NAME, CAPABILITY, COMPAT_VERSION, SCHEMA_VERSION, __version__
 from py_indexer.config import ConfigError, load_config
-from py_indexer.context_cmd import SelectorError, awareness_report, context_report
+from py_indexer.context_cmd import SelectorError, awareness_report, context_report, serialize_report
 from py_indexer.paths import cache_home
 from py_indexer.index_cmd import index_all, index_repository
 from py_indexer.structural import (
@@ -278,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         except SelectorError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
-        print(json.dumps(report, indent=2))
+        print(serialize_report(report))
         return 0
 
     parser.error(f"unknown command {args.cmd}")

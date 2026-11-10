@@ -152,11 +152,59 @@ env -u PYTHONPATH HOME="${OLD_HOME}" XDG_DATA_HOME="${OLD_DATA}" \
 python3 - "${TMP}/old-app.json" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
-assert doc["compat_version"] == "0.3.2", doc
+assert doc["compat_version"] == "0.3.3", doc
 assert doc["capability"] == "staging-publish", doc
 assert doc["cli_ready"] is True, doc
 PY
 ok "consented upgrade replaces the 0.2.1 probe"
+
+# --- a previous compatible 0.3.2 executable already on PATH is not reused ---
+PREV_HOME="${TMP}/prev-home"
+PREV_DATA="${TMP}/prev-data"
+PREV_CACHE="${TMP}/prev-cache"
+PREV_BIN="${TMP}/prev-bin"
+PREV_PATH="${TMP}/prev-path"
+mkdir -p "${PREV_HOME}" "${PREV_DATA}" "${PREV_CACHE}" "${PREV_BIN}" "${PREV_PATH}"
+cat >"${PREV_PATH}/py-indexer" <<'EOF'
+#!/bin/sh
+cat <<'JSON'
+{
+  "name": "py-indexer",
+  "version": "0.3.2",
+  "compat_version": "0.3.2",
+  "schema_version": 1,
+  "capability": "staging-publish",
+  "cli_ready": true,
+  "fts5": true
+}
+JSON
+EOF
+chmod +x "${PREV_PATH}/py-indexer"
+PREV_TARGET="${TMP}/prev-project"
+mkdir -p "${PREV_TARGET}"
+git -C "${PREV_TARGET}" init -q
+PATH="${PREV_PATH}:/usr/bin:/bin" \
+  HOME="${PREV_HOME}" XDG_DATA_HOME="${PREV_DATA}" XDG_CACHE_HOME="${PREV_CACHE}" \
+  XDG_BIN_HOME="${PREV_BIN}" REPO_KIT_TOOL_ASSUME_YES=1 REPO_KIT_TOOL_SKIP_DEPS=1 \
+  "${ROOT}/scripts/init.sh" "${PREV_TARGET}" --tool py-indexer >"${TMP}/prev-init.out"
+if grep -q 'reuse     shared py-indexer' "${TMP}/prev-init.out"; then
+  bad "0.3.2 on PATH was reused: $(cat "${TMP}/prev-init.out")"
+elif grep -q 'incompatible py-indexer' "${TMP}/prev-init.out" \
+  && grep -q 'Upgrade shared py-indexer to compat 0.3.3?' "${TMP}/prev-init.out"; then
+  ok "0.3.2 on PATH requests the 0.3.3 upgrade"
+else
+  bad "0.3.2 PATH upgrade prompt missing: $(cat "${TMP}/prev-init.out")"
+fi
+env -u PYTHONPATH HOME="${PREV_HOME}" XDG_DATA_HOME="${PREV_DATA}" \
+  XDG_CACHE_HOME="${PREV_CACHE}" XDG_BIN_HOME="${PREV_BIN}" \
+  "${PREV_BIN}/py-indexer" --app-id >"${TMP}/prev-app.json"
+python3 - "${TMP}/prev-app.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+assert doc["compat_version"] == "0.3.3", doc
+assert doc["version"] == "0.3.3", doc
+PY
+ok "consented upgrade replaces the 0.3.2 PATH executable in the temp bin"
 
 echo
 echo "py-indexer install: ${pass} passed, ${fail} failed"
