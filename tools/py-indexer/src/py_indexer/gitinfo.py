@@ -25,3 +25,46 @@ def git_head(repo_root: Path) -> str | None:
 
 def is_git_repo(repo_root: Path) -> bool:
     return (repo_root / ".git").exists()
+
+
+def _status_paths(repo_root: Path) -> set[str] | None:
+    """Dirty paths from porcelain status, or None when git cannot answer.
+
+    The set is for the caller to intersect with indexed paths. It is not stored.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain=v1", "-z"],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    found: set[str] = set()
+    for entry in proc.stdout.split(b"\0"):
+        if len(entry) < 4:
+            continue
+        path = entry[3:].decode("utf-8", "replace").replace("\\", "/")
+        if path:
+            found.add(path)
+    return found
+
+
+def indexed_content_is_dirty(repo_root: Path, indexed_paths: set[str]) -> bool | None:
+    """True when an indexed path was uncommitted. None when git cannot answer."""
+    dirty = _status_paths(repo_root)
+    if dirty is None:
+        return None
+    return any(path in dirty for path in indexed_paths)
+
+
+def worktree_dirty_paths(repo_root: Path, paths: list[str]) -> list[str]:
+    """Dirty paths among ``paths`` only. Empty when git cannot answer."""
+    dirty = _status_paths(repo_root)
+    if not dirty:
+        return []
+    allowed = set(paths)
+    return sorted(path for path in dirty if path in allowed)

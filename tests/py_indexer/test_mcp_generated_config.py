@@ -232,7 +232,7 @@ class GeneratedMcpConfigE2E(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(session.initialize(), timeout=30)
                 tools = await asyncio.wait_for(session.list_tools(), timeout=30)
                 names = {t.name for t in tools.tools}
-                self.assertEqual(names, {"search_code", "read_code", "index_status"})
+                self.assertEqual(names, {"search_code", "read_code", "index_status", "context", "awareness"})
 
                 status = await asyncio.wait_for(
                     session.call_tool("index_status", {}), timeout=30

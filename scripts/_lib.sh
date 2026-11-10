@@ -1058,7 +1058,7 @@ prompt_yn_interactive() {
 # --- py-indexer (user-wide application + per-project config) -----------------
 
 # Kit-required compat_version and capability (must match tools/py-indexer).
-_PY_INDEXER_REQUIRED_COMPAT="0.2.2"
+_PY_INDEXER_REQUIRED_COMPAT="0.3.2"
 _PY_INDEXER_REQUIRED_CAPABILITY="staging-publish"
 
 _py_indexer_data_home() {
@@ -1558,6 +1558,7 @@ _ensure_py_indexer_shared() {
     _ensure_py_indexer_link
     _ensure_py_indexer_path "$(_py_indexer_bin_dir)"
     _offer_py_indexer_mcp_repair "${PY_INDEXER_EXE}"
+    _offer_py_indexer_structural "${PY_INDEXER_EXE}"
     return 0
   fi
 
@@ -1593,6 +1594,7 @@ _ensure_py_indexer_shared() {
   _ensure_py_indexer_link
   _ensure_py_indexer_path "$(_py_indexer_bin_dir)"
   _offer_py_indexer_mcp_repair "${PY_INDEXER_EXE}"
+  _offer_py_indexer_structural "${PY_INDEXER_EXE}"
 }
 
 # Seed repos.json from kit example when missing; never overwrite an existing file.
@@ -1664,12 +1666,81 @@ _ensure_py_indexer_gitignore() {
   echo "  added     .gitignore py-indexer block"
 }
 
+_offer_py_indexer_structural() {
+  local exe="$1"
+  local py
+  if ! py="$(_py_indexer_venv_python "${exe}")"; then
+    warn "structural parsers were not checked; virtualenv python was not found"
+    return 0
+  fi
+  if "${py}" - <<'PY' >/dev/null 2>&1
+import importlib.metadata as metadata
+from tree_sitter import LANGUAGE_VERSION, MIN_COMPATIBLE_LANGUAGE_VERSION, Language
+import tree_sitter_cpp, tree_sitter_javascript, tree_sitter_typescript, tree_sitter_rust
+assert metadata.version("tree-sitter") == "0.26.1"
+assert int(LANGUAGE_VERSION) == 15 and int(MIN_COMPATIBLE_LANGUAGE_VERSION) == 13
+pairs = [
+    (tree_sitter_cpp.language, "tree-sitter-cpp", "0.23.4", 14),
+    (tree_sitter_javascript.language, "tree-sitter-javascript", "0.25.0", 15),
+    (tree_sitter_typescript.language_typescript, "tree-sitter-typescript", "0.23.2", 14),
+    (tree_sitter_typescript.language_tsx, "tree-sitter-typescript", "0.23.2", 14),
+    (tree_sitter_rust.language, "tree-sitter-rust", "0.24.2", 15),
+]
+for fn, dist, ver, abi in pairs:
+    assert metadata.version(dist) == ver
+    got = int(Language(fn()).abi_version)
+    assert got == abi
+    assert MIN_COMPATIBLE_LANGUAGE_VERSION <= got <= LANGUAGE_VERSION
+PY
+  then
+    echo "  structural parsers ready (tree-sitter==0.26.1, ABI 13-15)"
+    return 0
+  fi
+  if [[ "${REPO_KIT_TOOL_SKIP_DEPS:-0}" == "1" ]]; then
+    warn "structural parsers not installed (REPO_KIT_TOOL_SKIP_DEPS=1). Lexical indexing still works."
+    warn "offline: ${py} -m pip install --no-index --find-links=/path/to/wheels 'tree-sitter==0.26.1' 'tree-sitter-cpp==0.23.4' 'tree-sitter-javascript==0.25.0' 'tree-sitter-typescript==0.23.2' 'tree-sitter-rust==0.24.2'"
+    return 0
+  fi
+  echo "  structural parsers missing from ${py}"
+  if [[ ! -t 0 ]] && [[ "${REPO_KIT_TOOL_ASSUME_YES:-0}" != "1" ]]; then
+    warn "non-interactive: left structural parsers uninstalled; lexical indexing still works"
+    return 0
+  fi
+  if ! prompt_yn_interactive "Install pinned tree-sitter parsers into the existing virtualenv (may use network)?"; then
+    warn "structural parsers left missing; lexical indexing still works"
+    return 0
+  fi
+  "${py}" -m pip install \
+    'tree-sitter==0.26.1' \
+    'tree-sitter-cpp==0.23.4' \
+    'tree-sitter-javascript==0.25.0' \
+    'tree-sitter-typescript==0.23.2' \
+    'tree-sitter-rust==0.24.2'
+}
+
 _copy_py_indexer_cursor_rule() {
   local src="${TOOLS_DIR}/py-indexer/files/.cursor/rules/py-indexer.mdc"
   local dest="${TARGET_DIR}/.cursor/rules/py-indexer.mdc"
+  local existed=0
   [[ -f "${src}" ]] || die "py-indexer missing cursor rule at ${src}"
+  if [[ -e "${dest}" || -L "${dest}" ]]; then
+    existed=1
+  fi
   mkdir -p "$(dirname "${dest}")"
   _copy_file "${src}" "${dest}"
+  if [[ "${existed}" -eq 1 && "${FORCE_COPY}" -ne 1 ]]; then
+    if cmp -s "${src}" "${dest}"; then
+      echo "  notice    .cursor/rules/py-indexer.mdc already matches the shipped rule; left in place."
+    else
+      echo "  notice    existing .cursor/rules/py-indexer.mdc was left unchanged."
+      echo "            Context and awareness guidance from this kit version was not applied."
+      echo "            To update only that rule, copy:"
+      echo "              ${src}"
+      echo "              -> ${dest}"
+      echo "            Re-running with --force replaces the rule and other non-preserved kit files."
+      echo "            repos.json is never overwritten."
+    fi
+  fi
 }
 
 _py_indexer_mcp_ready() {

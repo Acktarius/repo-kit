@@ -28,6 +28,24 @@ Keep queries narrow. Then `read_code` (or normal Read) on the hit path before ed
 **this** (working) repo. Do **not** clone a related repository until py-indexer shows it is
 missing or useless for the question.
 
+## Context and awareness
+
+`context` and `awareness` are read-only. They do not refresh indexes.
+
+- Use `context` to understand a symbol or interface. Prefer `repo` + `path` + `line` when the current edit location is known.
+- Use `awareness` before changing a signature, exposed argument, route, protocol field, or other behavior that callers or other repositories consume.
+- Do not call both for a trivial local edit.
+- Start from the compact map. Fetch a source range with `read_code` only when the map shows that range is useful.
+- Follow cross-repository connections that `repos.json` already includes.
+- `resolved` is a supported static binding. A unique name is not enough. Cross-process HTTP, spawn, network, and RPC links stay `candidate` or weaker.
+- A path that touched a `candidate` edge stays `candidate`.
+- `unresolved` sites are terminals. `ambiguous` results list the alternatives and say when expansion stopped.
+- Read `snapshots` and mention a freshness warning when one is present. Suggest `py-indexer index --repo <id>` or `py-indexer index --all`. Never say MCP updated an index.
+- Do not repeat an identical call unless the target, scope, or snapshot changed.
+- If structural data is missing, fall back to `search_code`.
+- An empty or truncated map does not prove the change is safe.
+- `.c` files are lexical only. `.h` files are parsed with the C++ grammar, which is not a compiler.
+
 ## When not to bother
 
 - Exact in-repo string/`rg` you already know belongs here

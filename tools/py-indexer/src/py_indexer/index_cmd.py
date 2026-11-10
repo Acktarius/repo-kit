@@ -15,13 +15,17 @@ sleep. None of these are set in normal use.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import time
 
 from py_indexer.chunk import chunk_lines, content_hash
 from py_indexer.config import AppConfig
 from py_indexer.exclude import iter_candidate_files, language_for
-from py_indexer.gitinfo import git_head
+from py_indexer.extract import extract_file
+from py_indexer.gitinfo import git_head, indexed_content_is_dirty
+from py_indexer.relate import rebuild_relationships, write_file_facts
 from py_indexer.store import (
     backup_database,
     checkout_index_lock,
@@ -40,6 +44,18 @@ from py_indexer.store import (
     stamp_success,
     upsert_file,
     META_STATUS,
+    _meta_get,
+)
+from py_indexer.structural import (
+    META_ANALYSIS_FINGERPRINT,
+    META_INDEXED_DIRTY,
+    META_PARSER_RUNTIME,
+    META_SNAPSHOT,
+    META_STRUCTURAL_STATUS,
+    code_fingerprint,
+    ensure_structural_schema,
+    file_fingerprint,
+    runtime_token,
 )
 
 
@@ -131,6 +147,8 @@ def _index_into(conn, cfg: AppConfig, repo_id: str) -> dict:
 
     with locked_write(conn):
         set_meta(conn, META_STATUS, "building")
+        ensure_structural_schema(conn)
+        structure_fp = file_fingerprint()
         existing = list_files(conn)
         for rel, path in iter_candidate_files(
             repo.root,
@@ -147,33 +165,42 @@ def _index_into(conn, cfg: AppConfig, repo_id: str) -> dict:
             except OSError:
                 continue
             prev = existing.get(rel)
-            if prev is not None and prev["content_hash"] == digest:
+            lexical_same = prev is not None and prev["content_hash"] == digest
+            if lexical_same and _structure_current(conn, rel, structure_fp):
                 unchanged += 1
                 continue
-            chunks = chunk_lines(
-                text,
-                chunk_lines=cfg.chunk_lines,
-                overlap=cfg.chunk_overlap_lines,
-            )
-            upsert_file(
-                conn,
-                path=rel,
-                content_hash=digest,
-                size=size,
-                mtime_ns=mtime_ns,
-                language=language_for(rel),
-                chunks=chunks,
-            )
-            if prev is None:
-                added += 1
+            if not lexical_same:
+                chunks = chunk_lines(
+                    text,
+                    chunk_lines=cfg.chunk_lines,
+                    overlap=cfg.chunk_overlap_lines,
+                )
+                upsert_file(
+                    conn,
+                    path=rel,
+                    content_hash=digest,
+                    size=size,
+                    mtime_ns=mtime_ns,
+                    language=language_for(rel),
+                    chunks=chunks,
+                )
+                if prev is None:
+                    added += 1
+                else:
+                    modified += 1
             else:
-                modified += 1
+                unchanged += 1
+            write_file_facts(conn, rel, extract_file(rel, text), structure_fp)
 
         for old_path in list(existing):
             if old_path not in seen:
                 delete_file(conn, old_path)
                 deleted += 1
 
+        started = time.perf_counter()
+        rebuilt = rebuild_relationships(conn)
+        rebuild_ms = int((time.perf_counter() - started) * 1000)
+        dirty = indexed_content_is_dirty(repo.root, seen)
         stamp_success(
             conn,
             git_revision=git_head(repo.root),
@@ -181,6 +208,11 @@ def _index_into(conn, cfg: AppConfig, repo_id: str) -> dict:
             checkout=repo.root,
             fingerprint=cfg.content_fingerprint(repo_id),
         )
+        set_meta(conn, META_ANALYSIS_FINGERPRINT, code_fingerprint())
+        set_meta(conn, META_PARSER_RUNTIME, runtime_token())
+        set_meta(conn, META_INDEXED_DIRTY, "1" if dirty else "0" if dirty is False else "")
+        set_meta(conn, META_STRUCTURAL_STATUS, _structural_status(conn))
+        set_meta(conn, META_SNAPSHOT, _snapshot_id(conn))
         meta = read_meta(conn)
 
     return {
@@ -193,7 +225,41 @@ def _index_into(conn, cfg: AppConfig, repo_id: str) -> dict:
         "chunks": meta.chunk_count,
         "git_revision": meta.git_revision,
         "indexed_at": meta.indexed_at,
+        "structural_status": _meta_get(conn, META_STRUCTURAL_STATUS),
+        "relationship_rebuild_ms": rebuild_ms,
+        "relationships": rebuilt["relationships"],
     }
+
+
+def _structure_current(conn, path: str, fingerprint: str) -> bool:
+    row = conn.execute(
+        "SELECT parser_fingerprint FROM file_structure WHERE path = ?",
+        (path,),
+    ).fetchone()
+    return row is not None and row["parser_fingerprint"] == fingerprint
+
+
+def _structural_status(conn) -> str:
+    rows = conn.execute("SELECT DISTINCT status FROM file_structure").fetchall()
+    statuses = {row["status"] for row in rows}
+    if statuses & {"partial", "failed", "parser_unavailable"}:
+        return "partial"
+    if not statuses:
+        return "unavailable"
+    return "ready"
+
+
+def _snapshot_id(conn) -> str:
+    payload = {
+        "analysis": _meta_get(conn, META_ANALYSIS_FINGERPRINT),
+        "policy": _meta_get(conn, "content_fingerprint"),
+        "git": _meta_get(conn, "git_revision"),
+        "at": _meta_get(conn, "indexed_at"),
+        "dirty": _meta_get(conn, META_INDEXED_DIRTY),
+        "structural": _meta_get(conn, META_STRUCTURAL_STATUS),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return "snap_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
 def index_all(cfg: AppConfig) -> list[dict]:

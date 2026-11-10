@@ -119,7 +119,7 @@ class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_initialize_list_search_read(self) -> None:
         self.assertEqual(
             set(list_tool_names_for_tests()),
-            {"search_code", "read_code", "index_status"},
+            {"search_code", "read_code", "index_status", "context", "awareness"},
         )
         server = self.StdioServerParameters(
             command=sys.executable,
@@ -141,7 +141,7 @@ class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 await session.initialize()
                 tools = await session.list_tools()
                 names = {t.name for t in tools.tools}
-                self.assertEqual(names, {"search_code", "read_code", "index_status"})
+                self.assertEqual(names, {"search_code", "read_code", "index_status", "context", "awareness"})
 
                 status = await session.call_tool("index_status", {})
                 self.assertFalse(getattr(status, "isError", False))

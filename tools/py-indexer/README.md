@@ -1,6 +1,6 @@
 # tool: py-indexer
 
-Private, local, cross-repository **lexical** code retrieval for Cursor.
+Private, local, cross-repository retrieval for Cursor: lexical search, plus structural context and cross-repository awareness.
 
 **Once per user:** the application installs into a user-owned virtualenv
 (`$XDG_DATA_HOME/py-indexer/venv` or `~/.local/share/py-indexer/venv`) with a
@@ -61,8 +61,29 @@ Does **not** require the `python` language module.
 py-indexer validate-config
 py-indexer index --all
 py-indexer search 'example_symbol' --json
+py-indexer context --repo app --path src/api.ts --line 42
+py-indexer awareness --symbol-id s1_0123456789abcdef01234567
 py-indexer status
 ```
+
+`context` and `awareness` are read-only. Refresh is explicit and CLI-only:
+`py-indexer index --repo <id>` or `py-indexer index --all`. MCP queries do not
+refresh indexes. After an extraction-rule change, run indexing so the affected
+facts are rebuilt.
+
+Structural coverage can be partial even when the snapshot is current.
+`context` and `awareness` report missing, partial, or unavailable analysis.
+HTTP, process, network, and RPC links across repositories stay `candidate` or
+weaker. They are not proof that those processes communicate at runtime. A path
+that crosses a `candidate` edge keeps that uncertainty. An empty or bounded
+result does not prove that a change is safe.
+
+Structural indexing uses pinned Tree-sitter parsers when they are installed.
+`.h` is parsed with the C++ grammar. `.c` stays lexical-only. A missing parser
+does not drop lexical search. The verified matrix is `tree-sitter==0.26.1`
+(grammar ABI 13 through 15), `tree-sitter-cpp==0.23.4` (ABI 14),
+`tree-sitter-javascript==0.25.0` (ABI 15), `tree-sitter-typescript==0.23.2`
+(ABI 14 for TypeScript and TSX), and `tree-sitter-rust==0.24.2` (ABI 15).
 
 4. Enable the `py-indexer` server in Cursor MCP (`.cursor/mcp.json` is merge-updated when safe).
 
@@ -81,6 +102,11 @@ REPO_KIT_TOOL_ASSUME_YES=1 REPO_KIT_TOOL_SKIP_DEPS=1 \
   ./scripts/init.sh /path/to/project --tool py-indexer
 # Later, for MCP serve:
 ~/.local/share/py-indexer/venv/bin/python -m pip install 'mcp==1.30.0'
+# Later, for structural parsing (wheels already contain the grammars):
+~/.local/share/py-indexer/venv/bin/python -m pip install --no-index --find-links=/path/to/wheels \
+  'tree-sitter==0.26.1' 'tree-sitter-cpp==0.23.4' \
+  'tree-sitter-javascript==0.25.0' 'tree-sitter-typescript==0.23.2' \
+  'tree-sitter-rust==0.24.2'
 # or from a wheelhouse:
 …/python -m pip install --no-index --find-links=/path/to/wheels 'mcp==1.30.0'
 ```
@@ -148,7 +174,7 @@ Older installs copied `bin/`, `py_indexer/`, `.venv/`, and `index/` into each pr
 
 On init/sync the installer:
 
-1. Ensures the shared application. Compatibility is `0.2.2` plus capability
+1. Ensures the shared application. Compatibility is `0.3.2` plus capability
    `staging-publish`. An older `0.2.1` probe is not reused. The installer asks
    before upgrading it. `REPO_KIT_TOOL_ASSUME_YES=1` answers that upgrade
    prompt. A CLI-only install (`REPO_KIT_TOOL_SKIP_DEPS=1`) is reported as

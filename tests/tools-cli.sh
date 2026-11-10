@@ -249,6 +249,20 @@ else
   bad "second project layout wrong"
 fi
 
+# Existing cursor rule is skipped unless --force, with an explicit notice.
+rule2="${TARGET2}/.cursor/rules/py-indexer.mdc"
+printf '\n# local customization\n' >>"${rule2}"
+custom_rule="$(cat "${rule2}")"
+skip_rule="$("${ROOT}/scripts/init.sh" "${TARGET2}" --tool py-indexer 2>&1)"
+if [[ "$(cat "${rule2}")" == "${custom_rule}" ]] \
+  && echo "${skip_rule}" | grep -q 'was left unchanged' \
+  && echo "${skip_rule}" | grep -q 'was not applied' \
+  && echo "${skip_rule}" | grep -q 'repos.json is never overwritten'; then
+  ok "existing cursor rule skipped with context/awareness notice"
+else
+  bad "cursor rule skip notice missing: ${skip_rule}"
+fi
+
 # --- CLI from nested dir + spaces ---
 (
   cd "${TARGET}/.repo-kit/tools"

@@ -152,7 +152,7 @@ env -u PYTHONPATH HOME="${OLD_HOME}" XDG_DATA_HOME="${OLD_DATA}" \
 python3 - "${TMP}/old-app.json" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
-assert doc["compat_version"] == "0.2.2", doc
+assert doc["compat_version"] == "0.3.2", doc
 assert doc["capability"] == "staging-publish", doc
 assert doc["cli_ready"] is True, doc
 PY

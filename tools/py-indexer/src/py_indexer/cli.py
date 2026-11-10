@@ -9,8 +9,15 @@ from pathlib import Path
 
 from py_indexer import APP_NAME, CAPABILITY, COMPAT_VERSION, SCHEMA_VERSION, __version__
 from py_indexer.config import ConfigError, load_config
+from py_indexer.context_cmd import SelectorError, awareness_report, context_report
 from py_indexer.paths import cache_home
 from py_indexer.index_cmd import index_all, index_repository
+from py_indexer.structural import (
+    RULES_VERSION,
+    STRUCTURAL_SCHEMA_VERSION,
+    code_fingerprint,
+    structural_ready,
+)
 from py_indexer.read_cmd import read_as_dict, read_code
 from py_indexer.search_cmd import search, search_as_dict
 from py_indexer.status_cmd import status_report
@@ -77,8 +84,29 @@ def _build_parser() -> argparse.ArgumentParser:
     p_read.add_argument("--json", action="store_true")
 
     sub.add_parser("status", help="Show config and index freshness")
+    _add_retrieval_parser(sub, "context", "Symbol or interface context (read-only)")
+    aware = _add_retrieval_parser(sub, "awareness", "Bounded relationship expansion (read-only)")
+    aware.add_argument("--depth", type=int, default=None, help="Relationship steps (default 2, hard max 3)")
     sub.add_parser("serve", help="Run read-only stdio MCP server")
     return p
+
+
+def _add_retrieval_parser(sub, name: str, help_text: str):
+    parser = sub.add_parser(name, help=help_text)
+    parser.add_argument("--symbol-id", default=None)
+    parser.add_argument("--repo", default=None)
+    parser.add_argument("--path", default=None)
+    parser.add_argument("--line", type=int, default=None)
+    parser.add_argument("--query", default=None)
+    parser.add_argument("--repos", action="append", default=None)
+    parser.add_argument(
+        "--scope",
+        choices=("active", "related", "active+related"),
+        default="active+related",
+    )
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--snapshot-id", default=None)
+    return parser
 
 
 _MCP_API = "mcp.server.fastmcp.FastMCP"
@@ -117,6 +145,10 @@ def _print_app_id() -> int:
                 "cli_ready": fts5,
                 "mcp_ready": mcp_ready,
                 "mcp_api": _MCP_API,
+                "structural_schema_version": STRUCTURAL_SCHEMA_VERSION,
+                "rules_version": RULES_VERSION,
+                "analysis_fingerprint": code_fingerprint(),
+                "structural_ready": structural_ready(),
             },
             indent=2,
         )
@@ -225,6 +257,28 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "status":
         print(json.dumps(status_report(cfg), indent=2))
+        return 0
+
+    if args.cmd in {"context", "awareness"}:
+        report_fn = context_report if args.cmd == "context" else awareness_report
+        try:
+            report = report_fn(
+                cfg,
+                symbol_id=args.symbol_id,
+                repo=args.repo,
+                path=args.path,
+                line=args.line,
+                query=args.query,
+                repos=args.repos,
+                scope=args.scope,
+                limit=args.limit,
+                snapshot_id=args.snapshot_id,
+                depth=getattr(args, "depth", None),
+            )
+        except SelectorError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(report, indent=2))
         return 0
 
     parser.error(f"unknown command {args.cmd}")

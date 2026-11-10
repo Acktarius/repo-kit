@@ -6,6 +6,7 @@ from py_indexer.config import AppConfig
 from py_indexer.gitinfo import git_head
 from py_indexer.paths import cache_home
 from py_indexer.store import IndexError_, open_index, read_meta
+from py_indexer.structural import coverage_summary, structural_read_state
 
 
 def status_report(cfg: AppConfig) -> dict:
@@ -48,10 +49,14 @@ def status_report(cfg: AppConfig) -> dict:
                 "indexed_at": meta.indexed_at,
                 "indexed_git_revision": meta.git_revision,
                 "freshness_note": (
-                    "indexed_git_revision is Git HEAD at index time; "
-                    "working-tree files may still differ."
+                    "indexed_git_revision is Git HEAD at index time. "
+                    "A dirty index does not exactly represent that commit. "
+                    "A branch rename alone does not make the index stale."
                 ),
+                "structural": structural_read_state(conn),
             }
+            if entry["index"]["structural"] in {"ready", "partial"}:
+                entry["index"]["structural_coverage"] = coverage_summary(conn)
             if meta.git_revision and entry["git_head"] and meta.git_revision != entry["git_head"]:
                 entry["warnings"].append(
                     "Git HEAD moved since index; re-run index to refresh committed snapshot metadata"
