@@ -1758,14 +1758,20 @@ def is_exact_legacy(existing) -> bool:
         (abs_legacy["command"], abs_legacy["args"][0]),
     }
 
-def points_at_shared(existing) -> bool:
-    if not isinstance(existing, dict):
+def is_exact_shared(existing) -> bool:
+    # Only the stock registration is rewritten. Extra fields or arguments are a
+    # customized shared entry and stay as they are.
+    if not isinstance(existing, dict) or set(existing.keys()) != legacy_keys:
+        return False
+    if existing.get("type") != "stdio":
         return False
     cmd = existing.get("command")
     args = existing.get("args")
-    if not isinstance(cmd, str) or not isinstance(args, list):
+    if not isinstance(cmd, str) or not isinstance(args, list) or len(args) != 3:
         return False
-    if "serve" not in args:
+    if not all(isinstance(item, str) for item in args):
+        return False
+    if args[0] != "--config" or args[2] != "serve":
         return False
     try:
         return os.path.realpath(cmd) == os.path.realpath(exe)
@@ -1812,7 +1818,7 @@ if is_exact_legacy(existing):
         "LEGACY_ACTIVE",
         "  mcp       shared CLI is available at " + exe + "; legacy MCP remains active",
     )
-if points_at_shared(existing):
+if is_exact_shared(existing):
     if runtime_ok:
         servers["py-indexer"] = legacy
         tmp = str(mcp) + ".tmp"

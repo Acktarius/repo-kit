@@ -33,8 +33,10 @@ repos.json, excludes.txt, customized requirements, unknown or modified files, an
 every directory under ~/.cache/py-indexer/indexes/ are left in place.
 The legacy MCP registration is left unchanged until the shared app can import
 mcp.server.fastmcp.FastMCP. Until then its launcher, package, and virtualenv stay,
-and the shared CLI is reported separately. If .cursor/mcp.json is invalid, nothing
-referenced by it is deleted.
+and the shared CLI is reported separately. A stock entry that already points at
+that CLI-only executable is restored to the legacy runtime when the runtime is
+still present. A customized shared entry is left untouched. If .cursor/mcp.json
+is invalid, nothing referenced by it is deleted.
 
 Re-run when already up to date skips cursor refresh unless --force.
 The py-indexer cleanup question still runs when old paths are present.

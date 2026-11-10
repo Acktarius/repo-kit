@@ -7,7 +7,10 @@ with ``os.replace`` after the staging database is closed and fsynced.
 
 ``PY_INDEXER_TEST_FAIL_BEFORE_PUBLISH=1`` raises after a successful staging
 build and before replace (tests). ``PY_INDEXER_TEST_PUBLISH_DELAY`` sleeps for
-that many seconds in the same window. Neither is set in normal use.
+that many seconds in the same window. ``PY_INDEXER_TEST_WAL_GATE_DELAY`` sleeps
+after the pre-replace ``/proc`` check and before SQLite is asked to leave WAL
+mode. ``PY_INDEXER_TEST_WAL_GATE_READY`` is a file written at the start of that
+sleep. None of these are set in normal use.
 """
 
 from __future__ import annotations
@@ -62,8 +65,9 @@ def index_repository(cfg: AppConfig, repo_id: str) -> dict:
     db_path = cfg.db_path(repo_id)
     conn = None
     with checkout_index_lock(db_path):
-        # A live WAL reader must be detected before any connection that would
-        # checkpoint or replace that bundle.
+        # Refuse a WAL bundle /proc can already see open, before this process
+        # opens it. A reader that arrives later still blocks the replace:
+        # publication waits until SQLite leaves WAL mode.
         ensure_wal_replace_allowed(db_path)
         recover_index_artifacts(db_path)
         # Policy is read again after the lock so a concurrent writer cannot

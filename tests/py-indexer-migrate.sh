@@ -389,6 +389,38 @@ else
   bad "broken registration was left pointing at the CLI-only app: $(cat "${TMP}/restore.out")"
 fi
 
+# A customized shared registration is not rewritten to the stock legacy entry.
+CUSTOM="${TMP}/custom-mcp"
+write_version "${CUSTOM}"
+TOOL_U="${CUSTOM}/.repo-kit/tools/py-indexer"
+seed_bin "${TOOL_U}"
+seed_venv "${TOOL_U}"
+mkdir -p "${CUSTOM}/.cursor"
+python3 - "${CUSTOM}/.cursor/mcp.json" "${XDG_BIN_HOME}/py-indexer" <<'PY'
+import json, sys
+from pathlib import Path
+path, exe = Path(sys.argv[1]), sys.argv[2]
+doc = {
+    "mcpServers": {
+        "py-indexer": {
+            "type": "stdio",
+            "command": exe,
+            "args": ["--config", "/tmp/repos.json", "serve"],
+            "env": {"PY_INDEXER_CUSTOM": "1"},
+        }
+    }
+}
+path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+PY
+cp "${CUSTOM}/.cursor/mcp.json" "${TMP}/custom-mcp.json.before"
+pty_run y "${ROOT}/scripts/migrate.sh" "${CUSTOM}" >"${TMP}/custom.out"
+if cmp -s "${CUSTOM}/.cursor/mcp.json" "${TMP}/custom-mcp.json.before" \
+  && grep -q 'left untouched' "${TMP}/custom.out"; then
+  ok "CLI-only fallback keeps a customized shared MCP entry"
+else
+  bad "customized shared MCP entry was rewritten: $(cat "${TMP}/custom.out")"
+fi
+
 if [[ -n "${PY_INDEXER_MCP_PYTHON:-}" ]] \
   && "${PY_INDEXER_MCP_PYTHON}" -c 'from mcp.server.fastmcp import FastMCP' >/dev/null 2>&1; then
   MCP_HOME="${TMP}/mcp-home"

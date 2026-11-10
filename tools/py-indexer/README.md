@@ -122,11 +122,16 @@ finishes on it. The next open sees the replacement.
 An older published index may still be in WAL mode, with committed rows only in
 `<database>-wal`. Indexing reads that WAL through SQLite's backup API into the
 staging file, then publishes one rollback-journal database at the same path.
-If another process has the database, `-wal`, or `-shm` open, indexing stops
-before the replace and does not delete those files. Stop that process and run
-`py-indexer index` again. Unlinking a live WAL is not how the upgrade proceeds.
-When nothing else has the old files open, a successful index removes the unused
-`-wal`/`-shm` files after the replace.
+Before that replace, SQLite is asked to leave WAL mode. The switch fails while
+any other connection has the database open, including a reader that arrives
+after a `/proc` check, and the canonical file is not replaced. A check after
+the replace does not undo that publication, so it is not what decides.
+`/proc` also refuses when it can see another process holding the files, or
+when other processes exist and none of their descriptor directories could be
+read. A single descriptor that cannot be inspected is skipped and is not by
+itself a reason to refuse. Stop the other program and run `py-indexer index`
+again. The `-wal` and `-shm` files are removed only after the mode switch has
+succeeded and the new file is published.
 
 If publication fails, staging is deleted and the last canonical file remains.
 After a crash:
@@ -158,9 +163,11 @@ On init/sync the installer:
 2. Registers MCP only when the shared app reports `mcp_ready`. Until then an
    exact legacy `serve` entry stays as it is, and the installer reports that
    the shared CLI is available while legacy MCP remains active. If a previous
-   run already pointed that entry at the CLI-only executable and the project
-   launcher and virtualenv are still present, the legacy entry is restored.
-   Extra `env`/`cwd` fields, or another checkout's paths, are left untouched.
+   run left the stock entry (only `type`, `command`, and `--config` / `serve`
+   args) pointed at the CLI-only executable, and the project launcher and
+   virtualenv are still present, that stock entry is restored. A customized
+   shared entry, extra `env`/`cwd` fields, or another checkout's paths are
+   left untouched.
    `mcp.fragment.json` is written for a later manual merge and is not installed
    while the app is CLI-only.
 3. Preserves `repos.json` and any legacy `excludes.txt` (still honored as an overlay)

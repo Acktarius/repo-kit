@@ -131,6 +131,24 @@ def _worker_reader(cache: str, cfg_path: str, project: str, stop: str, result: s
     Path(result).write_text(json.dumps({"hits": hits, "errors": errors}), encoding="utf-8")
 
 
+def _worker_wal_arrive(cache: str, cfg_path: str, project: str, delay: str, ready: str, result) -> None:
+    os.environ["XDG_CACHE_HOME"] = cache
+    os.environ["PY_INDEXER_TEST_WAL_GATE_DELAY"] = delay
+    os.environ["PY_INDEXER_TEST_WAL_GATE_READY"] = ready
+    os.environ.pop("PY_INDEXER_TEST_FAIL_BEFORE_PUBLISH", None)
+    os.environ.pop("PY_INDEXER_TEST_PUBLISH_DELAY", None)
+    try:
+        cfg = load_config(Path(cfg_path), project_root=Path(project))
+        index_repository(cfg, "working")
+    except IndexWalBusy as exc:
+        result.put(f"busy:{exc}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        result.put(f"err:{type(exc).__name__}:{exc}")
+        return
+    result.put("unexpected-success")
+
+
 def _worker_wal_reader(db: str, stop: str, result: str) -> None:
     import sqlite3 as _sqlite
 
@@ -184,6 +202,8 @@ class IndexLockTests(unittest.TestCase):
         os.environ["XDG_CACHE_HOME"] = str(self.cache)
         os.environ.pop("PY_INDEXER_TEST_FAIL_BEFORE_PUBLISH", None)
         os.environ.pop("PY_INDEXER_TEST_PUBLISH_DELAY", None)
+        os.environ.pop("PY_INDEXER_TEST_WAL_GATE_DELAY", None)
+        os.environ.pop("PY_INDEXER_TEST_WAL_GATE_READY", None)
         self.checkout = self.tmp / "checkout"
         self.project = self.tmp / "project"
         self.tool = self.project / ".repo-kit" / "tools" / "py-indexer"
@@ -199,6 +219,8 @@ class IndexLockTests(unittest.TestCase):
     def tearDown(self) -> None:
         os.environ.pop("PY_INDEXER_TEST_FAIL_BEFORE_PUBLISH", None)
         os.environ.pop("PY_INDEXER_TEST_PUBLISH_DELAY", None)
+        os.environ.pop("PY_INDEXER_TEST_WAL_GATE_DELAY", None)
+        os.environ.pop("PY_INDEXER_TEST_WAL_GATE_READY", None)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _cfg(self):
@@ -387,8 +409,9 @@ class IndexLockTests(unittest.TestCase):
     def _write_uncheckpointed_wal(self) -> Path:
         """Canonical WAL index whose searchable token exists only in the WAL.
 
-        SQLite checkpoints a WAL when the last connection closes. The writer
-        disables that so the committed row stays in ``-wal`` after close.
+        SQLite checkpoints a WAL when the last connection closes. A second
+        connection stays open across the commit so the bytes can be copied
+        first. Those bytes are written back after both connections close.
         """
         token = "walOnlyToken"
         _write(self.checkout / "src" / "main.ts", f"export const {token} = 1;\n")
@@ -403,68 +426,49 @@ class IndexLockTests(unittest.TestCase):
             create=True,
         )
         created.close()
-        conn = sqlite3.connect(db)
-        conn.row_factory = sqlite3.Row
-        self._no_checkpoint_on_close(conn)
-        mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-        self.assertEqual(str(mode).lower(), "wal")
-        conn.execute("PRAGMA wal_autocheckpoint=0")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        text = (self.checkout / "src" / "main.ts").read_text(encoding="utf-8")
-        with locked_write(conn):
-            upsert_file(
-                conn,
-                path="src/main.ts",
-                content_hash=content_hash(text),
-                size=len(text.encode()),
-                mtime_ns=0,
-                language="typescript",
-                chunks=chunk_lines(text, chunk_lines=40, overlap=5),
-            )
-            stamp_success(
-                conn,
-                git_revision=None,
-                repo_id="working",
-                checkout=self.checkout,
-                fingerprint=fingerprint,
-            )
-        conn.close()
-        self.assertNotIn(token.encode(), db.read_bytes())
-        wal = Path(str(db) + "-wal")
-        self.assertTrue(wal.is_file())
-        self.assertIn(token.encode(), wal.read_bytes())
-        check = sqlite3.connect(db)
-        self._no_checkpoint_on_close(check)
+        holder = sqlite3.connect(db)
+        writer = sqlite3.connect(db)
+        writer.row_factory = sqlite3.Row
         try:
-            stored = check.execute("SELECT text FROM chunks").fetchone()[0]
+            mode = writer.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            self.assertEqual(str(mode).lower(), "wal")
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            text = (self.checkout / "src" / "main.ts").read_text(encoding="utf-8")
+            with locked_write(writer):
+                upsert_file(
+                    writer,
+                    path="src/main.ts",
+                    content_hash=content_hash(text),
+                    size=len(text.encode()),
+                    mtime_ns=0,
+                    language="typescript",
+                    chunks=chunk_lines(text, chunk_lines=40, overlap=5),
+                )
+                stamp_success(
+                    writer,
+                    git_revision=None,
+                    repo_id="working",
+                    checkout=self.checkout,
+                    fingerprint=fingerprint,
+                )
+            main = db.read_bytes()
+            wal = Path(str(db) + "-wal")
+            self.assertTrue(wal.is_file())
+            wal_bytes = wal.read_bytes()
+            self.assertNotIn(token.encode(), main)
+            self.assertIn(token.encode(), wal_bytes)
+            stored = holder.execute("SELECT text FROM chunks").fetchone()[0]
+            self.assertIn(token, stored)
         finally:
-            check.close()
-        self.assertIn(token, stored)
+            writer.close()
+            holder.close()
+        db.write_bytes(main)
+        wal.write_bytes(wal_bytes)
+        Path(str(db) + "-shm").unlink(missing_ok=True)
         self.assertNotIn(token.encode(), db.read_bytes())
+        self.assertIn(token.encode(), wal.read_bytes())
         return db
-
-    def _no_checkpoint_on_close(self, conn: sqlite3.Connection) -> None:
-        import ctypes
-        import ctypes.util
-
-        lib = ctypes.CDLL(ctypes.util.find_library("sqlite3"))
-        lib.sqlite3_db_filename.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-        lib.sqlite3_db_filename.restype = ctypes.c_char_p
-        lib.sqlite3_db_config.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.POINTER(ctypes.c_int),
-        ]
-        lib.sqlite3_db_config.restype = ctypes.c_int
-        # CPython sqlite3.Connection stores the sqlite3* immediately after PyObject_HEAD.
-        raw = ctypes.cast(id(conn), ctypes.POINTER(ctypes.c_void_p))
-        ptr = raw[2]
-        name = lib.sqlite3_db_filename(ptr, b"main")
-        self.assertTrue(name, "sqlite3 connection pointer was not found")
-        out = ctypes.c_int()
-        rc = lib.sqlite3_db_config(ptr, 1006, 1, ctypes.byref(out))
-        self.assertEqual(rc, 0, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE failed")
 
     def test_wal_upgrade_preserves_uncheckpointed_content(self) -> None:
         db = self._write_uncheckpointed_wal()
@@ -526,6 +530,45 @@ class IndexLockTests(unittest.TestCase):
         self.assertIn("walOnlyToken", report["final"])
         mode = sqlite3.connect(db).execute("PRAGMA journal_mode").fetchone()[0]
         self.assertEqual(str(mode).lower(), "wal")
+
+    def test_wal_reader_arriving_after_scan_blocks_publish(self) -> None:
+        db = self._write_uncheckpointed_wal()
+        inode = db.stat().st_ino
+        ready = self.tmp / "wal-gate-ready"
+        result = CTX.Queue()
+        proc = CTX.Process(
+            target=_worker_wal_arrive,
+            args=(
+                str(self.cache),
+                str(self.cfg_path),
+                str(self.project),
+                "5",
+                str(ready),
+                result,
+            ),
+        )
+        proc.start()
+        deadline = time.time() + 20
+        while not ready.exists():
+            self.assertLess(time.time(), deadline, "WAL publish gate was not reached")
+            if proc.exitcode is not None:
+                break
+            time.sleep(0.05)
+        self.assertTrue(ready.exists(), "indexer finished before the WAL gate")
+        holder = sqlite3.connect(db, timeout=5)
+        try:
+            holder.execute("SELECT text FROM chunks").fetchone()
+            got = result.get(timeout=20)
+        finally:
+            holder.close()
+        proc.join(10)
+        self.assertEqual(proc.exitcode, 0)
+        self.assertTrue(str(got).startswith("busy:"), got)
+        self.assertIn("still in use", str(got))
+        self.assertIn("will not replace", str(got))
+        self.assertEqual(db.stat().st_ino, inode)
+        self.assertFalse(Path(str(db) + ".staging").exists())
+        self.assertFalse(Path(str(db) + ".staging.complete").exists())
 
     def test_success_drops_prev(self) -> None:
         index_repository(self._cfg(), "working")
