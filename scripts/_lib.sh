@@ -21,6 +21,7 @@ FORCE_COPY=0
 CURSOR_ONLY=0
 ADDED_COUNT=0
 SKIPPED_COUNT=0
+DIFFERENT_COUNT=0
 OVERWRITTEN_COUNT=0
 PRESERVED_COUNT=0
 
@@ -283,7 +284,14 @@ _copy_file() {
       echo "  overwrite  ${dest#"${TARGET_DIR}"/}"
     else
       SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
-      echo "  skip       ${dest#"${TARGET_DIR}"/}"
+      if [[ -L "${dest}" || ! -f "${dest}" ]]; then
+        echo "  skip       ${dest#"${TARGET_DIR}"/} (not a regular file)"
+      elif cmp -s "${src}" "${dest}"; then
+        echo "  unchanged  ${dest#"${TARGET_DIR}"/}"
+      else
+        DIFFERENT_COUNT=$((DIFFERENT_COUNT + 1))
+        echo "  different  ${dest#"${TARGET_DIR}"/} (differs from template; kept, use --force to overwrite)"
+      fi
     fi
     return 0
   fi
@@ -487,6 +495,7 @@ install_modules() {
   local name
   ADDED_COUNT=0
   SKIPPED_COUNT=0
+  DIFFERENT_COUNT=0
   OVERWRITTEN_COUNT=0
   PRESERVED_COUNT=0
 
@@ -510,6 +519,7 @@ install_modules() {
   fi
   echo "  added:        ${ADDED_COUNT}"
   echo "  skipped:      ${SKIPPED_COUNT}"
+  echo "    different:  ${DIFFERENT_COUNT}"
   echo "  overwritten:  ${OVERWRITTEN_COUNT}"
   echo "  preserved:    ${PRESERVED_COUNT}"
 }
