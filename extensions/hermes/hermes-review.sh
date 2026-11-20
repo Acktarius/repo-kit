@@ -131,7 +131,7 @@ hermes config set terminal.docker_mount_cwd_to_workspace true >/dev/null
 
 # Confirm the review mounts landed; do not start if the gateway would see something else.
 active_volumes="$(config_get terminal.docker_volumes --json || true)"
-if [[ "${active_volumes}" != "${expected_volumes}" ]]; then
+if ! python3 -c 'import json, sys; sys.exit(0 if json.loads(sys.argv[1]) == json.loads(sys.argv[2]) else 1)' "${active_volumes}" "${expected_volumes}"; then
   echo "hermes-review: docker_volumes mismatch after config set" >&2
   echo "hermes-review: expected: ${expected_volumes}" >&2
   echo "hermes-review: got: ${active_volumes:-unset}" >&2
