@@ -14,4 +14,4 @@ Create a repository-specific security hardening plan that:
 5. ends with a short implementation checklist.
 
 Do not change code or record findings. Do not invent issues. Save the result to
-`.cursor/plans/security-hardening.md`, then stop for review.
+`security/plans/security-hardening.md`, then stop for review.

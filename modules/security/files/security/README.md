@@ -10,11 +10,13 @@ scanner output.
 - `accepted-risks.md` — explicitly accepted or deferred risks
 - `findings.schema.json` — findings-store structure
 - `templates/` — reusable finding templates
+- `plans/` — approved hardening and remediation plans
 
 ## Workflow
 
 1. Run `/security-plan-hardening` in Plan Mode and review
-   `.cursor/plans/security-hardening.md`.
+   `security/plans/security-hardening.md`. Plans for a single finding go in
+   `security/plans/<finding-id>.md`.
 2. Review one approved priority with `/security-review-priority-1`.
 3. Convert validated issues with `/security-generate-finding`.
 4. Manually approve records before adding them to the findings store.
@@ -27,7 +29,7 @@ Human review controls updates to `findings-reviewed.json` and
 ## Commit policy
 
 Commit this README, the threat model, reviewed findings, accepted risks,
-schema, and templates. Keep raw scans, temporary reports, and private records
+plans, schema, and templates. Keep raw scans, temporary reports, and private records
 out of Git.
 
 ## Statuses

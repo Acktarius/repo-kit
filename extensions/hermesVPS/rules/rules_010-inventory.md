@@ -88,7 +88,7 @@ A file's presence does not prove the corresponding control is active.
 
 Hardening-plan style questions (assets, entry points, trust boundaries) may
 be noted as **observations for later phases**, not as a saved
-`.cursor/plans/` document and not as findings.
+`security/plans/` document and not as findings.
 
 ## Required response sections
 

@@ -2,7 +2,7 @@
 
 Read:
 
-- `.cursor/plans/security-hardening.md`
+- `security/plans/security-hardening.md`
 - `.cursor/rules/30-security-reviewer.mdc`
 - `.cursor/rules/40-security-triage.mdc`
 - `security/threat-model.md`

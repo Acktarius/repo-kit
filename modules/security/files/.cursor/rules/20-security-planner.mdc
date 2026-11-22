@@ -15,6 +15,8 @@ Identify:
 - secrets and external services;
 - high-risk files and unknowns.
 
-Save the repository-specific plan to `.cursor/plans/security-hardening.md`.
+Save the repository-wide plan to `security/plans/security-hardening.md`.
+Save a plan for one finding to `security/plans/<finding-id>.md`
+(e.g. `security/plans/SG-001.md`).
 Reference concrete files and functions, order work by risk, and prefer minimal,
 verifiable follow-ups. Do not modify code until the plan is approved.

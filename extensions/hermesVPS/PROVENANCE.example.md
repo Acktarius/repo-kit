@@ -43,7 +43,7 @@ Required dependency for interpreting findings: `findings.schema.json` (draft
 
 | Source path in repo-kit | Runtime destination | Adaptation purpose |
 |-------------------------|---------------------|--------------------|
-| `modules/security/files/.cursor/commands/00-security-plan-hardening.md` | Distilled into phase 010/020 rules/tasks | Remove Plan Mode / `.cursor/plans/` write; planning stays in phase reports |
+| `modules/security/files/.cursor/commands/00-security-plan-hardening.md` | Distilled into phase 010/020 rules/tasks | Remove Plan Mode / `security/plans/` write; planning stays in phase reports |
 | `modules/security/files/.cursor/rules/20-security-planner.mdc` | Same | Agent-neutral planning checks |
 | `modules/security/files/.cursor/commands/01-security-review-priority-1.md` | Distilled into 030/040/050 guidance | Evidence-only priority review |
 | `modules/security/files/.cursor/rules/30-security-reviewer.mdc` | Same | Evidence and “no valid findings” discipline |

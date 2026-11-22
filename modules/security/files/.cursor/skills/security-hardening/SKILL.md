@@ -15,7 +15,8 @@ Read these files when present:
 - `.cursor/rules/20-security-planner.mdc`
 - `.cursor/rules/30-security-reviewer.mdc`
 - `.cursor/rules/40-security-triage.mdc`
-- `.cursor/plans/security-hardening.md`
+- `security/plans/security-hardening.md`
+- `security/plans/<finding-id>.md` for the finding in scope
 - `security/README.md`
 - `security/threat-model.md`
 - `security/findings-reviewed.json`
