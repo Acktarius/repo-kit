@@ -1,0 +1,17 @@
+---
+description: Keep personal data out of any file that git can publish
+alwaysApply: true
+---
+
+# No personal data in tracked notes
+
+Never write the operator's name, username, computer name, physical address, IP address, or email into a file git tracks. That includes `docs/`, `README.md`, commit messages, and any other path that is not gitignored.
+
+Local-only notes under gitignored `.repo-kit/` follow the same ban.
+
+Say "the operator", "this machine", or "the remote node". A public project hostname that is already part of the protocol docs may stay. `127.0.0.1` may stay.
+
+```text
+Bad:  the node at <ip> on <computer-name>
+Good: a remote mainnet node answered GET /getinfo on port 16000
+```
