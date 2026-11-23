@@ -15,3 +15,5 @@ Say "the operator", "this machine", or "the remote node". A public project hostn
 Bad:  the node at <ip> on <computer-name>
 Good: a remote mainnet node answered GET /getinfo on port 16000
 ```
+
+To check or clean tracked files, follow `.cursor/skills/scrub-personal-data/SKILL.md` (also `/scrub-personal-data`). Fix only what the user picks.

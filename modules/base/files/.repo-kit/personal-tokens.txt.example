@@ -1,0 +1,10 @@
+# Copy to .repo-kit/personal-tokens.txt (gitignored) and list your own values.
+# One token per line; lines starting with # are comments.
+# "token -> <placeholder>" splits on the first "->"; without one the default is <redacted>.
+# Matching is whole-word and case-insensitive; other characters are taken literally.
+# Private IPs and emails are detected automatically; list public IPs or hostnames here.
+#
+# your-first-name -> <your-name>
+# your-login -> <your-user-name>
+# your-laptop-hostname -> <computer-name>
+# your-street-name -> <address>

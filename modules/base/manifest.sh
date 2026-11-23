@@ -3,3 +3,4 @@ MODULE_NAME="base"
 MODULE_DESC="Minimal repository scaffolding"
 MODULE_DEPENDS=()
 MODULE_CONFLICTS=()
+MODULE_PRESERVE=(".repo-kit/.gitignore")
