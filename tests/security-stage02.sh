@@ -72,6 +72,12 @@ have "${INVENTORY}" "### Example 2 — stored input, consumer unresolved" "examp
 have "${INVENTORY}" "### Example 3 — CLI and queue inputs, not an HTTP service" "example: CLI and queue"
 have "${INVENTORY}" "### Example 4 — diff-scoped review with gaps" "example: diff-scoped gaps"
 have "${INVENTORY}" "queue-consumer" "example includes a queue consumer"
+have "${INVENTORY}" "An unresolved question is not a finding." "unresolved question stays out of findings"
+have "${INVENTORY}" "Next static verification is not a conditional control proposal." "static verification stays distinct from a conditional proposal"
+have "${INVENTORY}" "Do not assign an SG-* id, a severity, a finding status, or an entrySink to an unresolved question." "unresolved question gets no finding identity"
+have "${INVENTORY}" 'Do not write unresolved questions into `security/findings-reviewed.json`.' "unresolved question is not stored as a finding"
+have "${INVENTORY}" "inspect that specific policy code if approved" "synthetic authorization question names the next read"
+have "${INVENTORY}" "Do not prescribe escaping at the write site or claim XSS merely because text is stored." "synthetic stored-text question does not invent an output flaw"
 have "${CATALOG}" "An inventory does not mark any weakness class \`covered\`." "catalog does not treat inventory as coverage"
 
 # --- Three consumers agree, without copying the contract ---
@@ -91,6 +97,8 @@ have "${HERMES_RULE}" "Entry-point and sensitive-operation inventory" "local Her
 have "${HERMES_RULE}" "Persisted-input and second-order flows" "local Hermes rule names flow table"
 have "${HERMES_RULE}" 'Section 7 stays "Coverage and completion state".' "local Hermes keeps section 7"
 have "${HERMES_RULE}" '"No supported findings within the completed scope."' "local Hermes keeps its findings sentence"
+have "${HERMES_RULE}" "An unresolved question is not a finding." "local Hermes keeps unknowns out of findings"
+have "${HERMES_RULE}" "Next static verification is not a conditional" "local Hermes separates static verification from a proposal"
 have "${HERMES_TASK}" "surface-inventory.md" "local Hermes task reads the inventory"
 have "${HERMES_TASK}" "one review priority" "local Hermes task stays one priority"
 
@@ -100,6 +108,8 @@ have "${VPS_RULE}" "Persisted-input and second-order flows" "hermesVPS rule name
 have "${VPS_RULE}" "**Coverage limitations**" "hermesVPS keeps Coverage limitations"
 have "${VPS_RULE}" "whole-repository inventory" "hermesVPS does not require a whole-repository inventory"
 have "${VPS_RULE}" "labeled as candidates" "hermesVPS keeps candidate labeling"
+have "${VPS_RULE}" "An unresolved question is not a finding." "hermesVPS keeps unknowns out of findings"
+have "${VPS_RULE}" "Next static verification is not a conditional" "hermesVPS separates static verification from a proposal"
 have "${VPS_TASK}" "security-assets/surface-inventory.md" "hermesVPS task reads the bundled inventory"
 have "${VPS_TASK}" "one review priority" "hermesVPS task stays one priority"
 
@@ -116,6 +126,11 @@ have "${VPS_TEMPLATE}" "## Entry-point and sensitive-operation inventory" "templ
 have "${VPS_TEMPLATE}" "## Persisted-input and second-order flows" "template has flow table"
 have "${VPS_TEMPLATE}" "## Candidate issues" "template keeps candidate issues"
 have "${VPS_TEMPLATE}" "## Coverage limitations" "template keeps Coverage limitations"
+have "${VPS_TEMPLATE}" "### Unresolved questions" "template records unknowns under coverage limitations"
+have "${VPS_TEMPLATE}" "An unresolved question is not a finding." "template does not promote unknowns to findings"
+have "${VPS_TEMPLATE}" "Next static verification is not a conditional control proposal." "template separates static verification from a proposal"
+have "${REVIEWER}" "An unresolved question is not a finding." "reviewer keeps unknowns out of findings"
+have "${REVIEWER}" "Next static verification is not a conditional" "reviewer separates static verification from a proposal"
 if [[ "$(grep -c 'hermes-vps-report:' "${VPS_TEMPLATE}")" -eq 1 ]]; then
   ok "phase-050 template has one identity header"
 else

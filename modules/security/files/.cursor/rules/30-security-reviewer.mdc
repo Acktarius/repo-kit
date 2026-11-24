@@ -53,3 +53,15 @@ coverage, and those completion limits.
 A review that stops before substantive inspection because required policy
 inputs are unavailable reports the blocked or incomplete condition. Do not
 use `no valid findings` as that outcome.
+
+Record security-relevant unknowns in the review narrative under the
+surface-inventory heading "Unresolved questions". Each entry has Question,
+Evidence inspected, Review consequence, and Next static verification. Add a
+Conditional control proposal only when one is justified.
+An unresolved question is not a finding.
+Next static verification is not a conditional control proposal.
+Do not assign an SG-* id, a severity, a finding status, or
+an entrySink, and do not write unresolved questions into
+`security/findings-reviewed.json`. A conditional control proposal does not
+authorize an edit. Do not manufacture questions to fill a template. The
+findings line does not replace these unknowns.

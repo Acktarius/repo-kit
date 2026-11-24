@@ -164,7 +164,18 @@ Use these sections. Section 7 stays "Coverage and completion state".
 3. Candidate issues with evidence
 4. Controls observed and limits of verification
 5. References and classification provenance
-6. Exclusions, errors, and unresolved questions
+6. Exclusions, errors, and unresolved questions.
+   For each security-relevant unknown, follow "Unresolved questions"
+   in the surface inventory. Record Question, Evidence inspected,
+   Review consequence, and Next static verification. Add a Conditional
+   control proposal only when one is justified.
+   An unresolved question is not a finding.
+   Next static verification is not a conditional control proposal.
+   Do not assign an SG-* id, a severity, a finding
+   status, or an entrySink, and do not write the question to
+   `security/findings-reviewed.json`. A conditional control proposal
+   does not authorize an edit. Do not manufacture questions to fill
+   a template.
 7. Coverage and completion state.
    Include the weakness-class coverage table and "Coverage linkage
    and gaps". An inventory does not mark any weakness class `covered`.

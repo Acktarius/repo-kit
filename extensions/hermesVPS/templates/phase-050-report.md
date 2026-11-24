@@ -58,6 +58,10 @@ Include every weakness class and "Coverage linkage and gaps".
 An inventory does not mark any weakness class `covered`.
 Cite S-* and F-* IDs where useful. No percentages or completeness claims.
 
+### Unresolved questions
+
+Record each security-relevant unknown in this section. Follow "Unresolved questions" in the surface inventory. Each entry has Question, Evidence inspected, Review consequence, and Next static verification. Add a Conditional control proposal only when one is justified. An unresolved question is not a finding. Next static verification is not a conditional control proposal. Do not assign an SG-* id or write the question to `security/findings-reviewed.json`. A conditional control proposal does not authorize an edit. Do not copy the synthetic examples from the surface inventory into this report. Do not manufacture questions to fill a template.
+
 ## Completion state
 
 State: `complete` | `incomplete` | `blocked`

@@ -104,8 +104,19 @@ Keep the identity header and the completion-state line unchanged.
 7. **Candidate issues** — file, line, excerpt, severity estimate, confidence,
    and attack path description; labeled as candidates
 8. **Unexecuted checks** — scanner commands that were not run
-9. **Coverage limitations** — weakness-class coverage table and coverage
-   linkage and gaps.  An inventory does not mark any weakness class `covered`.
+9. **Coverage limitations** — weakness-class coverage table, coverage
+   linkage and gaps, and security-relevant unresolved questions.
+   Follow "Unresolved questions" in the surface inventory.  Record
+   Question, Evidence inspected, Review consequence, and Next static
+   verification.  Add a Conditional control proposal only when one is
+   justified.  An unresolved question is not a finding.
+   Next static verification is not a conditional control proposal.
+   Do not assign
+   an SG-* id, a severity, a finding status, or an entrySink, and do
+   not write the question to `security/findings-reviewed.json`.  A
+   conditional control proposal does not authorize an edit.  Do not
+   manufacture questions to fill a template.
+   An inventory does not mark any weakness class `covered`.
 10. **Completion state** and next human gate
 
 ## Completion

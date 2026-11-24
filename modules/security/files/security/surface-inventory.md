@@ -146,6 +146,20 @@ Record that limit on the class and on the inventory row.
 Do not report a coverage percentage, a completeness guarantee, or a
 security score.
 
+## Unresolved questions
+
+A security-relevant unknown stays in the review narrative. An unresolved question is not a finding. An unlocated control is not automatically an absent control. Do not assign an SG-* id, a severity, a finding status, or an entrySink to an unresolved question. Do not write unresolved questions into `security/findings-reviewed.json`. Keep an applicable uninspected area `not_reviewed`. Do not widen the approved scope to resolve a question. If the needed evidence is outside that scope, name the permission or information required and stop. Do not manufacture questions to fill a template. Group repeated questions about the same unresolved control, and cross-reference the existing `S-*` or `F-*` row instead of repeating the inventory.
+
+Each recorded question has these parts:
+
+1. Question. The specific relationship, configuration, or control that was not established.
+2. Evidence inspected. Repository-relative files or symbols, and what those files actually show.
+3. Review consequence. The affected surface or flow, and the `WC-*` class when one is established. State the limitation. Do not invent impact.
+4. Next static verification. The source, configuration, dependency or advisory evidence, or maintainer clarification that would resolve the question. This is further reading inside the approved boundary, not a build, a test, or a probe.
+5. Conditional control proposal, only when a responsible proposal can be made. Say what could change if a missing or ineffective control is later confirmed. Omit this part when the next action is only to inspect permitted evidence or to obtain a scope decision. A conditional control proposal does not authorize an edit. A proposed optional hardening measure is not proof of a vulnerability.
+
+Next static verification is not a conditional control proposal.
+
 ## Review order
 
 1. Read this contract and `weakness-classes.md`.
@@ -203,3 +217,31 @@ and route registration are not in the diff.
 Coverage sketch for example 4, still not a review result: `WC-AUTHZ-OBJECT`
 is `not_reviewed` because the applicable authorization surface was not
 in the diff. The inventory row does not flip that status to `covered`.
+
+### Example 5 — authorization unresolved
+
+Synthetic. Not a finding, not a coverage result, and not evidence about any repository.
+
+Question: `GetOrder` consumes an object id, and the middleware or policy that would authorize that id was outside the inspected scope.
+
+Evidence inspected: `pkg/orders/get.go` shows the handler reading the id. The policy implementation was not in the approved paths, so no authorization decision was read.
+
+Review consequence: the handler surface stays limited. `WC-AUTHZ-OBJECT` stays `not_reviewed` for the unseen policy. The unseen file is not an absent control.
+
+Next static verification: inspect that specific policy code if approved.
+
+Conditional control proposal: enforce subject and object authorization before access if no effective check exists.
+
+### Example 6 — downstream use unresolved
+
+Synthetic. Not a finding, not a coverage result, and not evidence about any repository.
+
+Question: a writer stores caller-controlled text, and the later consumer is not established.
+
+Evidence inspected: the writer stores the submitted string. No reader was present in the inspected files.
+
+Review consequence: the flow's reader stays unresolved. No output context was established, so no impact is claimed.
+
+Next static verification: identify the reader and its output context.
+
+Conditional control proposal: omitted. Do not prescribe escaping at the write site or claim XSS merely because text is stored.
