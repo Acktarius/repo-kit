@@ -8,6 +8,7 @@ store for a target repository.
 | File | Role |
 |------|------|
 | `findings.schema.json` | Exact copy of the repo-kit security findings schema |
+| `weakness-classes.md` | Exact copy of `modules/security/files/security/weakness-classes.md`. Do not edit it here. Phase 050 source-review coverage reads this copy. It is not a scanner. |
 | `README.md` | This adapted explanation (not a byte copy of the module README) |
 
 Later packaging stages may add exact copies of finding templates, accepted-risk

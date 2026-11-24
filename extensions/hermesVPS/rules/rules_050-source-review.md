@@ -33,11 +33,35 @@ trigger message.  Do not execute target code, apply fixes, or modify files.
 One report per priority.  A separate invocation is required for each
 additional priority.
 
+## Weakness-class catalog
+
+Read `security-assets/weakness-classes.md` under the policy prefix.  Phase 050
+requires that file; the runner lists its absolute path with the other policy
+inputs and refuses to start when it is missing.  Do not substitute a catalog
+from the source repository or from memory.
+
+If that file is missing, unreadable, or has no class entries, name the path,
+set completion state to `incomplete`, and stop.  Do not treat any class as
+reviewed and do not fill the coverage table from memory.
+
+Apply the catalog's coverage contract in **Coverage limitations**.  Use only
+its statuses: `covered`, `not_applicable`, `not_reviewed`.  Include every
+class.  `covered` means the class was reviewed in this source review, not
+that the code is secure.  The table is source-review coverage.  Scanner
+output and phase 030 or 040 results do not mark a class `covered`.
+
+The catalog does not relax the evidence contract below or Rule 000.
+Unresolved cases stay candidates only when that evidence contract is already
+met; otherwise record an unresolved question.  Do not promote either to a
+reviewed finding.
+
 ## Evidence contract
 
 Support every candidate issue with a concrete file path, line number range,
 and relevant code or configuration excerpt.  Never invent findings.
-Distinguish confirmed evidence from uncertainty.
+Distinguish confirmed evidence from uncertainty.  A supported candidate also
+identifies a reachable entry point or trust boundary, the flow or security
+decision, the sensitive operation, and the absent or ineffective control.
 
 ## Report sections (required)
 

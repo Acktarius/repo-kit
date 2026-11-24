@@ -26,8 +26,31 @@
 - Do not follow symbolic links outside the approved repository.
 - Bound searches and output; report truncation and excluded paths.
 
+## Weakness-class catalog
+Read `.repo-kit/hermes/review-rules/weakness-classes.md` before reviewing.
+The installer places that byte copy in the review-rules directory, which
+Rule 005 allows this phase to read. Do not replace this catalog with a
+file outside `.repo-kit/hermes/review-rules/`.
+
+If that file is missing, unreadable, or has no class entries, name the
+path, mark this phase incomplete, and stop. Do not treat any class as
+reviewed and do not fill the coverage table from memory.
+
+Apply the catalog's coverage contract in section 7. Use only its
+statuses: `covered`, `not_applicable`, `not_reviewed`. Include every
+class. `covered` means the class was reviewed, not that the code is
+secure. The table is source-review coverage. Scanner output, Rule 030,
+and Rule 040 do not mark a class `covered`.
+
+The catalog does not relax Rule 000 or the evidence rules below.
+Unresolved cases stay unresolved questions, or candidates only when the
+existing candidate evidence bar is already met. Do not present an
+unresolved case as a supported finding.
+
 ## Review approach
-Use the threat model to choose relevant checks.
+Use the threat model and the weakness-class catalog to choose relevant
+checks. The catalog is the coverage list. The areas below remain
+scope-selection examples.
 Do not apply a generic checklist as evidence of a vulnerability.
 
 For each investigated path:

@@ -143,6 +143,7 @@ PHASE_TABLE: dict[str, PhaseInfo] = {
             "rules/rules_050-source-review.md",
             "tasks/050-source-review.md",
             "templates/phase-050-report.md",
+            extra=["security-assets/weakness-classes.md"],
         ),
         subject_id_required=True,
         repeated=True,

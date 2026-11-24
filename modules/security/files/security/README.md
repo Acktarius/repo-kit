@@ -6,6 +6,7 @@ scanner output.
 ## Source of truth
 
 - `threat-model.md` — assets, entry points, and trust boundaries
+- `weakness-classes.md` — canonical weakness-class catalog and source-review coverage contract
 - `findings-reviewed.json` — reviewed findings and lifecycle status
 - `accepted-risks.md` — explicitly accepted or deferred risks
 - `findings.schema.json` — findings-store structure

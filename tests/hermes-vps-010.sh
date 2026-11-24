@@ -8,6 +8,8 @@ EXT="${ROOT}/extensions/hermesVPS"
 RUNNER="${EXT}/bin/hermes-vps-review"
 SCHEMA_SRC="${ROOT}/modules/security/files/security/findings.schema.json"
 SCHEMA_DST="${EXT}/security-assets/findings.schema.json"
+CATALOG_SRC="${ROOT}/modules/security/files/security/weakness-classes.md"
+CATALOG_DST="${EXT}/security-assets/weakness-classes.md"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
@@ -48,6 +50,12 @@ if cmp -s "${SCHEMA_SRC}" "${SCHEMA_DST}"; then
   ok "findings.schema.json is an exact copy of the canonical schema"
 else
   bad "findings.schema.json differs from canonical source"
+fi
+
+if cmp -s "${CATALOG_SRC}" "${CATALOG_DST}"; then
+  ok "weakness-classes.md is an exact copy of the canonical catalog"
+else
+  bad "weakness-classes.md differs from canonical source"
 fi
 
 if grep -RIn '/home/acktarius' "${EXT}" >/dev/null 2>&1; then

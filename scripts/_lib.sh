@@ -913,6 +913,7 @@ install_act_ext() {
 }
 
 # Copy Hermes phased review rules into target .repo-kit/hermes/review-rules/,
+# the canonical weakness-class catalog (byte copy from the security module),
 # task triggers into .repo-kit/hermes/tasks/, phase-command skills into
 # .repo-kit/hermes/skills/, the hermes-review.sh launcher, seed an empty
 # .repo-kit/hermes/reports/ directory, and hook ~/.bashrc to the kit's
@@ -958,6 +959,11 @@ install_hermes_ext() {
   if [[ -f "${readme_src}" ]]; then
     _copy_file "${readme_src}" "${dest_dir}/README.md"
   fi
+
+  local catalog_src="${MODULES_DIR}/security/files/security/weakness-classes.md"
+  [[ -f "${catalog_src}" ]] || die "canonical weakness-class catalog missing at ${catalog_src}"
+  echo "  copying weakness-class catalog to .repo-kit/hermes/review-rules/..."
+  _copy_file "${catalog_src}" "${dest_dir}/weakness-classes.md"
 
   echo "  copying tasks to .repo-kit/hermes/tasks/..."
   shopt -s nullglob

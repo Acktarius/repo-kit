@@ -30,6 +30,7 @@ instructions.
 | Source path in repo-kit | Runtime destination (under prefix) | Purpose |
 |-------------------------|------------------------------------|---------|
 | `modules/security/files/security/findings.schema.json` | `security-assets/findings.schema.json` | Findings store schema; preserve fields/enums |
+| `modules/security/files/security/weakness-classes.md` | `security-assets/weakness-classes.md` | Weakness-class catalog; byte-identical copy, not an independent list |
 | `modules/security/files/security/templates/finding-template.md` | `security-assets/templates/finding-template.md` | Human-readable finding form |
 | `modules/security/files/security/findings-reviewed.json` | `security-assets/findings-reviewed.empty.json` | Empty store **shape** only (not a live target store) |
 | `modules/security/files/security/accepted-risks.md` | `security-assets/accepted-risks.md` | `AR-XXX` template and conventions |

@@ -25,6 +25,7 @@ repo-kit tree (upload/install packaging comes later).
 | Source path | Destination | Notes |
 |-------------|-------------|-------|
 | `modules/security/files/security/findings.schema.json` | `security-assets/findings.schema.json` | Canonical findings schema; not modified by hermesVPS |
+| `modules/security/files/security/weakness-classes.md` | `security-assets/weakness-classes.md` | Canonical weakness-class catalog; byte copy, not a second authoring source |
 
 ## Newly written tooling and documentation
 

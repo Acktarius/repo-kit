@@ -8,9 +8,23 @@ alwaysApply: true
 When asked to review for security:
 
 - review only the requested diff, branch, files, or approved plan scope;
+- read `security/weakness-classes.md` and apply its coverage contract in the
+  review narrative, with one row for every class;
+- if that file is missing, unreadable, or has no class entries, name the path
+  and stop. Do not treat the review as complete or any class as covered;
 - report only valid findings supported by code or configuration evidence;
 - include ID, title, severity, confidence, files, exploit path, and remediation;
+- a supported finding also identifies a reachable entry point or trust
+  boundary, the flow or security decision, the sensitive operation, and the
+  absent or ineffective control. Leave anything short of that unresolved.
+  Do not report it as a valid finding;
 - check `security/findings-reviewed.json` and `security/accepted-risks.md`;
 - do not speculate, duplicate records, or invent impact.
 
+Coverage statuses (`covered`, `not_applicable`, `not_reviewed`) come only from
+`security/weakness-classes.md`. They record source-review coverage. They are
+not finding statuses and they are not scanner results. `covered` means the
+class was reviewed, not that the code is secure.
+
 If no valid issues are found, say exactly: `no valid findings`.
+The coverage table does not replace that sentence.
