@@ -913,8 +913,9 @@ install_act_ext() {
 }
 
 # Copy Hermes phased review rules into target .repo-kit/hermes/review-rules/,
-# the canonical weakness-class catalog (byte copy from the security module),
-# task triggers into .repo-kit/hermes/tasks/, phase-command skills into
+# the canonical weakness-class catalog and surface-inventory contract
+# (byte copies from the security module), task triggers into
+# .repo-kit/hermes/tasks/, phase-command skills into
 # .repo-kit/hermes/skills/, the hermes-review.sh launcher, seed an empty
 # .repo-kit/hermes/reports/ directory, and hook ~/.bashrc to the kit's
 # .bashrc_hermes (one hook for all targets).
@@ -960,10 +961,15 @@ install_hermes_ext() {
     _copy_file "${readme_src}" "${dest_dir}/README.md"
   fi
 
-  local catalog_src="${MODULES_DIR}/security/files/security/weakness-classes.md"
-  [[ -f "${catalog_src}" ]] || die "canonical weakness-class catalog missing at ${catalog_src}"
-  echo "  copying weakness-class catalog to .repo-kit/hermes/review-rules/..."
-  _copy_file "${catalog_src}" "${dest_dir}/weakness-classes.md"
+  local policy_src
+  for policy_src in \
+    "${MODULES_DIR}/security/files/security/weakness-classes.md" \
+    "${MODULES_DIR}/security/files/security/surface-inventory.md"
+  do
+    [[ -f "${policy_src}" ]] || die "canonical review policy missing at ${policy_src}"
+    echo "  copying $(basename "${policy_src}") to .repo-kit/hermes/review-rules/..."
+    _copy_file "${policy_src}" "${dest_dir}/$(basename "${policy_src}")"
+  done
 
   echo "  copying tasks to .repo-kit/hermes/tasks/..."
   shopt -s nullglob

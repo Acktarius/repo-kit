@@ -10,6 +10,8 @@ SCHEMA_SRC="${ROOT}/modules/security/files/security/findings.schema.json"
 SCHEMA_DST="${EXT}/security-assets/findings.schema.json"
 CATALOG_SRC="${ROOT}/modules/security/files/security/weakness-classes.md"
 CATALOG_DST="${EXT}/security-assets/weakness-classes.md"
+INVENTORY_SRC="${ROOT}/modules/security/files/security/surface-inventory.md"
+INVENTORY_DST="${EXT}/security-assets/surface-inventory.md"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
@@ -56,6 +58,12 @@ if cmp -s "${CATALOG_SRC}" "${CATALOG_DST}"; then
   ok "weakness-classes.md is an exact copy of the canonical catalog"
 else
   bad "weakness-classes.md differs from canonical source"
+fi
+
+if cmp -s "${INVENTORY_SRC}" "${INVENTORY_DST}"; then
+  ok "surface-inventory.md is an exact copy of the canonical contract"
+else
+  bad "surface-inventory.md differs from canonical source"
 fi
 
 if grep -RIn '/home/acktarius' "${EXT}" >/dev/null 2>&1; then

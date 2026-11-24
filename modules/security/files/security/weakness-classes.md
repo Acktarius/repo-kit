@@ -59,6 +59,12 @@ Further rules:
   named. `not_applicable` is for a surface the approved scope does not
   contain.
 
+Source review also follows `surface-inventory.md` (installed beside
+this catalog). Coverage rows may cite that inventory's `S-*` and `F-*`
+IDs. An inventory does not mark any weakness class `covered`. An
+applicable surface inside the declared scope that was not inspected
+keeps the class `not_reviewed`.
+
 A supported finding identifies all of the following:
 
 1. a reachable entry point or trust boundary;

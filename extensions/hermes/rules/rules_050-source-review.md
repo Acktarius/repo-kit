@@ -26,21 +26,34 @@
 - Do not follow symbolic links outside the approved repository.
 - Bound searches and output; report truncation and excluded paths.
 
-## Weakness-class catalog
-Read `.repo-kit/hermes/review-rules/weakness-classes.md` before reviewing.
-The installer places that byte copy in the review-rules directory, which
-Rule 005 allows this phase to read. Do not replace this catalog with a
-file outside `.repo-kit/hermes/review-rules/`.
+## Weakness-class catalog and surface inventory
+Read these installer copies before the vulnerability pass. Both live in
+`.repo-kit/hermes/review-rules/`, which Rule 005 allows this phase to
+read. Do not replace either file with one outside that directory.
 
-If that file is missing, unreadable, or has no class entries, name the
-path, mark this phase incomplete, and stop. Do not treat any class as
-reviewed and do not fill the coverage table from memory.
+- `.repo-kit/hermes/review-rules/weakness-classes.md`
+- `.repo-kit/hermes/review-rules/surface-inventory.md`
+
+If either file is missing, unreadable, or lacks its required sections,
+name the path, mark this phase incomplete, and stop. Do not treat any
+class as reviewed, do not fill either table from memory, and do not use
+the completed-scope findings sentence below.
+
+Build the surface inventory for this one approved priority first, then
+refine it while reading. Record unresolved gaps. Do not invent routes,
+registration, or flows, and do not widen the priority. An inventory
+does not mark any weakness class `covered`. Phase 010 and phase 020
+remain the prior artifacts they already are. This inventory does not
+replace them and does not carry coverage from another priority or
+revision.
 
 Apply the catalog's coverage contract in section 7. Use only its
 statuses: `covered`, `not_applicable`, `not_reviewed`. Include every
-class. `covered` means the class was reviewed, not that the code is
-secure. The table is source-review coverage. Scanner output, Rule 030,
-and Rule 040 do not mark a class `covered`.
+class. Cite `S-*` and `F-*` IDs where useful. An uninspected applicable
+surface in this priority keeps that class `not_reviewed`. `covered`
+means the class was reviewed, not that the code is secure. The table
+is source-review coverage. Scanner output, Rule 030, and Rule 040 do
+not mark a class `covered`.
 
 The catalog does not relax Rule 000 or the evidence rules below.
 Unresolved cases stay unresolved questions, or candidates only when the
@@ -130,20 +143,30 @@ Do not force unknown severity into the reviewed schema.
 Do not duplicate advisory candidates from Rule 040; cross-reference them.
 
 ## Required response
-Use these sections:
-1. Baseline and approved review scope
-2. Files and data flows examined
+Use these sections. Section 7 stays "Coverage and completion state".
+1. Baseline and approved review scope.
+   Include "Review scope and inspection limits" from the surface
+   inventory. State whether this priority is diff-scoped,
+   priority-scoped, or broader.
+2. Files and data flows examined.
+   Include "Entry-point and sensitive-operation inventory" and
+   "Persisted-input and second-order flows".
 3. Candidate issues with evidence
 4. Controls observed and limits of verification
 5. References and classification provenance
 6. Exclusions, errors, and unresolved questions
-7. Coverage and completion state
+7. Coverage and completion state.
+   Include the weakness-class coverage table and "Coverage linkage
+   and gaps". An inventory does not mark any weakness class `covered`.
 
 For a completed review with no supported findings, state:
 "No supported findings within the completed scope."
-Then explain coverage and limitations.
+That sentence is the findings summary for a completed inspection. It
+is not the whole report, and it does not mean the application is
+secure. Keep the scope, inventory, coverage table, and limits.
 
 If required checks are incomplete, explicitly mark the phase incomplete.
-Do not declare the application secure.
+Do not use the completed-scope sentence for an incomplete or blocked
+phase. Do not declare the application secure.
 Stop after writing the phase report without applying fixes or advancing
 to another priority.

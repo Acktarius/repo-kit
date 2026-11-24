@@ -35,6 +35,7 @@ expected=(
   "review-rules/README.md"
   "review-rules/rules_005-report-output.md"
   "review-rules/weakness-classes.md"
+  "review-rules/surface-inventory.md"
   "reports/.gitkeep"
   "hermes-review.sh"
 )
@@ -52,6 +53,11 @@ done
 if ! cmp -s "${ROOT}/modules/security/files/security/weakness-classes.md" \
   "${HERMES}/review-rules/weakness-classes.md"; then
   echo "FAIL: installed weakness-classes.md is not the canonical catalog" >&2
+  fail=1
+fi
+if ! cmp -s "${ROOT}/modules/security/files/security/surface-inventory.md" \
+  "${HERMES}/review-rules/surface-inventory.md"; then
+  echo "FAIL: installed surface-inventory.md is not the canonical contract" >&2
   fail=1
 fi
 if [[ ! -x "${HERMES}/hermes-review.sh" ]]; then

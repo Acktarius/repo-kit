@@ -8,10 +8,18 @@ alwaysApply: true
 When asked to review for security:
 
 - review only the requested diff, branch, files, or approved plan scope;
-- read `security/weakness-classes.md` and apply its coverage contract in the
-  review narrative, with one row for every class;
-- if that file is missing, unreadable, or has no class entries, name the path
-  and stop. Do not treat the review as complete or any class as covered;
+- read `security/weakness-classes.md` and `security/surface-inventory.md`
+  before the vulnerability pass;
+- if either file is missing, unreadable, or lacks its required sections,
+  name the path, state that the review is blocked or incomplete, and stop.
+  Do not treat any class as covered and do not fill either table from memory;
+- build the surface inventory for that approved scope first, then refine it
+  as reading reveals in-scope relationships. Record unresolved gaps. Do not
+  invent routes, registration, or flows. Do not widen the scope;
+- An inventory does not mark any weakness class `covered`.
+- apply the weakness-class coverage contract in the review narrative, with
+  one row for every class. Cite inventory IDs where useful. An uninspected
+  applicable surface in the approved scope keeps that class `not_reviewed`;
 - report only valid findings supported by code or configuration evidence;
 - include ID, title, severity, confidence, files, exploit path, and remediation;
 - a supported finding also identifies a reachable entry point or trust
@@ -26,5 +34,17 @@ Coverage statuses (`covered`, `not_applicable`, `not_reviewed`) come only from
 not finding statuses and they are not scanner results. `covered` means the
 class was reviewed, not that the code is secure.
 
-If no valid issues are found, say exactly: `no valid findings`.
-The coverage table does not replace that sentence.
+Findings summary:
+
+If the approved scope was inspected and no valid issue was found, the
+findings summary is a standalone line. Say exactly: `no valid findings`.
+
+That line is not the entire response. It does not mean the application
+is secure. Keep the declared scope, the inventory, the coverage table, and
+the completion limits in the same response. A scoped review that inspected
+code but still has limits may use the line only together with that scope,
+coverage, and those completion limits.
+
+A review that stops before substantive inspection because required policy
+inputs are unavailable reports the blocked or incomplete condition. Do not
+use `no valid findings` as that outcome.

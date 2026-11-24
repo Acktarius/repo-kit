@@ -10,6 +10,11 @@
 2. `rules/rules_000-safety-and-scope.md`
 3. `rules/rules_005-report-output.md`
 4. `rules/rules_050-source-review.md`
+5. `security-assets/weakness-classes.md`
+6. `security-assets/surface-inventory.md`
+
+If either security-asset file cannot be read, set completion state to
+`incomplete`, name the path, and stop.
 
 ## 2. Target
 
@@ -26,6 +31,10 @@ write report with `blocked`, stop.
 Perform only Rule 050, for **one review priority**: the `<priority_area>`
 named in the trigger message (`--trigger-input`).  It must be one of the
 prioritized review areas from the phase-020 report.
+
+Write the surface inventory for that priority before the vulnerability
+pass.  Do not inventory the rest of the repository.  Do not carry coverage
+forward from a different priority or revision.
 
 Read-only inspection by default.  Run a scanner only if the human approved
 that exact action in the trigger message.

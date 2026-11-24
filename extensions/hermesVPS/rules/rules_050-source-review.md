@@ -33,22 +33,39 @@ trigger message.  Do not execute target code, apply fixes, or modify files.
 One report per priority.  A separate invocation is required for each
 additional priority.
 
-## Weakness-class catalog
+## Weakness-class catalog and surface inventory
 
-Read `security-assets/weakness-classes.md` under the policy prefix.  Phase 050
-requires that file; the runner lists its absolute path with the other policy
-inputs and refuses to start when it is missing.  Do not substitute a catalog
-from the source repository or from memory.
+Read these files under the policy prefix.  Phase 050 requires both.  The
+runner lists their absolute paths with the other policy inputs and refuses
+to start when either is missing.  Do not substitute copies from the source
+repository or from memory.
 
-If that file is missing, unreadable, or has no class entries, name the path,
-set completion state to `incomplete`, and stop.  Do not treat any class as
-reviewed and do not fill the coverage table from memory.
+- `security-assets/weakness-classes.md`
+- `security-assets/surface-inventory.md`
 
-Apply the catalog's coverage contract in **Coverage limitations**.  Use only
-its statuses: `covered`, `not_applicable`, `not_reviewed`.  Include every
-class.  `covered` means the class was reviewed in this source review, not
-that the code is secure.  The table is source-review coverage.  Scanner
-output and phase 030 or 040 results do not mark a class `covered`.
+If either file is missing, unreadable, or lacks its required sections, name
+the path, set completion state to `incomplete`, and stop.  Do not treat any
+class as reviewed and do not fill either table from memory.
+
+Inventory only this invocation's approved priority and the supporting
+context phases 010 and 020 already selected.  Do not build a
+whole-repository inventory.  Do not carry coverage from another priority,
+invocation, or revision.  Prior artifacts are usable only when Rule 005
+already selected them; name their IDs, hashes, and limits.
+
+Build that bounded inventory before the vulnerability pass, then refine it
+as reading reveals in-scope relationships.  Record unresolved gaps.  Do not
+invent routes, registration, or flows.  An inventory does not mark any
+weakness class `covered`.
+
+Apply the catalog's coverage contract in **Coverage limitations**, including
+"Coverage linkage and gaps".  Use only its statuses: `covered`,
+`not_applicable`, `not_reviewed`.  Include every class.  Cite `S-*` and
+`F-*` IDs where useful.  An uninspected applicable surface in this priority
+keeps that class `not_reviewed`.  `covered` means the class was reviewed in
+this source review, not that the code is secure.  The table is source-review
+coverage.  Scanner output and phase 030 or 040 results do not mark a class
+`covered`.
 
 The catalog does not relax the evidence contract below or Rule 000.
 Unresolved cases stay candidates only when that evidence contract is already
@@ -65,14 +82,22 @@ decision, the sensitive operation, and the absent or ineffective control.
 
 ## Report sections (required)
 
+Keep the identity header and the completion-state line unchanged.
+`State:` in the body must still agree with that header.
+
 1. **Run identity**
 2. **Prior artifacts** — selected IDs and SHA-256 status
-3. **Review priority** — scope and boundaries for this invocation
-4. **Findings** — candidate issues with file, line, excerpt, severity estimate,
-   confidence, and attack path description; labeled as candidates
-5. **Unexecuted checks** — scanner commands that were not run
-6. **Coverage limitations** — what was not inspected
-7. **Completion state** and next human gate
+3. **Review priority** — this invocation's priority only
+4. **Review scope and inspection limits** — diff-scoped, priority-scoped,
+   or broader; inspected paths, exclusions, truncation, and inaccessible files
+5. **Entry-point and sensitive-operation inventory**
+6. **Persisted-input and second-order flows**
+7. **Candidate issues** — file, line, excerpt, severity estimate, confidence,
+   and attack path description; labeled as candidates
+8. **Unexecuted checks** — scanner commands that were not run
+9. **Coverage limitations** — weakness-class coverage table and coverage
+   linkage and gaps.  An inventory does not mark any weakness class `covered`.
+10. **Completion state** and next human gate
 
 ## Completion
 

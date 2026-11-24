@@ -9,8 +9,12 @@
 2. `.repo-kit/hermes/review-rules/rules_000-safety-and-scope.md`
 3. `.repo-kit/hermes/review-rules/rules_005-report-output.md`
 4. `.repo-kit/hermes/review-rules/rules_050-source-review.md`
+5. `.repo-kit/hermes/review-rules/weakness-classes.md`
+6. `.repo-kit/hermes/review-rules/surface-inventory.md`
 
 If any of these files is missing, report the missing path and stop.
+Do not write a completed review and do not use
+"No supported findings within the completed scope."
 
 ## 2. Target
 The approved target is the repository root where Hermes was started.
@@ -33,6 +37,10 @@ difference and stop.
 Perform only Rule 050, for one review priority:
 - the priority named in the trigger message; otherwise
 - the first prioritized review area in the threat-model report.
+
+Write the surface inventory for that priority before the vulnerability
+pass, and refine it only with in-scope relationships. Do not inventory
+the rest of the repository to make the tables look complete.
 
 Read-only inspection by default. Run a scanner only if the human
 approved that exact action in the trigger message.

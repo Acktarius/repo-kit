@@ -13,5 +13,8 @@ Review only the first priority area in the approved plan. Identify real
 medium, high, or critical issues supported by evidence. For each valid issue,
 propose an object matching `security/findings.schema.json`.
 
-Do not modify code or security records. If nothing valid is found, say exactly:
-`no valid findings for Priority 1`.
+Do not modify code or security records. If that priority was inspected and
+nothing valid is found, say exactly: `no valid findings for Priority 1`.
+That line is only the findings summary. It does not mean the priority is
+secure. If `.cursor/rules/30-security-reviewer.mdc` stops the review as
+blocked or incomplete, report that condition and do not use this line.

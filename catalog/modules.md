@@ -54,7 +54,7 @@ Human-readable mirror of `modules/*/manifest.sh`.
   - `.cursor/skills/security-hardening/SKILL.md`
   - `.cursor/rules/20-security-planner.mdc`, `30-security-reviewer.mdc`, and `40-security-triage.mdc`
   - `.github/workflows/security-check.yml`
-  - `security/` threat-model, weakness-class catalog, findings, accepted-risk, schema, and template workflow
+  - `security/` threat-model, weakness-class catalog, surface inventory, findings, accepted-risk, schema, and template workflow
 - **Preserves:** `security/findings-reviewed.json`, `security/accepted-risks.md`, `security/threat-model.md`
   (never overwritten by `init`/`sync`, even with `--force`; recreated when missing)
 
