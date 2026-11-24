@@ -8,10 +8,24 @@ of finding objects with encoding/json. This program does not run Gitleaks.
 The report path and the handoff path are the caller's explicit selections.
 Paths named inside the report are not opened. Caller-supplied metadata is
 stored as a claim: it is not an approval and it is not a verified version.
-An empty array does not show that a scan completed.
+An empty array does not show that a scan completed. Exit 0 is a normalized
+handoff, not a successful scan.
 
-These file checks are not a sandbox against a malicious same-user process
-or a hostile replacement of an ancestor directory.
+JSON numbers use ASCII digits 0-9 only. A non-ASCII digit is malformed
+JSON, including inside a field that is not copied.
+
+Supported platform is POSIX with O_NOFOLLOW, O_NONBLOCK, O_CLOEXEC, and
+O_EXCL. If one of those primitives is missing, the program exits 3 before
+opening the input. Exit 2 is usage. Exit 3 is an input or output failure.
+Exit 4 is malformed input. Exit 5 is an unsupported format. Exit 6 is a
+limit. Diagnostics are fixed phrases and do not include paths, OS text,
+report values, or caller-supplied claims.
+
+A new handoff is created exclusively. If finalization fails, only that new
+file is removed. When removal itself fails, the result is still exit 3
+("output cleanup failed") and a partial file may remain. Cleanup is not
+guaranteed against filesystem failure, process termination, or a malicious
+same-user race. These checks do not sandbox a replaced ancestor directory.
 """
 
 from __future__ import annotations
@@ -233,7 +247,7 @@ class _Parser:
         if ch == "n":
             self._literal("null")
             return None
-        if ch == "-" or ch.isdigit():
+        if ch == "-" or _ascii_digit(ch):
             return self._number(keep=keep)
         raise HandoffError(EXIT_MALFORMED, "malformed JSON")
 
@@ -247,31 +261,31 @@ class _Parser:
         s = self.s
         if self._peek("-"):
             self.i += 1
-        if self.i >= self.n or not s[self.i].isdigit():
+        if self.i >= self.n or not _ascii_digit(s[self.i]):
             raise HandoffError(EXIT_MALFORMED, "malformed JSON")
         if s[self.i] == "0":
             self.i += 1
-            if self.i < self.n and s[self.i].isdigit():
+            if self.i < self.n and _ascii_digit(s[self.i]):
                 raise HandoffError(EXIT_MALFORMED, "malformed JSON")
         else:
-            while self.i < self.n and s[self.i].isdigit():
+            while self.i < self.n and _ascii_digit(s[self.i]):
                 self.i += 1
         integer = True
         if self.i < self.n and s[self.i] == ".":
             integer = False
             self.i += 1
-            if self.i >= self.n or not s[self.i].isdigit():
+            if self.i >= self.n or not _ascii_digit(s[self.i]):
                 raise HandoffError(EXIT_MALFORMED, "malformed JSON")
-            while self.i < self.n and s[self.i].isdigit():
+            while self.i < self.n and _ascii_digit(s[self.i]):
                 self.i += 1
         if self.i < self.n and s[self.i] in "eE":
             integer = False
             self.i += 1
             if self.i < self.n and s[self.i] in "+-":
                 self.i += 1
-            if self.i >= self.n or not s[self.i].isdigit():
+            if self.i >= self.n or not _ascii_digit(s[self.i]):
                 raise HandoffError(EXIT_MALFORMED, "malformed JSON")
-            while self.i < self.n and s[self.i].isdigit():
+            while self.i < self.n and _ascii_digit(s[self.i]):
                 self.i += 1
         if self.i - start > MAX_NUMBER_LENGTH:
             raise HandoffError(EXIT_LIMIT, "limit exceeded: value")
@@ -365,83 +379,136 @@ def _check_id(value: str) -> str:
     return value
 
 
+def _ascii_digit(ch: str) -> bool:
+    return "0" <= ch <= "9"
+
+
+def _require_io_primitives() -> None:
+    names = ("O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC", "O_EXCL")
+    if os.name != "posix" or any(not hasattr(os, name) for name in names):
+        raise HandoffError(EXIT_IO, "required file primitives are unavailable")
+
+
 def _read_input(path: str) -> tuple[bytes, os.stat_result]:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_NONBLOCK"):
-        flags |= os.O_NONBLOCK
+    _require_io_primitives()
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
         fd = os.open(path, flags)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise HandoffError(EXIT_IO, "input is a symlink") from None
         raise HandoffError(EXIT_IO, "input could not be read") from None
+    primary: HandoffError | None = None
+    data = b""
+    info: os.stat_result | None = None
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise HandoffError(EXIT_IO, "input is not a regular file")
-        chunks: list[bytes] = []
-        total = 0
-        cap = MAX_INPUT_BYTES + 1
-        while total < cap:
-            chunk = os.read(fd, min(65536, cap - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-        if total > MAX_INPUT_BYTES:
-            raise HandoffError(EXIT_LIMIT, "limit exceeded: input bytes")
-        return b"".join(chunks), info
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                primary = HandoffError(EXIT_IO, "input is not a regular file")
+            else:
+                chunks: list[bytes] = []
+                total = 0
+                cap = MAX_INPUT_BYTES + 1
+                while total < cap:
+                    chunk = os.read(fd, min(65536, cap - total))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                if total > MAX_INPUT_BYTES:
+                    primary = HandoffError(EXIT_LIMIT, "limit exceeded: input bytes")
+                else:
+                    data = b"".join(chunks)
+        except OSError:
+            primary = HandoffError(EXIT_IO, "input could not be read")
     finally:
-        os.close(fd)
+        close_error: HandoffError | None = None
+        try:
+            os.close(fd)
+        except OSError:
+            close_error = HandoffError(EXIT_IO, "input could not be read")
+        if primary is None:
+            primary = close_error
+    if primary is not None:
+        raise primary
+    if info is None:
+        raise HandoffError(EXIT_IO, "input could not be read")
+    return data, info
+
+
+def _remove_new_output(path: str) -> HandoffError | None:
+    try:
+        os.unlink(path)
+    except OSError:
+        return HandoffError(EXIT_IO, "output cleanup failed")
+    return None
 
 
 def _write_output(path: str, payload: bytes, source: os.stat_result, source_path: str) -> None:
-    if os.path.abspath(path) == os.path.abspath(source_path):
-        raise HandoffError(EXIT_IO, "input and output alias")
+    _require_io_primitives()
+    try:
+        if os.path.abspath(path) == os.path.abspath(source_path):
+            raise HandoffError(EXIT_IO, "input and output alias")
+    except HandoffError:
+        raise
+    except OSError:
+        raise HandoffError(EXIT_IO, "output could not be created") from None
     parent = os.path.dirname(path) or "."
     try:
         parent_info = os.stat(parent)
-    except OSError:
-        raise HandoffError(EXIT_IO, "output parent directory is missing") from None
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            raise HandoffError(EXIT_IO, "output parent directory is missing") from None
+        raise HandoffError(EXIT_IO, "output could not be created") from None
     if not stat.S_ISDIR(parent_info.st_mode):
         raise HandoffError(EXIT_IO, "output parent directory is missing")
     try:
         existing = os.lstat(path)
     except FileNotFoundError:
         existing = None
+    except OSError:
+        raise HandoffError(EXIT_IO, "output could not be created") from None
     if existing is not None:
         if existing.st_dev == source.st_dev and existing.st_ino == source.st_ino:
             raise HandoffError(EXIT_IO, "input and output alias")
         raise HandoffError(EXIT_IO, "output already exists")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
     try:
         fd = os.open(path, flags, 0o600)
     except OSError as exc:
         if exc.errno == errno.EEXIST:
             raise HandoffError(EXIT_IO, "output already exists") from None
         raise HandoffError(EXIT_IO, "output could not be created") from None
-    committed = False
+    primary: HandoffError | None = None
     try:
-        os.fchmod(fd, 0o600)
-        view = memoryview(payload)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                raise HandoffError(EXIT_IO, "output could not be created")
-            view = view[written:]
-        os.fsync(fd)
-        committed = True
+        try:
+            os.fchmod(fd, 0o600)
+            view = memoryview(payload)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    primary = HandoffError(EXIT_IO, "output could not be finalized")
+                    break
+                view = view[written:]
+            if primary is None:
+                os.fsync(fd)
+        except OSError:
+            primary = HandoffError(EXIT_IO, "output could not be finalized")
     finally:
-        os.close(fd)
-        if not committed:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        close_error: HandoffError | None = None
+        try:
+            os.close(fd)
+        except OSError:
+            close_error = HandoffError(EXIT_IO, "output could not be finalized")
+        if primary is None:
+            primary = close_error
+    if primary is None:
+        return
+    cleanup = _remove_new_output(path)
+    if cleanup is not None:
+        raise cleanup
+    raise primary
 
 
 def _location(value: object) -> tuple[dict[str, str], bool]:
@@ -555,6 +622,8 @@ def build_handoff(raw: bytes, claims: dict[str, str]) -> bytes:
             "Caller-supplied metadata is not an approval or a verified version.",
             "No WC-* mapping, severity, entrySink, or reviewed status is assigned.",
             "File checks do not sandbox a malicious same-user process or a replaced ancestor directory.",
+            "If removal of a new handoff fails, a partial file may remain. Cleanup is not guaranteed against filesystem failure, process termination, or a same-user race.",
+            "A normalized handoff is not a completed scan.",
         ],
         "leads": leads,
     }

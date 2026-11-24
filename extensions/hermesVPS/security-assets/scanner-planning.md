@@ -216,6 +216,14 @@ python3 security/gitleaks_handoff.py \
   --scanner-outcome <completed|error|timeout|unsupported|truncated|skipped|unknown>
 ```
 
+The normalizer requires POSIX `O_NOFOLLOW`, `O_NONBLOCK`, `O_CLOEXEC`, and
+`O_EXCL`, and it stops before opening the input when one is missing. JSON
+numbers are ASCII digits `0-9` only. Exit 0 means the handoff was written.
+It does not mean a scan completed. Exit 3 is an input or output failure.
+If a new handoff cannot be removed after a failed write, a partial file
+may remain. Removal is not guaranteed against filesystem failure, process
+termination, or a same-user race.
+
 ## Examples
 
 The four rows below are synthetic. They were not executed. Placeholders

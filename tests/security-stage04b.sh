@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 - "${ROOT}" <<'PY'
-import importlib.util, json, os, stat, subprocess, sys, tempfile
+import atexit, contextlib, importlib.util, io, json, os, stat, subprocess, sys, tempfile
 
 root = sys.argv[1]
 util = os.path.join(root, "modules", "security", "files", "security", "gitleaks_handoff.py")
@@ -61,9 +61,14 @@ base = [
     "--scanner-outcome", "unknown",
 ]
 
+temps = []
+atexit.register(lambda: [holder.cleanup() for holder in temps])
+
 def run(report, outcome="unknown", check="P-1", out_name="handoff.json",
         input_path=None, output_path=None, extra=None, prewrite=None):
-    tmp = tempfile.mkdtemp(prefix="stage04b-")
+    holder = tempfile.TemporaryDirectory(prefix="stage04b-")
+    temps.append(holder)
+    tmp = holder.name
     findings = os.path.join(tmp, "findings-reviewed.json")
     with open(findings, "w", encoding="utf-8") as fh:
         fh.write('{"findings":[]}\n')
@@ -268,7 +273,9 @@ else:
         ok("unsafe locations stay on the lead without the raw path")
 
 # Symlink, fifo, existing output, alias, missing parent.
-tmp = tempfile.mkdtemp(prefix="stage04b-fs-")
+fs_holder = tempfile.TemporaryDirectory(prefix="stage04b-fs-")
+temps.append(fs_holder)
+tmp = fs_holder.name
 report_path = os.path.join(tmp, "report.json")
 with open(report_path, "w", encoding="utf-8") as fh:
     fh.write("[]\n")
@@ -345,23 +352,262 @@ if proc.returncode != mod.EXIT_MALFORMED or os.path.exists(dst):
 else:
     ok("a zero-byte file is malformed rather than an empty report")
 
-partial = os.path.join(tmp, "partial.json")
-info = os.stat(report_path)
-original_write = os.write
-def fail_write(fd, data):
-    raise OSError("write failed")
-os.write = fail_write
-try:
+def expect_malformed(doc, label):
+    proc, _src, dst, *_ = run(doc)
+    err = proc.stderr.decode("utf-8", "replace")
+    if (proc.returncode != mod.EXIT_MALFORMED or "malformed JSON" not in err
+            or "Traceback" in err or os.path.exists(dst) or MARKER.encode() in proc.stdout + proc.stderr):
+        bad(f"{label}: {proc.returncode} {proc.stderr!r}")
+    else:
+        ok(label)
+
+indic = "\u0661"
+super_two = "\u00b2"
+expect_malformed('[{"RuleID":"rule-a","File":"a.py","StartLine":%s,"Secret":"%s"}]' % (indic, MARKER),
+                  "Arabic-Indic digit in a retained number is malformed")
+expect_malformed('[{"RuleID":"rule-a","File":"a.py","StartLine":%s,"Secret":"%s"}]' % (super_two, MARKER),
+                  "superscript digit in a retained number is malformed")
+expect_malformed('[{"RuleID":"rule-a","File":"a.py","Entropy":%s,"Secret":"%s"}]' % (indic, MARKER),
+                  "Arabic-Indic digit in a discarded number is malformed")
+expect_malformed('[{"RuleID":"rule-a","File":"a.py","Entropy":%s,"Secret":"%s"}]' % (super_two, MARKER),
+                  "superscript digit in a discarded number is malformed")
+expect_malformed('[{"RuleID":"rule-a","File":"a.py","Entropy":1.%s,"Secret":"%s"}]' % (indic, MARKER),
+                  "non-ASCII fraction digit is malformed")
+expect_malformed('[{"RuleID":"rule-a","File":"a.py","Entropy":1e%s,"Secret":"%s"}]' % (super_two, MARKER),
+                  "non-ASCII exponent digit is malformed")
+for doc, label in (
+    ('[{"RuleID":"rule-a","File":"a.py","Entropy":01,"Secret":"%s"}]' % MARKER, "leading zero is malformed"),
+    ('[{"RuleID":"rule-a","File":"a.py","Entropy":1.,"Secret":"%s"}]' % MARKER, "missing fraction digit is malformed"),
+    ('[{"RuleID":"rule-a","File":"a.py","Entropy":1e,"Secret":"%s"}]' % MARKER, "missing exponent digit is malformed"),
+    ('[{"RuleID":"rule-a","File":"a.py","Entropy":1e+,"Secret":"%s"}]' % MARKER, "missing signed exponent digit is malformed"),
+):
+    expect_malformed(doc, label)
+
+proc, _src, dst, *_ = run(
+    '[{"RuleID":"rule-a","File":"pkg/a.py","StartLine":12,"EndLine":12,"Entropy":1.5,"Scale":1e2,"Neg":-3}]')
+if proc.returncode != 0 or "Traceback" in proc.stderr.decode():
+    bad(f"ASCII numbers: {proc.returncode} {proc.stderr!r}")
+else:
+    data = json.loads(open(dst, encoding="utf-8").read())
+    if data["leads"][0].get("lineRange") != {"startLine": 12, "endLine": 12}:
+        bad("ASCII integer line range was not kept")
+    else:
+        ok("ASCII integer, fraction, and exponent syntax is accepted")
+
+proc, _src, dst, *_ = run('[{"RuleID":"rule-a","File":"pkg/a.py","StartLine":-1,"EndLine":2}]')
+if proc.returncode != 0 or "lineRange" in json.loads(open(dst, encoding="utf-8").read())["leads"][0]:
+    bad("negative line was not omitted")
+else:
+    ok("a negative line number is omitted")
+
+proc, _src, dst, *_ = run('[{"RuleID":"rule-a","File":"pkg/a.py","StartLine":1000001,"EndLine":1000001}]')
+if proc.returncode != 0 or "lineRange" in json.loads(open(dst, encoding="utf-8").read())["leads"][0]:
+    bad("out-of-range line was not omitted")
+else:
+    ok("an out-of-range line number is omitted")
+
+proc, _src, dst, *_ = run('[{"RuleID":"rule%s%s","File":"pkg/a.py"}]' % (super_two, indic))
+if proc.returncode != 0:
+    bad(f"digits in a string: {proc.returncode} {proc.stderr!r}")
+else:
+    rule = json.loads(open(dst, encoding="utf-8").read())["leads"][0]["ruleId"]
+    if rule != "rule" + super_two + indic:
+        bad(f"string digits were not kept: {rule!r}")
+    else:
+        ok("digit characters inside a string stay string content")
+
+def reject_const(_name):
+    raise ValueError("nonstandard number")
+
+accepted_docs = [
+    "[]",
+    '[{"RuleID":"a","File":"a.py"}]',
+    '[{"RuleID":"say \\"hi\\"","File":"a.py","Note":"back\\\\slash"}]',
+    '[{"RuleID":"caf\\u00e9","File":"a.py"}]',
+    '[{"RuleID":"\\uD83D\\uDE00","File":"a.py"}]',
+    '[{"RuleID":"a","File":"a.py","Entropy":1.5e+2,"Flag":true,"Empty":null,"No":false}]',
+    '[{"RuleID":"a","File":"a.py","StartLine":10,"EndLine":12,"Entropy":0}]',
+    " [ ] ",
+]
+oracle_ok = True
+for doc in accepted_docs:
     try:
-        mod._write_output(partial, b"{}\n", info, report_path)
-        bad("partial write returned")
-    except OSError:
-        if os.path.exists(partial):
-            bad("partial handoff remained after a failed write")
-        else:
-            ok("a failed write removes the partial handoff")
+        json.loads(doc, parse_constant=reject_const)
+    except (json.JSONDecodeError, ValueError) as exc:
+        bad(f"strict JSON oracle rejected a fixture: {exc}")
+        oracle_ok = False
+        break
+    try:
+        mod._Parser(doc).report()
+    except mod.HandoffError as exc:
+        bad(f"normalizer rejected strict JSON: {exc.message}")
+        oracle_ok = False
+        break
+if oracle_ok:
+    ok("documents the normalizer accepts are strict JSON")
+
+for doc in (
+    "[]x",
+    '[{"Entropy":01}]',
+    '[{"Entropy":1.}]',
+    '[{"Entropy":1e}]',
+    '[{"Entropy":1e+}]',
+    '[{"Entropy":NaN}]',
+    '[{"Entropy":Infinity}]',
+    '[{"Entropy":-}]',
+    '[{"A":١}]',
+):
+    try:
+        mod._Parser(doc).report()
+        bad(f"parser accepted {doc!r}")
+        break
+    except mod.HandoffError as exc:
+        if exc.code != mod.EXIT_MALFORMED or exc.message != "malformed JSON":
+            bad(f"parser diagnostic for {doc!r}: {exc.code} {exc.message}")
+            break
+else:
+    ok("syntax corpus rejects malformed and nonstandard numbers")
+
+def capture_main(argv):
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = mod.main(argv)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+def fault_case(name, patches, message, output_remains=False, dest_bytes=None):
+    holder = tempfile.TemporaryDirectory(prefix="stage04b-fault-")
+    temps.append(holder)
+    src = os.path.join(holder.name, "report.json")
+    dst = os.path.join(holder.name, "handoff.json")
+    report = ('[{"RuleID":"rule-a","File":"pkg/a.py","Secret":"%s"}]\n' % MARKER).encode()
+    with open(src, "wb") as fh:
+        fh.write(report)
+    if dest_bytes is not None:
+        with open(dst, "wb") as fh:
+            fh.write(dest_bytes)
+    argv = [
+        "--input", src, "--output", dst, "--check-id", "P-1",
+        "--source-revision", "unknown", "--working-tree", "clean",
+        "--tool-version", "unknown", "--rules-identity", "unknown",
+        "--report-provenance", MARKER, "--scanner-outcome", "unknown",
+    ]
+    saved = {key: getattr(os, key) for key in patches}
+    try:
+        for key, fn in patches.items():
+            setattr(os, key, fn)
+        code, out, err = capture_main(argv)
+    finally:
+        for key, fn in saved.items():
+            setattr(os, key, fn)
+    noisy = MARKER in out or MARKER in err or "Traceback" in err
+    existed = dest_bytes is not None
+    if code != mod.EXIT_IO or message not in err or noisy:
+        bad(f"{name}: {code} {err!r}")
+    elif open(src, "rb").read() != report:
+        bad(f"{name}: report bytes changed")
+    elif existed and open(dst, "rb").read() != dest_bytes:
+        bad(f"{name}: existing destination changed")
+    elif (not existed) and output_remains != os.path.exists(dst):
+        bad(f"{name}: partial file state is {os.path.exists(dst)}")
+    else:
+        ok(name)
+
+real_write = os.write
+real_close = os.close
+def fail_read(_fd, _n):
+    raise OSError(MARKER)
+def fail_lstat(_path):
+    raise OSError(MARKER)
+def fail_fchmod(_fd, _mode):
+    raise OSError(MARKER)
+def fail_write(fd, data):
+    if data:
+        real_write(fd, bytes(data[:1]))
+    raise OSError(MARKER)
+def fail_fsync(_fd):
+    raise OSError(MARKER)
+closes = {"n": 0}
+def fail_output_close(fd):
+    closes["n"] += 1
+    if closes["n"] >= 2:
+        raise OSError(MARKER)
+    return real_close(fd)
+def fail_unlink(_path):
+    raise OSError(MARKER)
+
+fault_case("input read failure stays on the CLI boundary", {"read": fail_read},
+           "input could not be read")
+fault_case("destination inspection failure stays on the CLI boundary", {"lstat": fail_lstat},
+           "output could not be created", dest_bytes=b"keep\n")
+fault_case("permission failure stays on the CLI boundary", {"fchmod": fail_fchmod},
+           "output could not be finalized")
+fault_case("partial write is removed", {"write": fail_write},
+           "output could not be finalized")
+fault_case("fsync failure stays on the CLI boundary", {"fsync": fail_fsync},
+           "output could not be finalized")
+fault_case("output close failure stays on the CLI boundary", {"close": fail_output_close},
+           "output could not be finalized")
+fault_case("cleanup failure is not success", {"write": fail_write, "unlink": fail_unlink},
+           "output cleanup failed", output_remains=True)
+
+saved_flag = os.O_NOFOLLOW
+try:
+    del os.O_NOFOLLOW
+    holder = tempfile.TemporaryDirectory(prefix="stage04b-prim-")
+    temps.append(holder)
+    src = os.path.join(holder.name, "report.json")
+    dst = os.path.join(holder.name, "handoff.json")
+    report = b"[]\n"
+    with open(src, "wb") as fh:
+        fh.write(report)
+    code, out, err = capture_main([
+        "--input", src, "--output", dst, "--check-id", "P-1",
+        "--source-revision", "unknown", "--working-tree", "clean",
+        "--tool-version", "unknown", "--rules-identity", "unknown",
+        "--report-provenance", "synthetic-report", "--scanner-outcome", "unknown",
+    ])
+    if (code != mod.EXIT_IO or "required file primitives are unavailable" not in err
+            or os.path.exists(dst) or open(src, "rb").read() != report or "Traceback" in err):
+        bad(f"missing primitive: {code} {err!r}")
+    else:
+        ok("missing file primitives fail before opening input")
 finally:
-    os.write = original_write
+    os.O_NOFOLLOW = saved_flag
+
+install = tempfile.TemporaryDirectory(prefix="stage04b-install-")
+temps.append(install)
+home = os.path.join(install.name, "home")
+target = os.path.join(install.name, "target")
+os.makedirs(home)
+env = os.environ.copy()
+env["HOME"] = home
+installed = subprocess.run(
+    [os.path.join(root, "scripts", "init.sh"), target, "--security"],
+    cwd=root, env=env, capture_output=True, text=True, timeout=60)
+installed_util = os.path.join(target, "security", "gitleaks_handoff.py")
+findings = os.path.join(target, "security", "findings-reviewed.json")
+if installed.returncode != 0 or not os.path.isfile(installed_util):
+    bad(f"security install failed: {installed.stderr[-400:]}")
+elif open(installed_util, "rb").read() != open(util, "rb").read():
+    bad("installed normalizer differs from the canonical source")
+else:
+    before = open(findings, "rb").read()
+    src = os.path.join(install.name, "report.json")
+    dst = os.path.join(install.name, "handoff.json")
+    with open(src, "w", encoding="utf-8") as fh:
+        fh.write('[{"RuleID":"rule-a","File":"pkg/a.py","Secret":"%s"}]\n' % MARKER)
+    ran = subprocess.run(
+        [sys.executable, installed_util, "--input", src, "--output", dst,
+         "--check-id", "P-1", "--source-revision", "unknown", "--working-tree", "clean",
+         "--tool-version", "unknown", "--rules-identity", "unknown",
+         "--report-provenance", "synthetic-report", "--scanner-outcome", "unknown"],
+        capture_output=True, timeout=10)
+    if ran.returncode != 0 or MARKER.encode() in ran.stdout + ran.stderr:
+        bad(f"installed utility failed: {ran.returncode} {ran.stderr!r}")
+    elif open(findings, "rb").read() != before:
+        bad("installed run changed the findings store")
+    else:
+        ok("installed utility matches the source and leaves findings unchanged")
 
 plan = open(os.path.join(root, "modules", "security", "files", "security", "scanner-planning.md"), encoding="utf-8").read()
 copy = open(os.path.join(root, "extensions", "hermesVPS", "security-assets", "scanner-planning.md"), encoding="utf-8").read()
