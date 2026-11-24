@@ -33,6 +33,10 @@ mismatch and stop.
 Perform only Rule 060. Read-only validation only.
 Do not execute exploits, tests, or target code.
 Do not allocate SG IDs or modify findings or accepted risks.
+Phase-050 unresolved-question entries stay out of the candidate list.
+A conditional control proposal is not vulnerability evidence.
+A new candidate requires additional permitted static evidence.
+A supported candidate may still name bounded uncertainty.
 
 ## 5. Write
 Write exactly one report to the path above, or to its timestamped

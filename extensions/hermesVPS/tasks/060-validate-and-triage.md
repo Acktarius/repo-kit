@@ -40,6 +40,10 @@ Do not allocate SG-NNN IDs or modify findings or accepted risks.
 
 Assign a stable candidate_id (e.g. `C-001`) to each validated candidate.
 These IDs are stable across revisions; do not renumber.
+Phase-050 unresolved-question entries stay out of the candidate list and out of the triage payload `candidates` array.
+A conditional control proposal is not vulnerability evidence.
+A new candidate requires additional permitted static evidence.
+A supported candidate may still name bounded uncertainty.
 
 ## 5. Write
 

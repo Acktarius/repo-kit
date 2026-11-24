@@ -51,13 +51,40 @@ Never invent findings, CVEs, severity scores, or advisory identifiers.
 Preserve candidates assessed as pending-evidence or blocked rather than
 inventing confirmation.
 
+## Phase-050 unresolved questions
+
+Record phase-050 unresolved-question entries in **Coverage limitations**. Do not add them to the candidate triage table or the triage payload `candidates` array.
+
+A phase-050 unresolved question stays an unresolved question. It is not automatically a candidate issue.
+
+A conditional control proposal is not evidence that a control is absent, ineffective, or exploitable. It does not authorize an edit.
+
+Do not assign a candidate ID, a severity, a triage disposition, an SG-* id, or a finding lifecycle status to an unresolved-question entry merely to fit the triage format.
+
+Cross-reference the originating report and its `S-*` or `F-*` row when one exists. Do not create another identifier.
+
+A question may lead to a new supported candidate only when additional permitted static evidence independently meets the existing candidate evidence threshold. Name that evidence and the uncertainty it resolves. Establish the entry point or trust boundary, the flow or security decision, the sensitive operation, and the absent or ineffective control. Stay inside the approved scope and this phase's permissions. Do not execute target code or probe to obtain the evidence.
+
+Evidence that a control exists, or that the concern does not apply, also resolves the question. Do not force every question toward a vulnerability.
+
+If the needed evidence is outside the approved scope, record the limitation or the required scope decision in **Coverage limitations**. Do not expand scope automatically.
+
+Do not mark an affected weakness class covered because the question was discussed. Keep the phase-050 coverage limitation unless a permitted, explicitly scoped reassessment supplies the missing review evidence.
+
+A supported candidate may still name bounded uncertainty. That uncertainty does not turn the candidate into an unresolved question. An unresolved question has not met the evidence threshold. A supported candidate with bounded uncertainty may still use `pending-evidence`.
+
+Synthetic examples, not findings and not evidence about any repository:
+
+- Supported candidate. The phase-050 candidate already shows the handler, the caller-controlled id, the load, and the missing owner check in the inspected file. One deployment assumption remains. Keep it in the candidate list and state that limit.
+- Standalone question. Phase 050 recorded that the authorization policy was outside the inspected paths, with a conditional control proposal. Leave it under **Coverage limitations** with its `S-*` reference. Do not assign a candidate ID unless later permitted static evidence independently meets the threshold.
+
 ## Report sections (required)
 
 1. **Run identity**
 2. **Prior artifacts** — selected input artifact IDs and SHA-256 status
 3. **Candidate triage table** — candidate_id, title, disposition, severity estimate, rationale
 4. **Detailed assessment** — per candidate with evidence
-5. **Coverage limitations**
+5. **Coverage limitations** — phase-050 coverage limits, and phase-050 unresolved-question entries kept out of the candidate list
 6. **Completion state** and next human gate
 
 ## Completion
