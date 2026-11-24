@@ -18,8 +18,16 @@ This extension does **not** replace `extensions/hermes/`. Local Hermes remains
 unchanged. The workflow reviews repository content before build or compilation.
 It does not build, run, or attack the target.
 
-**Not implemented:** installer/packaging automation, verified portal skill
+**Not implemented:** installer/packaging automation that copies this tree to a host, verified portal skill
 discovery, Roomote/GitHub/MCP automation.
+
+## Security dependency
+
+Both Hermes extensions require security material. They do not share one install path.
+
+- **Local `hermes`:** `./scripts/init.sh <repo> --ext hermes` (or `sync-cursor.sh`) selects the security module and `base`. Do not pass `--security` for that repository install. The copy includes `security/` and `.github/workflows/security-check.yml`. Copying the workflow does not run it, scan the tree, start a review, or change remotes.
+- **This policy prefix:** required security assets are the `security-assets/` byte copies already in this tree (schema, weakness classes, surface inventory, scanner planning). The prefix is not a target repository. Do not install the security module's Cursor files, CI workflow, or live findings store here.
+- **Assessment:** `init-hermes-review` and `hermes-vps-review` do not install or sync the security module into the source checkout. A missing policy file fails validation. Do not write the source repository to supply it. Do not point `--policy-prefix` at the source repository.
 
 ---
 

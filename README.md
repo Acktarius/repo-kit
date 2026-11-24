@@ -26,6 +26,8 @@ repo-kit/
     openspec/       # OpenSpec CLI + project init
     forge/          # Forgekit (depends on openspec)
     act/            # nektos/act + local workflow runner script
+    hermes/         # local Hermes review workflow (depends on the security module)
+    hermesVPS/      # VPS policy prefix; security-assets copies, not an --ext install
   tools/
     py-indexer/     # local cross-repo lexical retrieval (CLI + stdio MCP)
   scripts/
@@ -61,6 +63,7 @@ Initialize a project (resolves dependencies, detects conflicts):
 ./scripts/init.sh /path/to/project --rust --security
 ./scripts/init.sh /path/to/project --python
 ./scripts/init.sh /path/to/project --contre-attaque   # also installs security
+./scripts/init.sh /path/to/project --ext hermes       # also installs security and base
 ./scripts/init.sh /path/to/project --base --force
 ./scripts/init.sh /path/to/project --ext continue
 ./scripts/init.sh /path/to/project --ext openspec
@@ -70,7 +73,7 @@ Initialize a project (resolves dependencies, detects conflicts):
 ./scripts/init.sh /path/to/project --typescript --ext continue --tool py-indexer
 ```
 
-Sync only Cursor assets (`.cursor/`) into an existing project (extensions and tools still install fully when `--ext` / `--tool` is passed):
+Sync only Cursor assets (`.cursor/`) into an existing project (extensions and tools still install fully when `--ext` / `--tool` is passed). `--ext hermes` is the exception for its module dependency: `security` and `base` are installed in full, because Hermes needs non-Cursor security files. Other modules named on that command stay cursor-only:
 
 ```bash
 ./scripts/sync-cursor.sh /path/to/project --typescript --security
@@ -79,6 +82,7 @@ Sync only Cursor assets (`.cursor/`) into an existing project (extensions and to
 ./scripts/sync-cursor.sh /path/to/project --ext continue
 ./scripts/sync-cursor.sh /path/to/project --ext forge
 ./scripts/sync-cursor.sh /path/to/project --ext act
+./scripts/sync-cursor.sh /path/to/project --ext hermes   # full security + base; other modules stay cursor-only
 ./scripts/sync-cursor.sh /path/to/project --tool py-indexer
 ```
 
@@ -114,12 +118,15 @@ Fresh installs via `init.sh` with `--base` get layout **1.0.2** automatically.
 | `openspec` | `npm i -g @fission-ai/openspec@latest`; `openspec init --tools cursor` in target if needed |
 | `forge` | Depends on `openspec` (always installed first). Then `npm i -g @izkac/forgekit@latest`, `forgekit install --skills forge --agents cursor --openspec --force`, and `forge init --cursor --openspec` in target if needed |
 | `act` | Checks/prompts for `docker` (daemon reachable) and `act`; copies `.cursor/commands/act-run-workflows.md`, `.cursor/skills/act-run-workflows/`, `act-run-workflows.sh` to `.repo-kit/scripts/`, and project `.actrc` (ubuntu-latest → medium runner image) |
+| `hermes` | Depends on the `security` module (and thus `base`). `--ext hermes` selects them; do not pass `--security` separately. Copies `.repo-kit/hermes/` review rules, tasks, skills, and launcher. The security module copy includes `security/` and `.github/workflows/security-check.yml`. Copying that workflow does not run it, scan the tree, start a review, or change remotes. |
+| `hermesVPS` | Not an `--ext` install. The policy prefix is this tree, including `security-assets/` byte copies of the canonical security files. It does not install the security module into the policy prefix or into an assessment source repository. Starting a review does not fill a missing dependency by writing the source checkout. |
 
 ```bash
 ./scripts/init.sh /path/to/project --ext continue
 ./scripts/init.sh /path/to/project --ext openspec
 ./scripts/init.sh /path/to/project --ext forge   # also installs openspec
 ./scripts/init.sh /path/to/project --ext act
+./scripts/init.sh /path/to/project --ext hermes   # also installs security and base
 source ~/.bashrc   # activate PATH + aliases (continue)
 ```
 

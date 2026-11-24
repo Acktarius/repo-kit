@@ -9,6 +9,11 @@ a phase. A separate, explicit human request is required.
 If any required path or input is missing or inaccessible, **stop**. Do not
 guess paths, infer the latest report, or invent repository identity.
 
+Starting a review does not install the repo-kit security module into the
+source repository or the policy prefix. Required security policy files are
+already under `security-assets/` in the policy prefix. A missing file is an
+error. Do not create it inside the source checkout.
+
 ## Absolute paths (operator fills these)
 
 Default documented deployment binding (not universal):

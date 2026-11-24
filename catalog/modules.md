@@ -140,3 +140,19 @@ Extension deps resolve like modules (`forge` → `openspec` first).
 - **Depends:** `openspec` (always installed first)
 - **Host:** `npm i -g @izkac/forgekit@latest`, then `forgekit install --skills forge --agents cursor --openspec --force`
 - **Target:** `forge init --cursor --openspec` when `.forge/config.json` is missing (re-run with `--force`)
+
+### hermes
+
+- **Description:** Local Hermes security-review workflow (rules, tasks, skills, launcher)
+- **Depends:** `security` module (and thus `base`)
+- **Install:** `./scripts/init.sh <target> --ext hermes` or `./scripts/sync-cursor.sh <target> --ext hermes`
+- **Repository install:** selects `security` automatically. Do not pass `--security` for this path. The module copy includes `security/` and `.github/workflows/security-check.yml`. Copying that workflow does not run it, scan the tree, start a review, or change remotes.
+- **Sync:** `security` and `base` are installed in full. Other modules named on the same command stay cursor-only.
+- **Provides:** `.repo-kit/hermes/` (review rules, tasks, skills, `hermes-review.sh`, `reports/`)
+
+### hermesVPS
+
+- **Description:** VPS / upload policy prefix for the same review workflow
+- **Depends:** security policy assets packaged in `extensions/hermesVPS/security-assets/` (byte copies of the canonical module files)
+- **Not** an `--ext` target and not a second security module. Do not install repository files (Cursor commands, the CI workflow, or a live findings store) into the policy prefix.
+- **Assessment:** `init-hermes-review` and `hermes-vps-review` do not install or sync the security module into the source checkout. A missing policy file is an error.

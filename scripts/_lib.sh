@@ -17,6 +17,8 @@ SELECTED_EXTENSIONS=()
 DECLARED_TOOLS=()
 SELECTED_TOOLS=()
 RESOLVED_TOOLS=()
+# Direct module names required by selected extensions (before module dep closure).
+EXTENSION_MODULE_SEEDS=()
 FORCE_COPY=0
 CURSOR_ONLY=0
 ADDED_COUNT=0
@@ -239,11 +241,19 @@ list_modules() {
   printf "%-12s  %-50s  %s\n" "EXTENSION" "DESCRIPTION" "DEPENDS"
   printf "%-12s  %-50s  %s\n" "---------" "-----------" "-------"
   local ext_name ext_desc ext_depends
+  local -a dep_parts
   for name in "${KNOWN_EXTENSIONS[@]}"; do
     load_ext_manifest "${name}"
     ext_name="${EXT_NAME:-${name}}"
     ext_desc="${EXT_DESC:-}"
-    ext_depends="${EXT_DEPENDS[*]:-}"
+    dep_parts=()
+    if [[ ${#EXT_DEPENDS[@]} -gt 0 ]]; then
+      dep_parts+=("${EXT_DEPENDS[@]}")
+    fi
+    if [[ ${#EXT_MODULE_DEPENDS[@]} -gt 0 ]]; then
+      dep_parts+=("${EXT_MODULE_DEPENDS[@]}")
+    fi
+    ext_depends="${dep_parts[*]:-}"
     [[ -n "${ext_depends}" ]] || ext_depends="-"
     printf "%-12s  %-50s  %s\n" "${ext_name}" "${ext_desc}" "${ext_depends}"
   done
@@ -588,6 +598,8 @@ load_ext_manifest() {
   EXT_NAME="${name}"
   EXT_DESC=""
   EXT_DEPENDS=()
+  # Modules installed into a repository target. Not used for extension-to-extension deps.
+  EXT_MODULE_DEPENDS=()
   [[ -f "${manifest}" ]] || return 0
   # shellcheck source=/dev/null
   source "${manifest}"
@@ -633,6 +645,95 @@ resolve_extension_dependencies() {
   done
 
   SELECTED_EXTENSIONS=("${resolved[@]}")
+}
+
+# Record EXT_MODULE_DEPENDS from the resolved extension set.
+# Adds any missing module to SELECTED_MODULES. Does not resolve module deps
+# and does not copy files. There is no supported flag to drop a required
+# module; a conflict still fails later in detect_conflicts.
+note_extension_module_dependencies() {
+  EXTENSION_MODULE_SEEDS=()
+  [[ ${#SELECTED_EXTENSIONS[@]} -gt 0 ]] || return 0
+
+  local -a already=()
+  if [[ ${#SELECTED_MODULES[@]} -gt 0 ]]; then
+    already=("${SELECTED_MODULES[@]}")
+  fi
+
+  resolve_extension_dependencies
+
+  local ext ext_name dep
+  for ext in "${SELECTED_EXTENSIONS[@]}"; do
+    load_ext_manifest "${ext}"
+    ext_name="${EXT_NAME:-${ext}}"
+    for dep in "${EXT_MODULE_DEPENDS[@]+"${EXT_MODULE_DEPENDS[@]}"}"; do
+      module_exists "${dep}" || die "extension '${ext_name}' depends on unknown module '${dep}'"
+      if ! array_contains "${dep}" "${EXTENSION_MODULE_SEEDS[@]+"${EXTENSION_MODULE_SEEDS[@]}"}"; then
+        EXTENSION_MODULE_SEEDS+=("${dep}")
+      fi
+      if array_contains "${dep}" "${already[@]+"${already[@]}"}"; then
+        continue
+      fi
+      if array_contains "${dep}" "${SELECTED_MODULES[@]+"${SELECTED_MODULES[@]}"}"; then
+        continue
+      fi
+      echo "Adding ${dep}: required by ${ext_name}."
+      SELECTED_MODULES+=("${dep}")
+    done
+  done
+
+  if array_contains "security" "${EXTENSION_MODULE_SEEDS[@]+"${EXTENSION_MODULE_SEEDS[@]}"}"; then
+    echo "Security module files include .github/workflows/security-check.yml. Copying them does not run the workflow, scan the tree, start a review, or change remotes."
+  fi
+}
+
+# sync-cursor.sh module copy.
+# User-selected modules stay cursor-only. An extension module dependency is
+# installed in full, including its own module dependencies, because Hermes
+# needs non-Cursor security files. Other modules are not promoted to a full install.
+# Caller has already resolved SELECTED_MODULES and run detect_conflicts.
+install_synced_modules() {
+  local -a all_resolved=()
+  local -a full=()
+  local -a cursor=()
+  local -a saved_selected=()
+  local name
+
+  if [[ ${#RESOLVED_MODULES[@]} -gt 0 ]]; then
+    all_resolved=("${RESOLVED_MODULES[@]}")
+  fi
+
+  if [[ ${#EXTENSION_MODULE_SEEDS[@]} -gt 0 ]]; then
+    saved_selected=("${SELECTED_MODULES[@]}")
+    SELECTED_MODULES=("${EXTENSION_MODULE_SEEDS[@]}")
+    resolve_dependencies
+    full=("${RESOLVED_MODULES[@]}")
+    SELECTED_MODULES=("${saved_selected[@]}")
+  fi
+
+  if [[ ${#full[@]} -gt 0 ]]; then
+    echo "full module install for extension dependency: ${full[*]}"
+    CURSOR_ONLY=0
+    RESOLVED_MODULES=("${full[@]}")
+    install_modules
+  fi
+
+  if [[ ${#all_resolved[@]} -gt 0 ]]; then
+    for name in "${all_resolved[@]}"; do
+      if [[ ${#full[@]} -eq 0 ]] || ! array_contains "${name}" "${full[@]}"; then
+        cursor+=("${name}")
+      fi
+    done
+  fi
+
+  if [[ ${#cursor[@]} -gt 0 ]]; then
+    if [[ ${#full[@]} -gt 0 ]]; then
+      echo "cursor-only modules: ${cursor[*]}"
+    fi
+    CURSOR_ONLY=1
+    RESOLVED_MODULES=("${cursor[@]}")
+    install_modules
+  fi
 }
 
 # Idempotently append/update a source line in ~/.bashrc after a marker

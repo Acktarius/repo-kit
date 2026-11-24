@@ -64,6 +64,12 @@ Install this extension into a target repository with:
 ./scripts/init.sh /path/to/target-repository --ext hermes
 ```
 
+`--ext hermes` selects the `security` module and its dependency `base`. Do not pass `--security` for this install. The module copy includes `security/` and `.github/workflows/security-check.yml`. Copying that workflow does not run it, scan the repository, start a review, or change remotes.
+
+`sync-cursor.sh --ext hermes` installs that same security dependency in full, including non-Cursor files. Other modules named on that command stay cursor-only. Sync does not report the dependency ready while those files are absent.
+
+Starting `hermes-review` does not install the security module. Install or sync first. Standalone hermesVPS is a separate policy prefix; see `extensions/hermesVPS/README.md`.
+
 The installed layout is:
 
 ```text

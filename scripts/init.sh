@@ -23,6 +23,9 @@ Copy selected modules (and their dependencies) into <target>.
 Optionally install extensions with --ext (continue, openspec, forge, act, hermes).
 Optionally install tools with --tool (repeatable; discovered from tools/*/manifest.sh).
 --ext forge always installs openspec first.
+--ext hermes also installs the security module and its dependency (base).
+That copy includes .github/workflows/security-check.yml. It does not run the
+workflow, scan the tree, start a review, or change remotes.
 --tool may be combined with modules and extensions; tool-only installs are allowed.
 Existing files are skipped unless --force is passed.
 
@@ -69,6 +72,8 @@ fi
 # Resolve absolute target for cleaner summary paths
 mkdir -p "${TARGET_DIR}"
 TARGET_DIR="$(cd "${TARGET_DIR}" && pwd)"
+
+note_extension_module_dependencies
 
 if [[ ${#SELECTED_MODULES[@]} -gt 0 ]]; then
   resolve_dependencies

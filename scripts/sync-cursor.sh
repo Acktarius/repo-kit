@@ -24,8 +24,13 @@ Optionally install extensions with --ext (continue, openspec, forge, act, hermes
 Optionally install tools with --tool (repeatable). Explicitly requested tools install
 fully (same treatment as --ext), not Cursor-assets-only.
 --ext forge always installs openspec first.
+--ext hermes also installs the security module and its dependency (base) in full,
+including non-Cursor files such as .github/workflows/security-check.yml.
+That copy does not run the workflow, scan the tree, start a review, or change remotes.
+Other modules named on this command stay cursor-only.
 Dependencies and conflicts are resolved the same way as init.sh.
 Existing files are skipped unless --force is passed.
+Preserved security records are never overwritten, including with --force.
 
 Examples:
   ./scripts/sync-cursor.sh /path/to/project --typescript --security
@@ -66,14 +71,19 @@ fi
 mkdir -p "${TARGET_DIR}"
 TARGET_DIR="$(cd "${TARGET_DIR}" && pwd)"
 
+note_extension_module_dependencies
+
 if [[ ${#SELECTED_MODULES[@]} -gt 0 ]]; then
   resolve_dependencies
   detect_conflicts
-  echo "syncing .cursor/ into ${TARGET_DIR}"
+  if [[ ${#EXTENSION_MODULE_SEEDS[@]} -gt 0 ]]; then
+    echo "syncing into ${TARGET_DIR}"
+  else
+    echo "syncing .cursor/ into ${TARGET_DIR}"
+  fi
   echo "resolved: ${RESOLVED_MODULES[*]}"
   echo
-  CURSOR_ONLY=1
-  install_modules
+  install_synced_modules
 else
   echo "syncing into ${TARGET_DIR}"
   echo "resolved: (no modules)"
