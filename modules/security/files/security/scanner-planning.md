@@ -224,6 +224,8 @@ If a new handoff cannot be removed after a failed write, a partial file
 may remain. Removal is not guaranteed against filesystem failure, process
 termination, or a same-user race.
 
+A scanner is an optional supporting check, not the source review. Further Gitleaks launcher work is deferred. The directory launcher recorded below stays in this contract and is not completed, invoked, or extended by that deferral.
+
 ## Gitleaks directory launcher
 
 `security/gitleaks_dir_scan.py` scans one explicitly prepared directory snapshot with an already installed Gitleaks executable, then uses `security/gitleaks_handoff.py` to publish one new handoff. Rule 030 does not run it. No Hermes phase runs it. Invoking the program is a separate action and needs its own approval. The invocation is not that approval.

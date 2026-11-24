@@ -4,6 +4,7 @@
 These are plain Markdown instructions for explicitly requested review phases.
 Install with `--ext hermes` on `init.sh` / `sync-cursor.sh`.
 Numbered filenames do not trigger execution.
+The workflow reviews repository content before build or compilation. It does not build, run, or attack the target.
 
 ## Local Hermes review environment
 

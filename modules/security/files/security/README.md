@@ -1,5 +1,24 @@
 # Security workflow
 
+## Mission
+
+This workflow statically reviews the repository under review before build or compilation. It identifies, catalogs, and proposes remediation for vulnerabilities that source and configuration can show.
+
+For the approved scope, the review establishes:
+
+1. Which untrusted inputs and trust boundaries exist.
+2. Which sensitive operations those inputs can influence.
+3. Which controls protect those operations.
+4. Where source or configuration shows an absent or ineffective control.
+5. Which relevant areas remain unresolved or unreviewed.
+6. What concrete remediation a human should consider approving.
+
+Apply only concerns the repository shape makes relevant. A library, CLI, worker, or infrastructure project does not inherit a web or API checklist. Concerns include authorization, authentication and session checks, injection and unsafe evaluation, filesystem handling, outbound destination trust, browser-facing weaknesses where the repository has them, secrets, resource exhaustion, dependency declarations and advisories, and repository-defined CI, build, and deployment boundaries.
+
+The review reads source, configuration, dependency manifests and lockfiles, and CI or deployment definitions as text. It does not build or compile the application, run it or its tests, inspect a compiled binary, or execute an attack. Source evidence can support a finding without exploit execution or a network probe. A scanner lead is not that finding. No findings in a scope does not mean the resulting application is secure.
+
+Remediation is proposed first. Approval to review is not approval to modify the target. Scanners are optional supporting checks. The offline Gitleaks normalizer remains available. Further Gitleaks launcher work is deferred.
+
 This directory stores durable, human-reviewed security context rather than raw
 scanner output.
 
@@ -10,7 +29,7 @@ scanner output.
 - `surface-inventory.md` — canonical surface and trust-boundary inventory contract
 - `scanner-planning.md` — canonical scanner-planning and result-handoff contract. Rule 030 and a plan that proposes an executable check read it. It does not run scanners or import findings.
 - `gitleaks_handoff.py` — offline normalizer for one explicitly selected Gitleaks JSON report. It writes a separate secret-minimized handoff of unreviewed leads. It does not launch Gitleaks or update the findings store.
-- `gitleaks_dir_scan.py` — one explicit local directory scan using an already installed Gitleaks executable, then the normalizer above. It is not run by Rule 030. It does not update the findings store.
+- `gitleaks_dir_scan.py` — one explicit local directory scan using an already installed Gitleaks executable, then the normalizer above. It is not run by Rule 030. It does not update the findings store. Further Gitleaks launcher work is deferred.
 - `findings-reviewed.json` — reviewed findings and lifecycle status
 - `accepted-risks.md` — explicitly accepted or deferred risks
 - `findings.schema.json` — findings-store structure. Optional `weaknessClasses`

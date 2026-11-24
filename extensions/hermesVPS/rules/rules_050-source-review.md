@@ -29,6 +29,8 @@ Manual source and configuration review for one priority area.
 
 Read-only inspection.  Run a scanner **only** if explicitly approved in the
 trigger message.  Do not execute target code, apply fixes, or modify files.
+Apply only concerns the repository shape makes relevant.  Source evidence
+can support a finding without exploit execution or a network probe.
 
 One report per priority.  A separate invocation is required for each
 additional priority.

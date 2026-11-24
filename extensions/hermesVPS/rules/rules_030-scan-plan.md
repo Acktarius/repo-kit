@@ -29,7 +29,7 @@ scanners in this phase.  Every proposed command must be labeled as a
 request approval for an action whose verification state is
 `pending_verification` or `unavailable`.  A version or help command is
 still execution and is not run in this phase.  Do not run the Gitleaks
-report normalizer or `security/gitleaks_dir_scan.py` in this phase.  A later handoff
+report normalizer or `security/gitleaks_dir_scan.py` in this phase.  Further Gitleaks launcher work is deferred.  A later handoff
 needs its own approval and does not promote leads to candidates.
 
 - Scanner selection rationale (languages, frameworks, asset types)

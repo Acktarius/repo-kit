@@ -15,7 +15,8 @@ All eight phases (010–080) implemented with:
 - security schema copy and fixture tests.
 
 This extension does **not** replace `extensions/hermes/`. Local Hermes remains
-unchanged.
+unchanged. The workflow reviews repository content before build or compilation.
+It does not build, run, or attack the target.
 
 **Not implemented:** installer/packaging automation, verified portal skill
 discovery, Roomote/GitHub/MCP automation.

@@ -13,8 +13,10 @@
 ## Permissions
 - Read-only source inspection is the default.
 - Run scanners only with specific approval for the command and permissions.
-- Do not execute target code, tests, scripts, builds, or proof-of-concept
-  payloads without separate approval.
+- Do not build or compile the target, run it or its tests, or execute its
+  scripts, hooks, generators, or proof-of-concept payloads.
+- Source evidence can support a finding without exploit execution or a
+  network probe.
 - Do not probe deployed services or external APIs.
 - Do not install tools, access the network, or delegate work without
   specific approval.

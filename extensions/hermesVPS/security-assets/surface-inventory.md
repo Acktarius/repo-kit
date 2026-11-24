@@ -12,9 +12,10 @@ class as reviewed.
 
 This is source-reading guidance and report structure. It is not a
 scanner, a runtime discovery system, or a claim of complete application
-coverage. Build the inventory from files in the approved scope. Do not
-send requests, run the application, or execute target code to resolve
-uncertainty.
+coverage. Build the inventory from files in the approved scope. Identify
+entry points from source and configuration. Do not confirm them by
+probing a deployed service. Do not send requests, run the application,
+or execute target code to resolve uncertainty.
 
 Phase 010 repository inventory and `security/threat-model.md` stay
 separate artifacts. Use them only where the active review rules already

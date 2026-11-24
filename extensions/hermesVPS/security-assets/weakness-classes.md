@@ -11,10 +11,13 @@ copy cannot be read, report the path and stop. Do not treat any class
 as reviewed.
 
 This is source-review guidance and coverage accounting. It is not a
-scanner, and a catalog entry is not an automated check. Scanner planning
-and scanner results do not mark a class `covered`. Presence of a
-technology, a missing optional hardening setting, or a keyword match is
-not a confirmed vulnerability.
+scanner, and a catalog entry is not an automated check. Apply a class
+only when the repository shape makes it relevant. Do not force a web or
+API model onto a library, CLI, worker, or infrastructure project.
+Scanner planning and scanner results do not mark a class `covered`.
+Presence of a technology, a missing optional hardening setting, or a
+keyword match is not a confirmed vulnerability. A source-supported
+finding does not require exploit execution.
 
 ## Coverage contract
 

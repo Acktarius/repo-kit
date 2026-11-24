@@ -13,7 +13,7 @@
 - **Affected files:** paths and relevant functions
 - **Root cause:** concrete cause supported by evidence
 - **Preconditions:** conditions required for exploitation
-- **Exploit path:** high-level path from attacker-controlled input to impact
+- **Exploit path:** source-supported path from untrusted input to the sensitive operation. This records evidence. It is not an executed attack.
 - **Impact:** practical effect if exploited
 
 ## Remediation

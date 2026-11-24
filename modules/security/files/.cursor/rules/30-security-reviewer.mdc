@@ -31,7 +31,8 @@ When asked to review for security:
   ids. Omit `weaknessClasses` when the mapping is uncertain and say why.
   Do not invent a class. These fields do not lower the valid-finding bar;
 - check `security/findings-reviewed.json` and `security/accepted-risks.md`;
-- do not speculate, duplicate records, or invent impact.
+- do not speculate, duplicate records, or invent impact;
+- a valid finding does not require exploit execution or a network probe;
 
 Coverage statuses (`covered`, `not_applicable`, `not_reviewed`) come only from
 `security/weakness-classes.md`. They record source-review coverage. They are
