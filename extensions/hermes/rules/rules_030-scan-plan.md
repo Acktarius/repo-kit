@@ -118,6 +118,8 @@ approval for an action whose verification state is
 Ask approval for one verified action, or state that none is ready.
 Approval of one action does not authorize the whole plan.
 A version or help command is still execution and is not run in this phase.
+Do not run `security/gitleaks_handoff.py` in this phase. A later handoff
+needs its own approval and does not promote leads to candidates.
 Read-only inspection may record an executable path already present;
 that inspection is not approval to invoke it.
 Stop after writing the phase report without installing tools or

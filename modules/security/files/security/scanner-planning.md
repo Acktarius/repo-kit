@@ -111,6 +111,13 @@ installation, an advisory-database refresh, and the scan itself are
 separate actions when more than one of them applies. A version or help
 command is still execution. This stage does not run it.
 
+A version or help probe is a separate action from scanning. The
+information that probe is intended to discover may be explicitly unknown
+for that probe. Executable identity and provenance, the exact invocation,
+permissions, output handling, and the relevant bounds still have to be
+established for the probe. Approval of the probe does not approve
+scanning. Rule 030 does not run the probe.
+
 This contract adds no approval token, approval database, or approval
 engine. The request uses the approval section the phase already has.
 
@@ -177,6 +184,37 @@ weakness class covered. Use the existing words: an unreviewed lead, then
 a candidate only after it meets that phase's evidence bar, then human
 triage. Do not reshape a lead into a supported candidate before that bar
 is met.
+
+## Gitleaks JSON handoff
+
+`security/gitleaks_handoff.py` reads one explicitly selected Gitleaks JSON
+report and writes a new secret-minimized handoff. It does not launch
+Gitleaks, probe its version, scan a repository, or write
+`security/findings-reviewed.json`. Invoking it is a separate executable
+action and needs its own approval in a Hermes workflow. Rule 030 only
+proposes that action. The handoff is a standalone file. It is not a phase
+artifact. Reading the handoff does not turn a lead into a candidate until
+the existing evidence bar is met.
+
+Supported input is the built-in JSON array written by Gitleaks v8.30.1,
+commit `83d9cd684c87d95d656c1458ef04895a7f1cbd8e`, as defined by
+`report/json.go` and `report/finding.go` at
+`https://github.com/gitleaks/gitleaks/blob/v8.30.1/report/json.go`.
+CSV, JUnit, SARIF, and template reports are unsupported. A GitHub Action
+reference does not by itself establish this format.
+
+```
+python3 security/gitleaks_handoff.py \
+  --input <report.json> \
+  --output <handoff.json> \
+  --check-id <check-id> \
+  --source-revision <revision-or-unknown> \
+  --working-tree <context-or-unknown> \
+  --tool-version <version-or-unknown> \
+  --rules-identity <identity-or-unknown> \
+  --report-provenance <reference> \
+  --scanner-outcome <completed|error|timeout|unsupported|truncated|skipped|unknown>
+```
 
 ## Examples
 

@@ -28,7 +28,9 @@ scanners in this phase.  Every proposed command must be labeled as a
 **proposal**.  `pending_verification` is not ready for execution.  Do not
 request approval for an action whose verification state is
 `pending_verification` or `unavailable`.  A version or help command is
-still execution and is not run in this phase.
+still execution and is not run in this phase.  Do not run the Gitleaks
+report normalizer in this phase.  A later handoff needs its own approval
+and does not promote leads to candidates.
 
 - Scanner selection rationale (languages, frameworks, asset types)
 - Exact proposed commands with flags
