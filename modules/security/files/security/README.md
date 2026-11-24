@@ -10,6 +10,7 @@ scanner output.
 - `surface-inventory.md` — canonical surface and trust-boundary inventory contract
 - `scanner-planning.md` — canonical scanner-planning and result-handoff contract. Rule 030 and a plan that proposes an executable check read it. It does not run scanners or import findings.
 - `gitleaks_handoff.py` — offline normalizer for one explicitly selected Gitleaks JSON report. It writes a separate secret-minimized handoff of unreviewed leads. It does not launch Gitleaks or update the findings store.
+- `gitleaks_dir_scan.py` — one explicit local directory scan using an already installed Gitleaks executable, then the normalizer above. It is not run by Rule 030. It does not update the findings store.
 - `findings-reviewed.json` — reviewed findings and lifecycle status
 - `accepted-risks.md` — explicitly accepted or deferred risks
 - `findings.schema.json` — findings-store structure. Optional `weaknessClasses`

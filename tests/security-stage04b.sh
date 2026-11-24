@@ -526,10 +526,16 @@ def fail_write(fd, data):
     raise OSError(MARKER)
 def fail_fsync(_fd):
     raise OSError(MARKER)
-closes = {"n": 0}
+closed_output = {"n": 0, "fd": None}
 def fail_output_close(fd):
-    closes["n"] += 1
-    if closes["n"] >= 2:
+    closed_output["n"] += 1
+    if closed_output["n"] == 1:
+        return real_close(fd)
+    if closed_output["fd"] is None:
+        closed_output["fd"] = fd
+        real_close(fd)
+        raise OSError(MARKER)
+    if fd == closed_output["fd"]:
         raise OSError(MARKER)
     return real_close(fd)
 def fail_unlink(_path):

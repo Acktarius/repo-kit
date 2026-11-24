@@ -224,6 +224,28 @@ If a new handoff cannot be removed after a failed write, a partial file
 may remain. Removal is not guaranteed against filesystem failure, process
 termination, or a same-user race.
 
+## Gitleaks directory launcher
+
+`security/gitleaks_dir_scan.py` scans one explicitly prepared directory snapshot with an already installed Gitleaks executable, then uses `security/gitleaks_handoff.py` to publish one new handoff. Rule 030 does not run it. No Hermes phase runs it. Invoking the program is a separate action and needs its own approval. The invocation is not that approval.
+
+Supported platform is Linux with POSIX `O_NOFOLLOW` and `RLIMIT_FSIZE`. Supported contract is Gitleaks v8.30.1, commit `83d9cd684c87d95d656c1458ef04895a7f1cbd8e`. The mode is `dir` from `cmd/directory.go` at that commit. Built-in rules are the embedded default from `config/config.go` (blob `256f64790ea6d954f0041024be2938089ae1e7a7`). The launcher passes no config flag. The child environment is only `TMPDIR`, `LANG`, and `LC_ALL`, so `GITLEAKS_CONFIG` and `GITLEAKS_CONFIG_TOML` are absent. A snapshot that already contains `.gitleaks.toml` or `.gitleaksignore` is rejected. At this revision, `cmd/root.go` still loads those files from the snapshot when they exist at scan time. A file created after preflight can still be loaded. Preflight is not a sandbox.
+
+The fixed vector is `dir`, `--no-banner`, `--redact=100`, `--log-level error`, `--report-format json`, a private `--report-path`, `--exit-code 2`, `--max-archive-depth 0`, `--max-decode-depth 0`, `--ignore-gitleaks-allow`, an absent `--gitleaks-ignore-path`, `--max-target-megabytes 1`, and the absolute snapshot path. The shell is off. There is no PATH lookup and no version or help probe. The caller-supplied version and rules identity stay claims. The observed check is the executable SHA-256. That digest does not authenticate a publisher.
+
+Exit 0 together with an empty JSON array is no detection. Exit 2 together with a non-empty array is detection. Exit 1 is a scan error or a fatal tool error, and a partial report may already have been written (`findingSummaryAndExit` in `cmd/root.go`). Any other code is tool failure. An empty array alone, a normalizer result alone, a report file alone, or a CI job that continues after an error is not a successful scan.
+
+`--redact=100` replaces the exact secret in `Secret`, `Match`, and `Line` (`report/finding.go` and `detect/utils.go`). It does not cover `Fingerprint`, a path, or a value that is not that exact string. The JSON report omits `Line` and can still contain secrets. Raw report bytes and capped logs stay in a private directory outside the snapshot. The directory mode is `0700`. They are removed before a handoff is published. Cleanup is not secure erasure. Cleanup failure does not publish a handoff.
+
+`RLIMIT_FSIZE` is 1048576 bytes. That is the hard ceiling on regular files the child creates. A report that reaches the ceiling is a file-size failure, including when the write fails and the process exits on its own. The ceiling does not bound pipes, and it is not network confinement. Stdout and stderr are retained only up to the selected stream cap and are not relayed. The process group is killed on a timeout or a stream cap. A report that reaches the file-size ceiling is not published. This launcher does not enforce OS network confinement. Directory mode does not start a git command and does not enable diagnostics. `extendURL` in this revision is empty. `--max-archive-depth 0` skips archive extraction. The tool reads file bytes and applies rules. It does not run repository scripts. Symlink entries observed by the walk are skipped because follow-symlinks stays off (`sources/files.go`). A path that becomes a symlink after that classification can still be opened. That is not OS isolation.
+
+Caller bounds cannot exceed 120 seconds, 1000 files, 33554432 snapshot bytes, a 1000000-byte file, a 1048576-byte report, or 65536 retained stream bytes. The per-file figure matches the tool's decimal megabyte skip. The launcher does not create a snapshot, scan git history, or write `security/findings-reviewed.json`.
+
+### Deferred real-tool smoke procedure
+
+This procedure was not executed. Fake-process tests do not establish Gitleaks compatibility or OS sandboxing. Do not run this procedure from Rule 030 or from a Hermes phase.
+
+Before the first real run, require a separate human approval for this one directory scan, a Linux host, an already installed Gitleaks v8.30.1 executable, and a SHA-256 the operator computed outside this program. The snapshot must already be prepared: no symlink, no special file, no `.git`, no `.gitleaks.toml`, no `.gitleaksignore`, and within the bounds above. The output directory must sit outside the snapshot. If network confinement is required, the operator environment has to provide it. This launcher does not. Pass the absolute executable path and the digest. A passing fake-process test is not that approval.
+
 ## Examples
 
 The four rows below are synthetic. They were not executed. Placeholders
