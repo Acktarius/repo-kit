@@ -65,7 +65,9 @@ Apply the catalog's coverage contract in **Coverage limitations**, including
 keeps that class `not_reviewed`.  `covered` means the class was reviewed in
 this source review, not that the code is secure.  The table is source-review
 coverage.  Scanner output and phase 030 or 040 results do not mark a class
-`covered`.
+`covered`.  A scanner hit stays an unreviewed lead until it meets this
+phase's evidence bar.  It does not allocate an `SG-*` id or write
+`security/findings-reviewed.json`.
 
 The catalog does not relax the evidence contract below or Rule 000.
 Unresolved cases stay candidates only when that evidence contract is already

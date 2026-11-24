@@ -9,8 +9,10 @@
 2. `.repo-kit/hermes/review-rules/rules_000-safety-and-scope.md`
 3. `.repo-kit/hermes/review-rules/rules_005-report-output.md`
 4. `.repo-kit/hermes/review-rules/rules_030-scan-plan.md`
+5. `.repo-kit/hermes/review-rules/scanner-planning.md`
 
 If any of these files is missing, report the missing path and stop.
+Do not use a phase-050 inventory as a prerequisite for this task.
 
 ## 2. Target
 The approved target is the repository root where Hermes was started.

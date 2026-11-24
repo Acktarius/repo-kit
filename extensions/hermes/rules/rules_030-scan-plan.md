@@ -9,6 +9,14 @@
 - If the target differs from the approved baseline, report the difference
   and stop for approval.
 
+## Canonical contract
+Read `.repo-kit/hermes/review-rules/scanner-planning.md` and follow it
+for the proposed-check table, verification states, approval unit, trust
+boundaries, and result handoff. If that file is missing, write the
+report with completion state `blocked`, name the path, and stop.
+This phase does not depend on a phase-050 inventory. A later inventory
+may support a revised plan, which needs its own approval.
+
 ## Permissions
 This phase produces a plan, not a scan.
 - Do not install, update, download, authenticate, or run scanners.
@@ -70,18 +78,13 @@ Do not enable general sandbox networking just to refresh advisory data.
 An online data-preparation step and an offline scan may be planned
 separately, but verify tool support before claiming that workflow works.
 
-## Snyk and other external services
-Consider Snyk when it offers relevant coverage.
-Before proposing its use, document:
-- the specific product or scan mode;
-- applicability to the repository's dependency layout;
-- authentication and account requirements;
-- source or metadata transmission;
-- local versus remote analysis;
-- licensing or usage constraints, if verified;
-- user approval needed for external processing.
-
-Do not assume a CLI invocation means analysis stays local.
+## External services
+Name an external service only when inspected repository evidence or
+documentation identified in the report supports that proposal. Record
+the product or mode, what would be transmitted, authentication, and
+whether analysis stays local. Until those points are verified, the
+verification state is `pending_verification` and approval is not
+requested. Do not assume a command-line tool keeps analysis local.
 Never request that tokens be pasted into chat or reports.
 
 ## Output and reproducibility
@@ -100,7 +103,7 @@ Document failures and incomplete coverage explicitly.
 ## Required response
 Use these sections:
 1. Baseline and approved scope
-2. Proposed checks and coverage
+2. Proposed checks, using the scanner-planning table
 3. Tool selection and unresolved verification
 4. Permissions, connectivity, and data exposure
 5. Exact proposed actions and output destinations
@@ -109,8 +112,13 @@ Use these sections:
 8. Approval request
 
 Clearly label commands as proposals, not executed actions.
-If a command cannot yet be verified, do not present it as ready to run.
-Ask approval for one concrete next action.
+`pending_verification` is not ready for execution. Do not request
+approval for an action whose verification state is
+`pending_verification` or `unavailable`.
+Ask approval for one verified action, or state that none is ready.
 Approval of one action does not authorize the whole plan.
+A version or help command is still execution and is not run in this phase.
+Read-only inspection may record an executable path already present;
+that inspection is not approval to invoke it.
 Stop after writing the phase report without installing tools or
 running scans.

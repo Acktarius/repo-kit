@@ -964,7 +964,8 @@ install_hermes_ext() {
   local policy_src
   for policy_src in \
     "${MODULES_DIR}/security/files/security/weakness-classes.md" \
-    "${MODULES_DIR}/security/files/security/surface-inventory.md"
+    "${MODULES_DIR}/security/files/security/surface-inventory.md" \
+    "${MODULES_DIR}/security/files/security/scanner-planning.md"
   do
     [[ -f "${policy_src}" ]] || die "canonical review policy missing at ${policy_src}"
     echo "  copying $(basename "${policy_src}") to .repo-kit/hermes/review-rules/..."

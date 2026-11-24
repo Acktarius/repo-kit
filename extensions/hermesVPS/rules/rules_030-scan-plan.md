@@ -12,12 +12,23 @@ missing or stale, write the report with completion state `blocked` and stop.
 
 Commit mismatch between prior artifacts and the current run → report and stop.
 
+## Canonical contract
+
+Read `security-assets/scanner-planning.md` and follow it for the
+proposed-check table, verification states, approval unit, trust
+boundaries, and result handoff.  This phase does not depend on a
+phase-050 inventory.  A later inventory may support a revised plan,
+which needs its own approval.
+
 ## Scope
 
-Select appropriate security scanners based on inventory and threat model.
+Select checks from inventory and threat-model evidence.
 Produce a detailed execution plan.  Do **not** install, download, or run
 scanners in this phase.  Every proposed command must be labeled as a
-**proposal**.
+**proposal**.  `pending_verification` is not ready for execution.  Do not
+request approval for an action whose verification state is
+`pending_verification` or `unavailable`.  A version or help command is
+still execution and is not run in this phase.
 
 - Scanner selection rationale (languages, frameworks, asset types)
 - Exact proposed commands with flags
@@ -34,8 +45,8 @@ Never invent scanner names, CVE databases, or expected findings.
 
 1. **Run identity**
 2. **Prior artifacts** — selected IDs and SHA-256 status for phases 010 and 020
-3. **Proposed scanners** — name, version/source, rationale per scanner
-4. **Proposed commands** — labeled as proposals; exact argv
+3. **Proposed checks** — the scanner-planning table
+4. **Proposed commands** — labeled as proposals; exact argv as an argument array
 5. **Expected outputs and collection paths**
 6. **Authorization gates** — what must be explicitly approved before execution
 7. **Fallback notes** — coverage gaps if a scanner is unavailable

@@ -12,6 +12,8 @@ CATALOG_SRC="${ROOT}/modules/security/files/security/weakness-classes.md"
 CATALOG_DST="${EXT}/security-assets/weakness-classes.md"
 INVENTORY_SRC="${ROOT}/modules/security/files/security/surface-inventory.md"
 INVENTORY_DST="${EXT}/security-assets/surface-inventory.md"
+PLAN_SRC="${ROOT}/modules/security/files/security/scanner-planning.md"
+PLAN_DST="${EXT}/security-assets/scanner-planning.md"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
@@ -64,6 +66,12 @@ if cmp -s "${INVENTORY_SRC}" "${INVENTORY_DST}"; then
   ok "surface-inventory.md is an exact copy of the canonical contract"
 else
   bad "surface-inventory.md differs from canonical source"
+fi
+
+if cmp -s "${PLAN_SRC}" "${PLAN_DST}"; then
+  ok "scanner-planning.md is an exact copy of the canonical contract"
+else
+  bad "scanner-planning.md differs from canonical source"
 fi
 
 if grep -RIn '/home/acktarius' "${EXT}" >/dev/null 2>&1; then

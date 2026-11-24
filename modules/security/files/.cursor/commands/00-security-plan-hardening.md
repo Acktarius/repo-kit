@@ -13,5 +13,7 @@ Create a repository-specific security hardening plan that:
 4. lists the files and functions to inspect and why they matter;
 5. ends with a short implementation checklist.
 
-Do not change code or record findings. Do not invent issues. Save the result to
+Do not change code or record findings. Do not invent issues. If this plan
+proposes an executable scanner check, follow `security/scanner-planning.md`
+and do not run the check. A manual plan does not need that table. Save the result to
 `security/plans/security-hardening.md`, then stop for review.

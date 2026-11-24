@@ -117,6 +117,7 @@ PHASE_TABLE: dict[str, PhaseInfo] = {
             "rules/rules_030-scan-plan.md",
             "tasks/030-scan-plan.md",
             "templates/phase-030-report.md",
+            extra=["security-assets/scanner-planning.md"],
         ),
     ),
     "040": PhaseInfo(

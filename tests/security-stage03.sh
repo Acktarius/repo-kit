@@ -397,20 +397,34 @@ try:
     unread = os.path.join(catalog_dir, "unread.md")
     with open(unread, "w", encoding="utf-8") as fh:
         fh.write("### WC-AUTHN\n")
+    ca_root = os.path.join(catalog_dir, "ca-root")
+    ca_unread = os.path.join(ca_root, "security", "weakness-classes.md")
+    os.makedirs(os.path.dirname(ca_unread), exist_ok=True)
+    with open(ca_unread, "w", encoding="utf-8") as fh:
+        fh.write("### WC-AUTHN\n")
     if hasattr(os, "geteuid") and os.geteuid() == 0:
-        print("PASS: unreadable catalog skipped while running as root")
+        print("SKIP: unreadable catalog omitted while running as root")
     else:
         os.chmod(unread, 0)
+        os.chmod(ca_unread, 0)
         try:
-            try:
-                hv.load_catalog_ids(unread)
-            except hv.ValidationError as exc:
-                if "unreadable" not in str(exc):
-                    die(f"unreadable catalog error was {exc}")
-            else:
-                die("unreadable catalog was accepted")
+            checks = (
+                ("hermes", hv.ValidationError, lambda: hv.load_catalog_ids(unread)),
+                ("contre-attaque", ca_state.StateError, lambda: ca_state.catalog_ids_for_document(
+                    ca_root, [{"weaknessClasses": ["WC-AUTHN"]}])),
+            )
+            for label, err, fn in checks:
+                try:
+                    fn()
+                except err as exc:
+                    if "unreadable" not in str(exc):
+                        die(f"unreadable catalog via {label}: {exc}")
+                else:
+                    die(f"unreadable catalog was accepted by {label}")
+            print("PASS: unreadable catalog rejected by both loaders")
         finally:
             os.chmod(unread, 0o644)
+            os.chmod(ca_unread, 0o644)
     only_sink = legacy()
     only_sink["entrySink"] = sink()
     if ca_state.catalog_ids_for_document(catalog_dir, [only_sink]) != []:
@@ -418,6 +432,10 @@ try:
     check({"repo": "synthetic", "lastReviewed": None, "findings": [only_sink]}, "entrySink without a class")
 finally:
     import shutil
+    for rel in ("unread.md", "ca-root/security/weakness-classes.md"):
+        path = os.path.join(catalog_dir, rel)
+        if os.path.exists(path):
+            os.chmod(path, 0o644)
     shutil.rmtree(catalog_dir, ignore_errors=True)
 print("PASS: catalog errors stay on the validation path")
 PY

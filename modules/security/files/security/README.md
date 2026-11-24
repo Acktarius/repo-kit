@@ -8,6 +8,7 @@ scanner output.
 - `threat-model.md` — assets, entry points, and trust boundaries
 - `weakness-classes.md` — canonical weakness-class catalog and source-review coverage contract
 - `surface-inventory.md` — canonical surface and trust-boundary inventory contract
+- `scanner-planning.md` — canonical scanner-planning and result-handoff contract. Rule 030 and a plan that proposes an executable check read it. It does not run scanners or import findings.
 - `findings-reviewed.json` — reviewed findings and lifecycle status
 - `accepted-risks.md` — explicitly accepted or deferred risks
 - `findings.schema.json` — findings-store structure. Optional `weaknessClasses`

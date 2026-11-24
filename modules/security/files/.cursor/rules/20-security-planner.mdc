@@ -15,6 +15,11 @@ Identify:
 - secrets and external services;
 - high-risk files and unknowns.
 
+If the plan proposes an executable check, a tool installation, an
+advisory-database refresh, or a version or help invocation, read
+`security/scanner-planning.md` and follow it. A manual plan does not
+need a proposed-check table. Do not run those actions from planning.
+
 Save the repository-wide plan to `security/plans/security-hardening.md`.
 Save a plan for one finding to `security/plans/<finding-id>.md`
 (e.g. `security/plans/SG-001.md`).

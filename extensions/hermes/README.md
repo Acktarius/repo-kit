@@ -68,8 +68,9 @@ The installed layout is:
 ```text
 .repo-kit/hermes/
 ├── review-rules/      # Policy inputs; read-only to Hermes
-│                      # weakness-classes.md and surface-inventory.md are
-│                      # copied here at install from modules/security/files/security/
+│                      # weakness-classes.md, surface-inventory.md, and
+│                      # scanner-planning.md are copied here at install
+│                      # from modules/security/files/security/
 ├── tasks/             # Explicit phase entry points; read-only to Hermes
 ├── skills/            # Phase commands (/hermes-010 ...); read-only to Hermes
 ├── hermes-review.sh   # Host launcher; never run by Hermes

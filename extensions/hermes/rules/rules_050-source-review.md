@@ -53,7 +53,9 @@ class. Cite `S-*` and `F-*` IDs where useful. An uninspected applicable
 surface in this priority keeps that class `not_reviewed`. `covered`
 means the class was reviewed, not that the code is secure. The table
 is source-review coverage. Scanner output, Rule 030, and Rule 040 do
-not mark a class `covered`.
+not mark a class `covered`. A scanner hit stays an unreviewed lead until it
+meets this phase's evidence bar. It does not allocate an `SG-*` id or write
+`security/findings-reviewed.json`.
 
 The catalog does not relax Rule 000 or the evidence rules below.
 Unresolved cases stay unresolved questions, or candidates only when the

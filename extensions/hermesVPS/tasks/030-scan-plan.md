@@ -10,6 +10,11 @@
 2. `rules/rules_000-safety-and-scope.md`
 3. `rules/rules_005-report-output.md`
 4. `rules/rules_030-scan-plan.md`
+5. `security-assets/scanner-planning.md`
+
+If any of these files is missing, the phase stops before a usable prompt
+when the runner enforces policy files.  Do not use a phase-050 inventory
+as a prerequisite for this task.
 
 ## 2. Target
 

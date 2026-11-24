@@ -10,6 +10,7 @@ store for a target repository.
 | `findings.schema.json` | Exact copy of the repo-kit security findings schema |
 | `weakness-classes.md` | Exact copy of `modules/security/files/security/weakness-classes.md`. Do not edit it here. Phase 050 source-review coverage reads this copy. It is not a scanner. |
 | `surface-inventory.md` | Exact copy of `modules/security/files/security/surface-inventory.md`. Do not edit it here. Phase 050 reads this copy. It is not a discovery scanner. |
+| `scanner-planning.md` | Exact copy of `modules/security/files/security/scanner-planning.md`. Do not edit it here. Phase 030 reads this copy. It is a plan and a result-handoff description, not a scanner or an importer. |
 | `README.md` | This adapted explanation (not a byte copy of the module README) |
 
 Later packaging stages may add exact copies of finding templates, accepted-risk

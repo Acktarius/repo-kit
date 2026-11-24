@@ -27,6 +27,7 @@ repo-kit tree (upload/install packaging comes later).
 | `modules/security/files/security/findings.schema.json` | `security-assets/findings.schema.json` | Canonical findings schema, byte copy. Optional weaknessClasses and entrySink are part of that schema. Older toolkit copies reject those fields. |
 | `modules/security/files/security/weakness-classes.md` | `security-assets/weakness-classes.md` | Canonical weakness-class catalog; byte copy, not a second authoring source |
 | `modules/security/files/security/surface-inventory.md` | `security-assets/surface-inventory.md` | Canonical surface-inventory contract; byte copy, not a second authoring source |
+| `modules/security/files/security/scanner-planning.md` | `security-assets/scanner-planning.md` | Canonical scanner-planning contract; byte copy, not a second authoring source |
 
 ## Newly written tooling and documentation
 
