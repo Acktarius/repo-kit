@@ -85,7 +85,8 @@ $H decide --run <id> --candidate CA-xxxxxxxxxx --status <affected|not_affected|f
 Rules:
 - `--weakness-class` is optional and repeatable. Pass it only when the
   assessment already established that catalog id. Do not infer a class from
-  advisory text. Do not supply a local entry/sink: an advisory match is not
+  advisory text. An invalid, empty, or unknown id is rejected before the
+  decision is stored. Do not supply a local entry/sink: an advisory match is not
   application reachability, and this helper does not invent one.
 - Decide only candidates in this run's worklist.
 - `prior_decision` is historical: it was invalidated for the listed reasons.

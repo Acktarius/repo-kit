@@ -305,6 +305,316 @@ kept.update(refresh)
 if kept.get("weaknessClasses") != ["WC-AUTHN"]:
     die("refresh without a class replaced human classification")
 print("PASS: schema, catalog membership, export, and advisory handoff")
+
+# Path policy. JSON Schema accepts these strings; both metadata validators decide.
+legacy_abs = legacy()
+legacy_abs["files"] = ["/etc/passwd"]
+check(store(legacy_abs), "legacy files path is not under the new policy")
+traversed = legacy()
+traversed["entrySink"] = sink()
+traversed["entrySink"]["evidence"][0]["file"] = "../secret"
+try:
+    hv.validate_schema(store(traversed), schema, "schema-only-path")
+    ca_state.validate_schema(store(traversed), schema, "schema-only-path")
+except (hv.ValidationError, ca_state.StateError) as exc:
+    die(f"JSON Schema alone rejected an evidence path: {exc}")
+reject(store(traversed), "traversal path", "component")
+
+path_cases = [
+    ("pkg/nested/file.go", None),
+    ("pkg/my file.go", None),
+    ("pkg/café.go", None),
+    ("pkg/config..example", None),
+    ("pkg/../secret", "contains a '..' component"),
+    ("/etc/passwd", "is absolute"),
+    ("C:/Windows/system.ini", "is a URI or drive-qualified path"),
+    ("C:relative.ini", "is a URI or drive-qualified path"),
+    ("\\\\server\\share\\file", "contains a backslash"),
+    ("https://example.test/a", "is a URI or drive-qualified path"),
+    ("pkg/bad\nname.go", "contains a control character"),
+    ("pkg/bad\x00name.go", "contains a control character"),
+    ("pkg//nested.go", "has an empty component"),
+    ("pkg/nested.go/", "has an empty component"),
+    ("./pkg/nested.go", "contains a '.' component"),
+    ("", "empty or whitespace-only"),
+    ("   ", "empty or whitespace-only"),
+]
+for path, expected in path_cases:
+    left = hv.evidence_path_error(path)
+    right = ca_state.evidence_path_error(path)
+    if left != right:
+        die(f"path policy drift for {path!r}: {left!r} vs {right!r}")
+    if expected is None and left is not None:
+        die(f"path {path!r} should be valid, got {left!r}")
+    if expected is not None and left != expected:
+        die(f"path {path!r} should be {expected!r}, got {left!r}")
+print("PASS: evidence-path policy matches on both validators")
+
+import tempfile
+catalog_dir = tempfile.mkdtemp(prefix="stage03-catalog-")
+try:
+    missing = os.path.join(catalog_dir, "missing.md")
+    for loader, err in ((hv.load_catalog_ids, hv.ValidationError), (ca_state.catalog_ids_for_document, ca_state.StateError)):
+        try:
+            if loader is hv.load_catalog_ids:
+                loader(missing)
+            else:
+                loader(catalog_dir, [{"weaknessClasses": ["WC-AUTHN"]}])
+        except err as exc:
+            if "missing" not in str(exc):
+                die(f"missing catalog error was {exc}")
+        else:
+            die("missing catalog was accepted")
+    empty = os.path.join(catalog_dir, "empty.md")
+    with open(empty, "w", encoding="utf-8") as fh:
+        fh.write("no headings\n")
+    dup = os.path.join(catalog_dir, "dup.md")
+    with open(dup, "w", encoding="utf-8") as fh:
+        fh.write("### WC-AUTHN\n\n### WC-AUTHN\n")
+    bad = os.path.join(catalog_dir, "bad.md")
+    with open(bad, "wb") as fh:
+        fh.write(b"### WC-AUTHN\n\xff\n")
+    for path, needle in ((empty, "no ### WC-"), (dup, "duplicate"), (bad, "not valid UTF-8")):
+        for loader, err in ((hv.load_catalog_ids, hv.ValidationError),):
+            try:
+                loader(path)
+            except err as exc:
+                if needle not in str(exc):
+                    die(f"{path} via hermes: {exc}")
+            else:
+                die(f"{path} was accepted by hermes")
+        try:
+            saved = os.path.join(catalog_dir, "security")
+            os.makedirs(saved, exist_ok=True)
+            os.replace(path, os.path.join(saved, "weakness-classes.md"))
+            ca_state.catalog_ids_for_document(catalog_dir, [{"weaknessClasses": ["WC-AUTHN"]}])
+        except ca_state.StateError as exc:
+            if needle not in str(exc):
+                die(f"{path} via contre-attaque: {exc}")
+        else:
+            die(f"{path} was accepted by contre-attaque")
+        os.replace(os.path.join(saved, "weakness-classes.md"), path)
+    unread = os.path.join(catalog_dir, "unread.md")
+    with open(unread, "w", encoding="utf-8") as fh:
+        fh.write("### WC-AUTHN\n")
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        print("PASS: unreadable catalog skipped while running as root")
+    else:
+        os.chmod(unread, 0)
+        try:
+            try:
+                hv.load_catalog_ids(unread)
+            except hv.ValidationError as exc:
+                if "unreadable" not in str(exc):
+                    die(f"unreadable catalog error was {exc}")
+            else:
+                die("unreadable catalog was accepted")
+        finally:
+            os.chmod(unread, 0o644)
+    only_sink = legacy()
+    only_sink["entrySink"] = sink()
+    if ca_state.catalog_ids_for_document(catalog_dir, [only_sink]) != []:
+        die("entrySink-only record required a catalog")
+    check({"repo": "synthetic", "lastReviewed": None, "findings": [only_sink]}, "entrySink without a class")
+finally:
+    import shutil
+    shutil.rmtree(catalog_dir, ignore_errors=True)
+print("PASS: catalog errors stay on the validation path")
+PY
+
+python3 - "${ROOT}" "${EXT}" <<'PY'
+import json, os, shutil, subprocess, sys, tempfile
+root, ext = sys.argv[1:]
+stamp = os.path.join(root, "tests", "hermes_vps_stamp.py")
+artifacts = os.path.join(ext, "bin", "hermes-vps-artifacts")
+review = os.path.join(ext, "bin", "hermes-vps-review")
+env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+
+def die(msg):
+    raise SystemExit(msg)
+
+class Run:
+    def __init__(self, name):
+        self.base = tempfile.mkdtemp(prefix=f"stage03-{name}-")
+        self.policy = os.path.join(self.base, "policy")
+        self.src = os.path.join(self.base, "src")
+        self.run_root = os.path.join(self.base, "run")
+        self.work = os.path.join(self.base, "work")
+        shutil.copytree(ext, self.policy, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        os.makedirs(os.path.join(self.run_root, "reports"))
+        os.makedirs(self.work)
+        os.makedirs(self.src)
+        subprocess.run(["git", "-C", self.src, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", self.src, "config", "user.email", "t@example.com"], check=True)
+        subprocess.run(["git", "-C", self.src, "config", "user.name", "T"], check=True)
+        with open(os.path.join(self.src, "README.md"), "w", encoding="utf-8") as fh:
+            fh.write("synthetic\n")
+        subprocess.run(["git", "-C", self.src, "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", self.src, "commit", "-q", "-m", "init"], check=True)
+        self.sha = subprocess.run(["git", "-C", self.src, "rev-parse", "HEAD"], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        self.run_json = os.path.join(self.run_root, "run.json")
+        self._write(self.run_json, {
+            "schema_version": 1, "run_id": "run-stage03", "policy_prefix": self.policy,
+            "source": {"path": self.src, "identity": "fixture/stage03", "commit": self.sha,
+                       "require_clean_worktree": True},
+            "output": {"run_root": self.run_root},
+            "phase_request": {"phase": "010", "phase_name": "inventory", "requested_by": "test",
+                              "requested_at_utc": "2026-11-23T00:00:00Z"},
+            "prerequisites": {"artifacts": []},
+            "boundaries": {"claims_os_readonly_source": False, "allowed_write_roots": [self.run_root]},
+            "toolkit": {"toolkit_revision": "stage03", "toolkit_dirty": False},
+        })
+        self.n = 0
+
+    def close(self):
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def _write(self, path, data):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+            fh.write("\n")
+        return path
+
+    def report(self, title, state="complete"):
+        self.n += 1
+        path = os.path.join(self.work, f"report-{self.n}.md")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"# {title}\n\nSynthetic.\n\nState: `{state}`\n")
+        return path
+
+    def payload(self, data):
+        self.n += 1
+        return self._write(os.path.join(self.work, f"payload-{self.n}.json"), data)
+
+    def manifest(self):
+        path = os.path.join(self.run_root, "manifest.json")
+        if not os.path.isfile(path):
+            return {"artifacts": []}
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def reports(self):
+        return sorted(os.listdir(os.path.join(self.run_root, "reports")))
+
+    def stamp(self, report, phase, subject=None):
+        args = [sys.executable, stamp, review, "register", "--run-json", self.run_json,
+                "--phase", phase, "--source-report", report]
+        if subject:
+            args += ["--subject-id", subject]
+        subprocess.run(args, check=True, env=env)
+
+    def register(self, phase, report, payload=None, subject=None):
+        self.stamp(report, phase, subject)
+        args = [artifacts, "register", "--run-json", self.run_json, "--phase", phase, "--source-report", report]
+        if subject:
+            args += ["--subject-id", subject]
+        if payload is not None:
+            args += ["--payload-json", payload if isinstance(payload, str) else self.payload(payload)]
+        return subprocess.run(args, capture_output=True, text=True, env=env)
+
+    def prepare(self):
+        for phase in ("010", "020"):
+            res = self.register(phase, self.report(phase))
+            if res.returncode != 0:
+                die(f"setup {phase} failed: {res.stderr}")
+        res = self.register("050", self.report("050"), subject="synthetic-priority")
+        if res.returncode != 0:
+            die(f"setup 050 failed: {res.stderr}")
+        triage = {"schema_version": 1, "phase": "060", "source_commit": self.sha,
+                  "candidates": [{"candidate_id": "C-001", "title": "Synthetic", "disposition": "validated-new"}]}
+        res = self.register("060", self.report("060"), triage)
+        if res.returncode != 0:
+            die(f"setup 060 failed: {res.stderr}")
+
+    def finding(self, **extra):
+        proposed = {"title": "Synthetic finding", "status": "open", "severity": "medium",
+                    "files": ["pkg/synthetic.go"]}
+        proposed.update(extra)
+        return {"schema_version": 1, "phase": "070", "candidate_id": "C-001", "source_commit": self.sha,
+                "assessment_disposition": "confirmed", "assessment_rationale": "Synthetic rationale",
+                "proposed_finding": proposed}
+
+sink = {
+    "entryPoint": "Synthetic handler",
+    "flow": "Synthetic caller-supplied id reaches the load",
+    "sensitiveOperation": "Synthetic load of one row",
+    "controlGap": "Synthetic owner check uses a different id",
+    "evidence": [{
+        "file": "pkg/café.go", "symbol": "GetOrder", "startLine": 40, "endLine": 44,
+        "note": "Synthetic reference. Not a real repository.",
+    }],
+}
+
+def attempt(name, proposed_extra, commit=None, expect_ok=False):
+    run = Run(name)
+    try:
+        run.prepare()
+        before_arts = [a["id"] for a in run.manifest()["artifacts"]]
+        before_reports = run.reports()
+        payload = run.finding(**proposed_extra)
+        if commit is not None:
+            payload["source_commit"] = commit
+        res = run.register("070", run.report("070"), payload, subject="C-001")
+        after_arts = [a["id"] for a in run.manifest()["artifacts"]]
+        target_store = os.path.join(run.src, "security", "findings-reviewed.json")
+        if os.path.exists(target_store):
+            die(f"{name} wrote a target findings store")
+        if expect_ok:
+            if res.returncode != 0:
+                die(f"{name} register failed: {res.stderr}")
+            arts = [a for a in run.manifest()["artifacts"] if a.get("phase") == "070"]
+            if len(arts) != 1:
+                die(f"{name} did not register exactly one phase 070 artifact")
+            payload_path = os.path.join(run.run_root, arts[0]["payload_path"])
+            saved = json.load(open(payload_path, encoding="utf-8"))
+            if saved["proposed_finding"].get("weaknessClasses") != proposed_extra.get("weaknessClasses"):
+                die(f"{name} registered payload dropped weaknessClasses")
+            if saved["proposed_finding"].get("entrySink") != proposed_extra.get("entrySink"):
+                die(f"{name} registered payload dropped entrySink")
+            exports = [a for a in run.manifest()["artifacts"] if a.get("kind") == "findings_export"]
+            if len(exports) != 1:
+                die(f"{name} did not register one findings export")
+            export = json.load(open(os.path.join(run.run_root, exports[0]["path"]), encoding="utf-8"))
+            record = export["findings"][0]["proposed_record"]
+            if record.get("weaknessClasses") != ["WC-SUPPLY-CHAIN"] or record.get("entrySink", {}).get("evidence", [{}])[0].get("file") != "pkg/café.go":
+                die(f"{name} export dropped metadata: {record}")
+            return
+        if res.returncode == 0:
+            die(f"{name} register succeeded")
+        if after_arts != before_arts:
+            die(f"{name} left a registered artifact behind: {after_arts}")
+        if run.reports() != before_reports:
+            die(f"{name} left report files behind")
+        if any(name.startswith("findings-") for name in run.reports()):
+            die(f"{name} left a findings export behind")
+    finally:
+        run.close()
+
+attempt("ok", {"weaknessClasses": ["WC-SUPPLY-CHAIN"], "entrySink": sink}, expect_ok=True)
+attempt("unknown-class", {"weaknessClasses": ["WC-NOT-A-CLASS"]})
+attempt("bad-path", {"entrySink": {**sink, "evidence": [{**sink["evidence"][0], "file": "../secret"}]}})
+attempt("bad-range", {"entrySink": {**sink, "evidence": [{**sink["evidence"][0], "startLine": 12, "endLine": 4}]}})
+attempt("wrong-commit", {"weaknessClasses": ["WC-SUPPLY-CHAIN"]}, commit="0" * 40)
+
+run = Run("broken-catalog")
+try:
+    catalog = os.path.join(run.policy, "security-assets", "weakness-classes.md")
+    with open(catalog, "wb") as fh:
+        fh.write(b"\xff")
+    run.prepare()
+    before = [a["id"] for a in run.manifest()["artifacts"]]
+    res = run.register("070", run.report("070"), run.finding(weaknessClasses=["WC-SUPPLY-CHAIN"]), subject="C-001")
+    if res.returncode == 0 or [a["id"] for a in run.manifest()["artifacts"]] != before:
+        die(f"broken catalog registered a classified payload: {res.stderr}")
+    if "UTF-8" not in res.stderr and "not valid UTF-8" not in res.stderr:
+        die(f"broken catalog error was not explicit: {res.stderr}")
+    plain = run.register("070", run.report("070 plain"), run.finding(), subject="C-001")
+    if plain.returncode != 0:
+        die(f"unclassified payload required a readable catalog: {plain.stderr}")
+finally:
+    run.close()
+print("PASS: phase 070 registration and findings export keep or reject metadata")
 PY
 
 TMP="$(mktemp -d)"

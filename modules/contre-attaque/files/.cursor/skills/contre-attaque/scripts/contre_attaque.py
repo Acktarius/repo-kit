@@ -19,6 +19,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -708,6 +709,29 @@ def _provider_evidence(root: str, sha: str) -> dict[str, Any] | None:
     return {"url": req.get("url") or "", "provider": req["provider"], "at_utc": req.get("at_utc") or "", "lead": False}
 
 
+_WC_ID = re.compile(r"^WC-[A-Z0-9-]+$")
+
+
+def _reject_bad_classes(root: str, classes: Any) -> None:
+    """Reject CLI class metadata before a decision is stored."""
+    if not isinstance(classes, list) or not classes:
+        raise UsageError("weaknessClasses must be a non-empty list of catalog WC-* ids")
+    seen: set[str] = set()
+    for item in classes:
+        if not isinstance(item, str) or _WC_ID.fullmatch(item) is None:
+            raise UsageError(f"invalid weakness class {item!r}")
+        if item in seen:
+            raise UsageError(f"duplicate weakness class {item!r}")
+        seen.add(item)
+    try:
+        ids = set(st.catalog_ids_for_document(root, [{"weaknessClasses": list(classes)}]))
+    except st.StateError as exc:
+        raise UsageError(str(exc)) from exc
+    unknown = [item for item in classes if item not in ids]
+    if unknown:
+        raise UsageError(f"unknown weakness class {unknown[0]!r}; not a catalog WC-* id")
+
+
 def cmd_decide(args: argparse.Namespace, **_: Any) -> int:
     root = _repo_root(args.root)
     now = _now(args.now)
@@ -753,8 +777,9 @@ def cmd_decide(args: argparse.Namespace, **_: Any) -> int:
             "acceptance": args.acceptance or [], "decided_at_utc": intel.iso(now), "decided_by": "agent",
             **_decision_context(cand, run),
         }
-        if args.weakness_class:
-            assessment["weaknessClasses"] = args.weakness_class
+        if args.weakness_class is not None:
+            _reject_bad_classes(root, args.weakness_class)
+            assessment["weaknessClasses"] = list(args.weakness_class)
         _record(state, assessment)
         if cand["candidate_id"] not in run["assessment"]["decided"]:
             run["assessment"]["decided"].append(cand["candidate_id"])

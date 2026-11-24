@@ -30,8 +30,17 @@ Finding object required fields: `id`, `title`, `status`, `severity`, `files`.
 Records that omit the optional fields stay valid. A toolkit that still ships
 the previous schema rejects records that contain `weaknessClasses` or
 `entrySink`. This bundle does not migrate a target findings store. Catalog
-membership and `endLine >= startLine` are checked by `validate_finding_metadata`,
-not by JSON Schema alone.
+membership, `endLine >= startLine`, and the `entrySink` evidence-path policy
+are checked by `validate_finding_metadata`, not by JSON Schema alone.
+
+An evidence `file` is a portable repository-relative path using `/`
+separators. Rejected: empty or whitespace-only paths, POSIX absolute paths,
+Windows drive-qualified and drive-relative paths, UNC and backslash paths,
+URI-like references, `.` and `..` components, repeated or trailing separators,
+a leading `./`, and control characters. Spaces, Unicode, and a filename that
+merely contains `..` are allowed. The check does not open the path. A later
+reader must confine it to an approved root before opening it. The top-level
+`files` list is not checked by this policy.
 
 Phase 010 (inventory) does **not** generate findings. Presence of the schema
 does not authorize creating or updating `findings-reviewed.json`.

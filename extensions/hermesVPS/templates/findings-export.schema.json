@@ -224,7 +224,10 @@
                       "additionalProperties": false,
                       "required": ["file", "note"],
                       "properties": {
-                        "file": { "type": "string", "pattern": "^[^\\s/]" },
+                        "file": {
+                          "type": "string",
+                          "description": "Portable repository-relative path. JSON Schema only requires a string. validate_finding_metadata enforces the evidence-path policy and does not open the path."
+                        },
                         "symbol": { "type": "string", "pattern": "\\S" },
                         "startLine": { "type": "integer", "minimum": 1 },
                         "endLine": { "type": "integer", "minimum": 1 },

@@ -1,8 +1,10 @@
 import json
 import os
+import shutil
 import unittest
+from datetime import datetime, timezone
 
-from support import NOW, RepoCase, deep, fixture, standard_transport
+from support import NOW, SECURITY, RepoCase, deep, fixture, standard_transport
 
 import ca_report
 
@@ -158,6 +160,165 @@ class Handoff(RepoCase):
             self.assertTrue(os.path.isfile(os.path.join(self.root, ".repo-kit", "contre-attaque", "runs", rid, rel)))
         self.assertEqual(run["outcome"], "completed")
         self.assertFalse(run["coverage_complete"])
+
+
+class MetadataHandoff(RepoCase):
+    """Real decide/sync paths. Invalid optional metadata is rejected, not dropped."""
+
+    def install_catalog(self):
+        shutil.copy(os.path.join(SECURITY, "weakness-classes.md"),
+                    os.path.join(self.root, "security", "weakness-classes.md"))
+
+    def findings_bytes(self):
+        with open(os.path.join(self.root, "security", "findings-reviewed.json"), "rb") as fh:
+            return fh.read()
+
+    def sync(self, state):
+        run = next(r for r in reversed(state["runs"]))
+        now = datetime(2026, 11, 2, 17, 0, tzinfo=timezone.utc)
+        return ca_report.sync_findings(self.root, state, run, now)
+
+    def test_valid_class_is_persisted_and_invalid_decide_does_not_replace_it(self):
+        self.install_catalog()
+        out = self.start("3days")
+        cid = self.item(out, "lodash")["candidate_id"]
+        code, payload = self.decide(out["run_id"], cid, "affected", "--evidence", "package-lock.json",
+                                    "--weakness-class", "WC-NOT-A-CLASS")
+        self.assertEqual(code, 2, payload)
+        self.assertNotIn(cid, self.state()["assessments"])
+        self.assertNotIn(cid, self.state()["findings"])
+        self.assertEqual(self.findings()["findings"], [])
+        code, payload = self.decide(out["run_id"], cid, "affected", "--evidence", "package-lock.json",
+                                    "--weakness-class", "")
+        self.assertEqual(code, 2, payload)
+        self.assertNotIn(cid, self.state()["assessments"])
+        code, _ = self.decide(out["run_id"], cid, "affected", "--evidence", "package-lock.json",
+                              "--weakness-class", "WC-SUPPLY-CHAIN", "--weakness-class", "WC-SUPPLY-CHAIN")
+        self.assertEqual(code, 2)
+        self.assertNotIn(cid, self.state()["assessments"])
+        code, _ = self.decide(out["run_id"], cid, "affected", "--evidence", "package-lock.json",
+                              "--weakness-class", "WC-SUPPLY-CHAIN")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.state()["assessments"][cid]["weaknessClasses"], ["WC-SUPPLY-CHAIN"])
+        code, payload = self.decide(out["run_id"], cid, "affected", "--evidence", "package-lock.json",
+                                    "--weakness-class", "WC-NOT-A-CLASS")
+        self.assertEqual(code, 2, payload)
+        self.assertEqual(self.state()["assessments"][cid]["weaknessClasses"], ["WC-SUPPLY-CHAIN"])
+        code, _ = self.cli("finish", "--run", out["run_id"])
+        self.assertEqual(code, 0)
+        record = self.findings()["findings"][0]
+        self.assertEqual(record["weaknessClasses"], ["WC-SUPPLY-CHAIN"])
+        self.assertNotIn("entrySink", record)
+        link = self.state()["findings"][cid]
+        self.assertEqual(link["sg_id"], record["id"])
+        self.assertTrue(link["written_fields_sha256"])
+
+    def test_explicit_invalid_metadata_is_not_omitted_or_linked(self):
+        out = self.start("3days")
+        cid = self.item(out, "lodash")["candidate_id"]
+        self.decide(out["run_id"], cid, "affected", "--evidence", "package-lock.json")
+        original = self.findings_bytes()
+        for key, value in (
+            ("weaknessClasses", []),
+            ("weaknessClasses", None),
+            ("weaknessClasses", ""),
+            ("entrySink", {}),
+            ("entrySink", None),
+            ("entrySink", []),
+        ):
+            state = self.state()
+            state["assessments"][cid][key] = value
+            result = self.sync(state)
+            self.assertIn(cid, " ".join(result["blocked"]), value)
+            self.assertEqual(result["added"], [], value)
+            self.assertEqual(result["updated"], [], value)
+            self.assertNotIn(cid, state["findings"], value)
+            self.assertEqual(self.findings_bytes(), original, value)
+            self.assertEqual(self.state()["findings"], {})
+
+    def test_rejected_refresh_and_human_edit_leave_the_record(self):
+        self.install_catalog()
+        out = self.start("3days")
+        cid = self.item(out, "lodash")["candidate_id"]
+        self.decide(out["run_id"], cid, "affected", "--evidence", "package-lock.json",
+                    "--weakness-class", "WC-SUPPLY-CHAIN")
+        self.cli("finish", "--run", out["run_id"])
+        owned = self.findings_bytes()
+        link = dict(self.state()["findings"][cid])
+        state = self.state()
+        state["assessments"][cid]["weaknessClasses"] = []
+        result = self.sync(state)
+        self.assertIn(cid, " ".join(result["blocked"]))
+        self.assertEqual(result["updated"], [])
+        self.assertEqual(self.findings_bytes(), owned)
+        self.assertEqual(self.state()["findings"][cid]["written_fields_sha256"], link["written_fields_sha256"])
+        doc = self.findings()
+        doc["findings"][0]["severity"] = "critical"
+        doc["findings"][0]["notes"] += "\nHuman edit."
+        with open(os.path.join(self.root, "security", "findings-reviewed.json"), "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        human = self.findings_bytes()
+        state = self.state()
+        state["assessments"][cid]["weaknessClasses"] = ["WC-AUTHN"]
+        result = self.sync(state)
+        self.assertTrue(result["conflicts"])
+        self.assertEqual(self.findings_bytes(), human)
+        self.assertEqual(self.findings()["findings"][0]["severity"], "critical")
+        self.assertEqual(self.findings()["findings"][0]["weaknessClasses"], ["WC-SUPPLY-CHAIN"])
+
+    def test_agent_refresh_keeps_metadata_the_new_assessment_omits(self):
+        self.install_catalog()
+        out = self.start("3days")
+        cid = self.item(out, "lodash")["candidate_id"]
+        self.decide(out["run_id"], cid, "affected", "--evidence", "package-lock.json",
+                    "--weakness-class", "WC-SUPPLY-CHAIN")
+        self.cli("finish", "--run", out["run_id"])
+        state = self.state()
+        del state["assessments"][cid]["weaknessClasses"]
+        result = self.sync(state)
+        self.assertIn("SG-001", result["updated"])
+        self.assertEqual(self.findings()["findings"][0]["weaknessClasses"], ["WC-SUPPLY-CHAIN"])
+        self.assertEqual(self.state()["findings"][cid]["sg_id"], "SG-001")
+
+    def test_missing_catalog_blocks_only_the_classified_candidate(self):
+        out = self.start("3days")
+        lodash = self.item(out, "lodash")["candidate_id"]
+        python = self.item(out, "python", "CVE-2026-1111")["candidate_id"]
+        self.decide(out["run_id"], lodash, "affected", "--evidence", "package-lock.json")
+        self.decide(out["run_id"], python, "affected", "--evidence", "Dockerfile:1")
+        state = self.state()
+        state["assessments"][python]["weaknessClasses"] = ["WC-SUPPLY-CHAIN"]
+        state["assessments"][lodash]["entrySink"] = {
+            "entryPoint": "Synthetic advisory record",
+            "flow": "Synthetic version evidence",
+            "sensitiveOperation": "Synthetic dependency use",
+            "controlGap": "Synthetic unfixed version",
+            "evidence": [{"file": "package-lock.json", "note": "Synthetic lockfile reference"}],
+        }
+        result = self.sync(state)
+        self.assertIn("catalog is missing", " ".join(result["blocked"]))
+        self.assertNotIn(python, state["findings"])
+        written = {item["id"]: item for item in self.findings()["findings"]}
+        self.assertEqual(set(written), {"SG-001"})
+        self.assertIn("entrySink", written["SG-001"])
+        self.assertNotIn("weaknessClasses", written["SG-001"])
+        self.assertEqual(state["findings"][lodash]["sg_id"], "SG-001")
+
+    def test_existing_classified_store_is_not_rewritten_when_catalog_is_missing(self):
+        self.install_catalog()
+        out = self.start("3days")
+        cid = self.item(out, "lodash")["candidate_id"]
+        self.decide(out["run_id"], cid, "affected", "--evidence", "package-lock.json",
+                    "--weakness-class", "WC-SUPPLY-CHAIN")
+        self.cli("finish", "--run", out["run_id"])
+        os.remove(os.path.join(self.root, "security", "weakness-classes.md"))
+        before = self.findings_bytes()
+        link = dict(self.state()["findings"][cid])
+        result = self.sync(self.state())
+        self.assertFalse(result["written"])
+        self.assertIn("catalog is missing", " ".join(result["errors"]))
+        self.assertEqual(self.findings_bytes(), before)
+        self.assertEqual(self.state()["findings"][cid], link)
 
 
 if __name__ == "__main__":

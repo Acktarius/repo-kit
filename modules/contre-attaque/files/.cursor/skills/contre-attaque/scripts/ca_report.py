@@ -152,12 +152,10 @@ def build_record(cand: dict[str, Any], a: dict[str, Any], run: dict[str, Any], s
         "acceptedRiskId": None,
         "notes": notes,
     }
-    classes = a.get("weaknessClasses")
-    if classes:
-        record["weaknessClasses"] = classes
-    sink = a.get("entrySink")
-    if sink:
-        record["entrySink"] = sink
+    if "weaknessClasses" in a:
+        record["weaknessClasses"] = a["weaknessClasses"]
+    if "entrySink" in a:
+        record["entrySink"] = a["entrySink"]
     return record
 
 
@@ -336,6 +334,12 @@ def incomplete_reasons(state: dict[str, Any], run: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def _class_text(value: Any) -> str:
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return ", ".join(value) if value else "(empty)"
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
 def _item_block(state: dict[str, Any], cid: str, sync: dict[str, Any]) -> list[str]:
     cand, a = state["candidates"][cid], state["assessments"][cid]
     comp = cand["component"]
@@ -352,10 +356,10 @@ def _item_block(state: dict[str, Any], cid: str, sync: dict[str, Any]) -> list[s
         f"{'listed ' + str(cand['kev'].get('date_added')) if cand.get('kev') else 'not listed'}",
         f"- Rationale: {a['rationale']}",
         "- Evidence: " + ("; ".join(_evidence_lines(a)) or "(none)"),
-        *(["- Weakness classes (explicit; not inferred from the advisory): " + ", ".join(a["weaknessClasses"])]
-          if a.get("weaknessClasses") else []),
+        *(["- Weakness classes (explicit; not inferred from the advisory): " + _class_text(a["weaknessClasses"])]
+          if "weaknessClasses" in a else []),
         *(["- Structured local entry/sink was supplied on the assessment. An advisory match is not application reachability."]
-          if a.get("entrySink") else []),
+          if "entrySink" in a else []),
         "- Sources: " + "; ".join(_source_refs(cand)),
         f"- Proposed mitigation: {_mitigation(cand, a) or UNKNOWN_MITIGATION}",
         "- Verification: " + " ".join(_verification(cand, a)),

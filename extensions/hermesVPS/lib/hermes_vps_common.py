@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 import subprocess
 import sys
 from typing import Any
@@ -580,24 +581,65 @@ def load_catalog_ids(path: str) -> list[str]:
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
+    except FileNotFoundError as exc:
+        raise ValidationError(f"weakness-class catalog is missing: {path}") from exc
+    except UnicodeError as exc:
+        raise ValidationError(f"weakness-class catalog is not valid UTF-8: {path}") from exc
     except OSError as exc:
-        raise ValidationError(f"weakness-class catalog unreadable: {path}") from exc
+        raise ValidationError(f"weakness-class catalog is unreadable: {path}") from exc
     return catalog_class_ids(text)
 
 
-def validate_finding_metadata(finding: Any, catalog_ids: Any, label: str = "finding") -> None:
-    """Reject unknown or duplicate WC-* ids and invalid entrySink line ranges.
+def evidence_path_error(path: Any) -> str | None:
+    """Return why entrySink.evidence[].file is not a portable repository-relative path.
 
-    Call after validate_schema. A WC-* pattern is not catalog membership, and
-    JSON Schema does not compare endLine with startLine.
+    Lexical only. This does not open, stat, or resolve the path, and it does not
+    prove symlink confinement. A later reader must confine the path to an
+    approved root before opening it.
+
+    Allowed: '/' separators, spaces, Unicode filenames, and a component that
+    merely contains the substring '..' (for example config..example).
+    Rejected: empty or whitespace-only paths, POSIX absolute paths, Windows
+    drive-qualified and drive-relative paths, UNC and backslash paths,
+    URI-like references, '.' and '..' components, repeated or trailing
+    separators, a leading './', and NUL or other control characters.
+    Keep this in step with ca_state.evidence_path_error.
+    """
+    if not isinstance(path, str):
+        return "must be a string"
+    if path == "" or path.strip() == "":
+        return "empty or whitespace-only"
+    if any(unicodedata.category(ch) == "Cc" for ch in path):
+        return "contains a control character"
+    if "\\" in path:
+        return "contains a backslash"
+    if path.startswith("/"):
+        return "is absolute"
+    if "://" in path or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", path):
+        return "is a URI or drive-qualified path"
+    parts = path.split("/")
+    if any(part == "" for part in parts):
+        return "has an empty component"
+    for part in parts:
+        if part in (".", ".."):
+            return f"contains a {part!r} component"
+    return None
+
+
+def validate_finding_metadata(finding: Any, catalog_ids: Any, label: str = "finding") -> None:
+    """Reject unknown WC-* ids, invalid entrySink values, paths, and line ranges.
+
+    Call after validate_schema when the record is a findings object. A WC-*
+    pattern is not catalog membership. JSON Schema does not compare endLine
+    with startLine and does not enforce the evidence-path policy.
     """
     if not isinstance(finding, dict):
         raise ValidationError(f"{label}: finding metadata requires an object")
     allowed = set(catalog_ids)
-    classes = finding.get("weaknessClasses")
-    if classes is not None:
-        if not isinstance(classes, list):
-            raise ValidationError(f"{label}.weaknessClasses: expected an array")
+    if "weaknessClasses" in finding:
+        classes = finding["weaknessClasses"]
+        if not isinstance(classes, list) or not classes:
+            raise ValidationError(f"{label}.weaknessClasses: expected a non-empty array")
         seen: set[str] = set()
         for i, item in enumerate(classes):
             if not isinstance(item, str) or item in seen:
@@ -605,15 +647,20 @@ def validate_finding_metadata(finding: Any, catalog_ids: Any, label: str = "find
             seen.add(item)
             if item not in allowed:
                 raise ValidationError(f"{label}.weaknessClasses[{i}]: {item!r} is not a catalog WC-* id")
-    sink = finding.get("entrySink")
+    if "entrySink" not in finding:
+        return
+    sink = finding["entrySink"]
     if not isinstance(sink, dict):
-        return
+        raise ValidationError(f"{label}.entrySink: expected an object")
     evidence = sink.get("evidence")
-    if not isinstance(evidence, list):
-        return
+    if not isinstance(evidence, list) or not evidence:
+        raise ValidationError(f"{label}.entrySink.evidence: expected a non-empty array")
     for i, ref in enumerate(evidence):
         if not isinstance(ref, dict):
-            continue
+            raise ValidationError(f"{label}.entrySink.evidence[{i}]: expected an object")
+        reason = evidence_path_error(ref.get("file"))
+        if reason:
+            raise ValidationError(f"{label}.entrySink.evidence[{i}].file: {reason}")
         has_start = "startLine" in ref and ref.get("startLine") is not None
         has_end = "endLine" in ref and ref.get("endLine") is not None
         if has_start != has_end:

@@ -14,6 +14,16 @@ scanner output.
   and `entrySink` may be omitted. Records without them stay valid. A toolkit
   that still ships the previous schema rejects records that contain the new
   fields. Init and sync do not migrate or enrich an existing findings store.
+  An `entrySink` evidence path is a portable repository-relative path using
+  `/` separators. The schema only requires a string. `validate_finding_metadata`
+  rejects an empty or whitespace-only path, a POSIX absolute path, a Windows
+  drive-qualified or drive-relative path, a UNC or backslash path, a URI-like
+  reference, a `.` or `..` component, a repeated or trailing separator, a
+  leading `./`, and NUL or other control characters. Spaces and Unicode in a
+  filename are allowed, including a name that contains the substring `..`.
+  The check does not open the path or prove symlink confinement. A reader
+  must confine the path to an approved root before opening it. The top-level
+  `files` list is unchanged.
 - `templates/` — reusable finding templates
 - `plans/` — approved hardening and remediation plans
 

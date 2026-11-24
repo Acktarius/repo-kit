@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Security Findings Store",
-  "description": "Reviewed findings store. weaknessClasses and entrySink are optional; records that omit them stay valid. A toolkit that still has the previous schema rejects records that contain those fields. A WC-* pattern is not catalog membership, and this schema does not compare endLine with startLine. validate_finding_metadata checks both.",
+  "description": "Reviewed findings store. weaknessClasses and entrySink are optional; records that omit them stay valid. A toolkit that still has the previous schema rejects records that contain those fields. A WC-* pattern is not catalog membership. This schema does not compare endLine with startLine and does not enforce the entrySink evidence-path policy. validate_finding_metadata checks those.",
   "type": "object",
   "required": ["repo", "findings"],
   "properties": {
@@ -58,7 +58,7 @@
           },
           "entrySink": {
             "type": "object",
-            "description": "Optional structured evidence. When present, every property below is required. JSON Schema does not compare endLine with startLine and does not require the two line numbers to appear together. validate_finding_metadata rejects one-sided references and reversed ranges.",
+            "description": "Optional structured evidence. When present, every property below is required. JSON Schema does not compare endLine with startLine, does not require the two line numbers to appear together, and does not enforce the evidence-path policy. validate_finding_metadata checks those.",
             "additionalProperties": false,
             "required": ["entryPoint", "flow", "sensitiveOperation", "controlGap", "evidence"],
             "properties": {
@@ -91,8 +91,7 @@
                   "properties": {
                     "file": {
                       "type": "string",
-                      "pattern": "^[^\\s/]",
-                      "description": "Repository-relative source or configuration path"
+                      "description": "Portable repository-relative path using '/' separators. JSON Schema only requires a string. validate_finding_metadata rejects an empty or whitespace-only path, a POSIX absolute path, a Windows drive-qualified or drive-relative path, a UNC or backslash path, a URI-like reference, a '.' or '..' component, a repeated or trailing separator, a leading './', and NUL or other control characters. Spaces and Unicode in a filename are allowed. A name may contain the substring '..'. The check does not open the path. A later reader must confine the path to an approved root before opening it."
                     },
                     "symbol": {
                       "type": "string",
