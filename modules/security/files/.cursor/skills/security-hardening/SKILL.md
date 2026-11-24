@@ -68,6 +68,8 @@ For each valid finding provide:
 - affected files and relevant function or configuration;
 - evidence and high-level exploit path;
 - concrete remediation;
-- duplicate or accepted-risk linkage when applicable.
+- duplicate or accepted-risk linkage when applicable;
+- optional `weaknessClasses` and `entrySink` when the evidence establishes
+  them. Omit the class when the mapping is uncertain. Do not invent one.
 
 If there are no supported findings, say `no valid findings`.

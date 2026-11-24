@@ -26,6 +26,10 @@ When asked to review for security:
   boundary, the flow or security decision, the sensitive operation, and the
   absent or ineffective control. Leave anything short of that unresolved.
   Do not report it as a valid finding;
+- when that evidence establishes them, include optional `weaknessClasses`
+  and `entrySink` on the proposed finding. Use one or more catalog `WC-*`
+  ids. Omit `weaknessClasses` when the mapping is uncertain and say why.
+  Do not invent a class. These fields do not lower the valid-finding bar;
 - check `security/findings-reviewed.json` and `security/accepted-risks.md`;
 - do not speculate, duplicate records, or invent impact.
 

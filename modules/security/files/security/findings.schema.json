@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Security Findings Store",
+  "description": "Reviewed findings store. weaknessClasses and entrySink are optional; records that omit them stay valid. A toolkit that still has the previous schema rejects records that contain those fields. A WC-* pattern is not catalog membership, and this schema does not compare endLine with startLine. validate_finding_metadata checks both.",
   "type": "object",
   "required": ["repo", "findings"],
   "properties": {
@@ -44,7 +45,72 @@
           "remediation": { "type": ["string", "null"] },
           "duplicateOf": { "type": ["string", "null"] },
           "acceptedRiskId": { "type": ["string", "null"] },
-          "notes": { "type": ["string", "null"] }
+          "notes": { "type": ["string", "null"] },
+          "weaknessClasses": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "Optional WC-* identifiers from the canonical weakness-class catalog. Omit when the mapping is uncertain. Do not invent a class to fill this field. uniqueItems rejects duplicates. Catalog membership is checked by validate_finding_metadata, not by this pattern.",
+            "items": {
+              "type": "string",
+              "pattern": "^WC-[A-Z0-9-]+$"
+            }
+          },
+          "entrySink": {
+            "type": "object",
+            "description": "Optional structured evidence. When present, every property below is required. JSON Schema does not compare endLine with startLine and does not require the two line numbers to appear together. validate_finding_metadata rejects one-sided references and reversed ranges.",
+            "additionalProperties": false,
+            "required": ["entryPoint", "flow", "sensitiveOperation", "controlGap", "evidence"],
+            "properties": {
+              "entryPoint": {
+                "type": "string",
+                "pattern": "\\S",
+                "description": "Evidence-backed entry point or trust boundary"
+              },
+              "flow": {
+                "type": "string",
+                "pattern": "\\S",
+                "description": "Data flow, control flow, or security decision"
+              },
+              "sensitiveOperation": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "controlGap": {
+                "type": "string",
+                "pattern": "\\S",
+                "description": "Absent or ineffective control"
+              },
+              "evidence": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["file", "note"],
+                  "properties": {
+                    "file": {
+                      "type": "string",
+                      "pattern": "^[^\\s/]",
+                      "description": "Repository-relative source or configuration path"
+                    },
+                    "symbol": {
+                      "type": "string",
+                      "pattern": "\\S",
+                      "description": "Optional symbol or configuration key"
+                    },
+                    "startLine": { "type": "integer", "minimum": 1 },
+                    "endLine": { "type": "integer", "minimum": 1 },
+                    "note": {
+                      "type": "string",
+                      "pattern": "\\S",
+                      "description": "What this reference establishes"
+                    }
+                  }
+                }
+              }
+            }
+          }
         },
         "additionalProperties": false
       }

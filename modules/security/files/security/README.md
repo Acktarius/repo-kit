@@ -10,7 +10,10 @@ scanner output.
 - `surface-inventory.md` — canonical surface and trust-boundary inventory contract
 - `findings-reviewed.json` — reviewed findings and lifecycle status
 - `accepted-risks.md` — explicitly accepted or deferred risks
-- `findings.schema.json` — findings-store structure
+- `findings.schema.json` — findings-store structure. Optional `weaknessClasses`
+  and `entrySink` may be omitted. Records without them stay valid. A toolkit
+  that still ships the previous schema rejects records that contain the new
+  fields. Init and sync do not migrate or enrich an existing findings store.
 - `templates/` — reusable finding templates
 - `plans/` — approved hardening and remediation plans
 

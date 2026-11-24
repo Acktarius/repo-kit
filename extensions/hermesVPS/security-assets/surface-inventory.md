@@ -117,8 +117,10 @@ suspected or unresolved and keep the missing side. Do not drop
 unresolved producer or consumer links.
 
 When a check exists, record whether it binds the same value, identity,
-tenant, and scope that the sensitive operation uses. A check on a
-different copy is `unresolved` for that use.
+tenant, and scope that the sensitive operation uses. A traceable,
+unchanged or demonstrably equivalent value may preserve the check. A
+changed value, or a value whose equivalence is not established, remains
+`unresolved` for that use.
 
 Do not copy credentials, private keys, personal records, or live
 payloads into the row.
@@ -173,7 +175,7 @@ stays `declared-only`.
 
 | surface_id | kind/entry | evidence | trust boundary/inputs | controls observed | sensitive operation | class IDs | review state/limits |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| S-1 | http-handler `GetOrder` | `pkg/orders/get.go` `GetOrder` lines 40-88. Declaration `GET /orders/{id}` in `pkg/orders/routes.go` lines 12-14. | Caller-supplied order id. Session subject `session.User`. | authn: observed, `session.User` at line 44. authz: observed, owner comparison at lines 61-66 before the load at line 70. | Load one order row for that owner. Response returns that row's fields. | WC-AUTHZ-OBJECT | handler inspected; route registration outside the approved paths (`declared-only`) |
+| S-1 | http-handler `GetOrder` | `pkg/orders/get.go` `GetOrder` lines 40-88. Declaration `GET /orders/{id}` in `pkg/orders/routes.go` lines 12-14. | Caller-supplied order id. Session subject `session.User`. | authn: unresolved. `session.User` at line 44 is the loaded subject; this synthetic example does not show the credential check. authz: observed, owner comparison at lines 61-66 before the load at line 70. | Load one order row for that owner. Response returns that row's fields. | WC-AUTHZ-OBJECT | handler inspected; route registration outside the approved paths (`declared-only`) |
 
 ### Example 2 — stored input, consumer unresolved
 

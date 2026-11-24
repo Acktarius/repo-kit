@@ -753,6 +753,8 @@ def cmd_decide(args: argparse.Namespace, **_: Any) -> int:
             "acceptance": args.acceptance or [], "decided_at_utc": intel.iso(now), "decided_by": "agent",
             **_decision_context(cand, run),
         }
+        if args.weakness_class:
+            assessment["weaknessClasses"] = args.weakness_class
         _record(state, assessment)
         if cand["candidate_id"] not in run["assessment"]["decided"]:
             run["assessment"]["decided"].append(cand["candidate_id"])
@@ -879,6 +881,11 @@ def _parser() -> argparse.ArgumentParser:
     d.add_argument("--unknown", action="append")
     d.add_argument("--verification", action="append")
     d.add_argument("--acceptance", action="append")
+    d.add_argument(
+        "--weakness-class", action="append",
+        help="optional WC-* id from the weakness-class catalog; repeat to record more than one. "
+             "Omit when uncertain. Not inferred from the advisory, and not a local source flow.",
+    )
 
     f = sub.add_parser("fetch-evidence")
     f.add_argument("--run", required=True)

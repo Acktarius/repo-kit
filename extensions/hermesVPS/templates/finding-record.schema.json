@@ -116,7 +116,42 @@
         "remediation": { "type": ["string", "null"] },
         "duplicateOf": { "type": ["string", "null"] },
         "acceptedRiskId": { "type": ["string", "null"] },
-        "notes": { "type": ["string", "null"] }
+        "notes": { "type": ["string", "null"] },
+        "weaknessClasses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Optional WC-* identifiers. Omit when uncertain. Catalog membership is checked by validate_finding_metadata against security-assets/weakness-classes.md, not by this pattern.",
+          "items": { "type": "string", "pattern": "^WC-[A-Z0-9-]+$" }
+        },
+        "entrySink": {
+          "type": "object",
+          "description": "Optional structured evidence. JSON Schema does not compare endLine with startLine. validate_finding_metadata rejects one-sided line references and reversed ranges.",
+          "additionalProperties": false,
+          "required": ["entryPoint", "flow", "sensitiveOperation", "controlGap", "evidence"],
+          "properties": {
+            "entryPoint": { "type": "string", "pattern": "\\S" },
+            "flow": { "type": "string", "pattern": "\\S" },
+            "sensitiveOperation": { "type": "string", "pattern": "\\S" },
+            "controlGap": { "type": "string", "pattern": "\\S" },
+            "evidence": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["file", "note"],
+                "properties": {
+                  "file": { "type": "string", "pattern": "^[^\\s/]" },
+                  "symbol": { "type": "string", "pattern": "\\S" },
+                  "startLine": { "type": "integer", "minimum": 1 },
+                  "endLine": { "type": "integer", "minimum": 1 },
+                  "note": { "type": "string", "pattern": "\\S" }
+                }
+              }
+            }
+          }
+        }
       },
       "additionalProperties": false
     }

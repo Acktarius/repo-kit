@@ -125,7 +125,14 @@
           "source_fingerprint": { "type": ["string", "null"] },
           "inventory_fingerprint": { "type": ["string", "null"] },
           "kev_listed": { "type": "boolean" },
-          "history": { "type": "array" }
+          "history": { "type": "array" },
+          "weaknessClasses": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "Optional explicit WC-* ids. Not inferred from advisory text. Membership is checked when the canonical finding is written.",
+            "items": { "type": "string", "pattern": "^WC-[A-Z0-9-]+$" }
+          }
         }
       }
     },

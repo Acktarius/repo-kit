@@ -33,9 +33,11 @@ from lib.hermes_vps_common import (  # noqa: E402
     die,
     expect_type,
     is_within,
+    load_catalog_ids,
     load_json,
     load_schema,
     sha256_file,
+    validate_finding_metadata,
     validate_identifier,
     validate_manifest_identity,
     validate_run,
@@ -305,6 +307,41 @@ def declared_completion(report_path: str, header: dict[str, Any]) -> str:
     return declared
 
 
+def _catalog_ids(ctx: dict[str, Any]) -> list[str]:
+    path = os.path.join(ctx["policy_prefix"], "security-assets", "weakness-classes.md")
+    return load_catalog_ids(path)
+
+
+def _check_proposed_metadata(ctx: dict[str, Any], finding: Any, label: str) -> None:
+    """Catalog membership and line-range checks for an optional classified finding."""
+    if not isinstance(finding, dict):
+        return
+    if "weaknessClasses" not in finding and "entrySink" not in finding:
+        return
+    ids = _catalog_ids(ctx) if "weaknessClasses" in finding else []
+    validate_finding_metadata(finding, ids, label)
+
+
+def _validate_export_document(ctx: dict[str, Any], export: dict[str, Any]) -> None:
+    validate_schema(export, load_schema(ctx["policy_prefix"], "findings-export.schema.json"), "export")
+    findings = export.get("findings") or []
+    if any(
+        isinstance(item, dict)
+        and isinstance(item.get("proposed_record"), dict)
+        and "weaknessClasses" in item["proposed_record"]
+        for item in findings
+    ):
+        ids = _catalog_ids(ctx)
+    else:
+        ids = []
+    for i, item in enumerate(findings):
+        if not isinstance(item, dict):
+            continue
+        record = item.get("proposed_record")
+        if isinstance(record, dict) and ("weaknessClasses" in record or "entrySink" in record):
+            validate_finding_metadata(record, ids, f"findings[{i}].proposed_record")
+
+
 def _validate_payload(
     ctx: dict[str, Any], phase: str, subject_id: str | None, path: str
 ) -> dict[str, Any]:
@@ -333,6 +370,8 @@ def _validate_payload(
         dupes = sorted({i for i in ids if ids.count(i) > 1})
         if dupes:
             raise ValidationError(f"--payload-json: duplicate candidate_id values {dupes}")
+    if phase == "070":
+        _check_proposed_metadata(ctx, data.get("proposed_finding"), "payload.proposed_finding")
     return data
 
 
@@ -996,6 +1035,7 @@ _CANONICAL_FIELDS = {
     "firstSeen", "lastReviewed", "source", "files",
     "summary", "exploitPath", "remediation",
     "duplicateOf", "acceptedRiskId", "notes",
+    "weaknessClasses", "entrySink",
 }
 
 
@@ -1155,7 +1195,7 @@ def _write_findings_export(
 ) -> dict[str, Any]:
     """Build, schema-check, exclusively write, and register a findings export (lock held)."""
     export, inputs = _build_export(ctx, manifest, hours, source, require_fresh)
-    validate_schema(export, load_schema(ctx["policy_prefix"], "findings-export.schema.json"), "export")
+    _validate_export_document(ctx, export)
     version = _next_findings_version(manifest)
     path = os.path.join(ctx["reports_dir"], f"findings-v{version}.json")
     _validate_destination_path(path, ctx["reports_dir"], ctx)
@@ -1343,7 +1383,7 @@ def cmd_validate_findings(args: argparse.Namespace, run_json_path: str) -> int:
 
     try:
         export = load_json(findings_file)
-        validate_schema(export, load_schema(ctx["policy_prefix"], "findings-export.schema.json"), "export")
+        _validate_export_document(ctx, export)
     except ValidationError as exc:
         die(f"findings file failed schema validation: {exc}")
     for key, expected in (

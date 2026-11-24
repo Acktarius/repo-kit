@@ -134,7 +134,7 @@ def build_record(cand: dict[str, Any], a: dict[str, Any], run: dict[str, Any], s
         "Verification: " + " ".join(_verification(cand, a)),
         "Acceptance criteria: " + " ".join(_acceptance(cand, a, sg_id)),
     ])
-    return {
+    record = {
         "id": sg_id,
         "title": f"{cand['canonical_id']} affects {comp['name']} {comp.get('version') or ''}".strip(),
         "status": "open",
@@ -152,6 +152,13 @@ def build_record(cand: dict[str, Any], a: dict[str, Any], run: dict[str, Any], s
         "acceptedRiskId": None,
         "notes": notes,
     }
+    classes = a.get("weaknessClasses")
+    if classes:
+        record["weaknessClasses"] = classes
+    sink = a.get("entrySink")
+    if sink:
+        record["entrySink"] = sink
+    return record
 
 
 def _matches_existing(record: dict[str, Any], cand: dict[str, Any]) -> bool:
@@ -160,6 +167,24 @@ def _matches_existing(record: dict[str, Any], cand: dict[str, Any]) -> bool:
         return True
     name = cand["component"]["name"].lower()
     return any(alias in text for alias in cand["aliases"]) and name in text.lower()
+
+
+def _metadata_problem(root: str, schema: dict[str, Any], record: dict[str, Any]) -> str | None:
+    """Return an error when optional classification metadata is present and invalid."""
+    if "weaknessClasses" not in record and "entrySink" not in record:
+        return None
+    try:
+        st.validate_schema(record, schema["properties"]["findings"]["items"], "finding")
+        ids = st.catalog_ids_for_document(root, [record])
+        st.validate_finding_metadata(record, ids, "finding")
+    except st.StateError as exc:
+        return str(exc)
+    return None
+
+
+def _validate_store(root: str, doc: dict[str, Any], schema: dict[str, Any], label: str) -> None:
+    ids = st.catalog_ids_for_document(root, doc.get("findings") or [])
+    st.validate_findings_document(doc, schema, ids, label)
 
 
 def sync_findings(root: str, state: dict[str, Any], run: dict[str, Any], now: datetime) -> dict[str, Any]:
@@ -182,7 +207,7 @@ def sync_findings(root: str, state: dict[str, Any], run: dict[str, Any], now: da
         return result
     try:
         doc, schema = st.load_json(fpath), st.load_json(spath)
-        st.validate_schema(doc, schema, "findings")
+        _validate_store(root, doc, schema, "findings")
     except (OSError, ValueError, st.StateError) as exc:
         result["errors"].append(f"existing {FINDINGS_REL} is unreadable or invalid ({exc}); not modified")
         return result
@@ -232,6 +257,12 @@ def sync_findings(root: str, state: dict[str, Any], run: dict[str, Any], now: da
                 continue
             proposed = build_record(cand, a, run, record["id"])
             proposed["firstSeen"] = record.get("firstSeen") or proposed["firstSeen"]
+            problem = _metadata_problem(root, schema, proposed)
+            if problem:
+                result["blocked"].append(
+                    f"{cid}: {record['id']} not refreshed; optional classification metadata is invalid ({problem})"
+                )
+                continue
             if human_touched:
                 if _fields_hash(proposed) != _fields_hash(record):
                     result["conflicts"].append(f"{cid}: {record['id']} was edited by a human; agent update "
@@ -255,6 +286,12 @@ def sync_findings(root: str, state: dict[str, Any], run: dict[str, Any], now: da
             continue
         sg_id = _next_sg(findings)
         record = build_record(cand, a, run, sg_id)
+        problem = _metadata_problem(root, schema, record)
+        if problem:
+            result["blocked"].append(
+                f"{cid}: canonical record not written; optional classification metadata is invalid ({problem})"
+            )
+            continue
         findings.append(record)
         by_id[sg_id] = record
         state["findings"][cid] = {"sg_id": sg_id, "written_fields_sha256": _fields_hash(record),
@@ -264,12 +301,12 @@ def sync_findings(root: str, state: dict[str, Any], run: dict[str, Any], now: da
 
     if changed:
         try:
-            st.validate_schema(doc, schema, "findings")
+            _validate_store(root, doc, schema, "findings")
         except st.StateError as exc:
             result["errors"].append(f"prospective {FINDINGS_REL} failed schema validation ({exc}); not written")
             return result
         st.write_json_atomic(fpath, doc)
-        st.validate_schema(st.load_json(fpath), schema, "findings")
+        _validate_store(root, st.load_json(fpath), schema, "findings")
         result["written"] = True
     return result
 
@@ -315,6 +352,10 @@ def _item_block(state: dict[str, Any], cid: str, sync: dict[str, Any]) -> list[s
         f"{'listed ' + str(cand['kev'].get('date_added')) if cand.get('kev') else 'not listed'}",
         f"- Rationale: {a['rationale']}",
         "- Evidence: " + ("; ".join(_evidence_lines(a)) or "(none)"),
+        *(["- Weakness classes (explicit; not inferred from the advisory): " + ", ".join(a["weaknessClasses"])]
+          if a.get("weaknessClasses") else []),
+        *(["- Structured local entry/sink was supplied on the assessment. An advisory match is not application reachability."]
+          if a.get("entrySink") else []),
         "- Sources: " + "; ".join(_source_refs(cand)),
         f"- Proposed mitigation: {_mitigation(cand, a) or UNKNOWN_MITIGATION}",
         "- Verification: " + " ".join(_verification(cand, a)),

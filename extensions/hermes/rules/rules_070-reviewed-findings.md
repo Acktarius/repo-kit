@@ -42,7 +42,11 @@ For the current repo-kit schema:
 - use only allowed severity and confidence values;
 - do not add undeclared fields;
 - record files as repository-relative paths;
-- place detailed advisory and reference evidence in notes.
+- place detailed advisory and reference evidence in notes;
+- when the evidence establishes them, set optional `weaknessClasses` and
+  `entrySink`. Omit `weaknessClasses` when the mapping is uncertain and
+  explain that. Do not invent a class. These fields do not lower the
+  existing evidence bar.
 
 If the schema differs from these expectations, report the difference
 and follow the approved current schema rather than assuming compatibility.

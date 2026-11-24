@@ -15,6 +15,7 @@ The candidate ID is provided in the trigger message (`--trigger-input`).
 4. `rules/rules_070-reviewed-findings.md`
 5. `templates/finding-record.schema.json`
 6. `security-assets/findings.schema.json`
+7. `security-assets/weakness-classes.md`
 
 ## 2. Target
 

@@ -78,10 +78,15 @@ $H decide --run <id> --candidate CA-xxxxxxxxxx --status <affected|not_affected|f
   --evidence path/to/file.py:40-52 [--evidence evidence:<sha256>] \
   [--justification <vex justification>] [--mitigation "<advisory-backed fix>"] [--mitigation-ref <url>] \
   [--exploit-path "<input → sink>"] [--unknown "<what is missing>"] \
-  [--verification "<check>"] [--acceptance "<criterion>"]
+  [--verification "<check>"] [--acceptance "<criterion>"] \
+  [--weakness-class WC-...]
 ```
 
 Rules:
+- `--weakness-class` is optional and repeatable. Pass it only when the
+  assessment already established that catalog id. Do not infer a class from
+  advisory text. Do not supply a local entry/sink: an advisory match is not
+  application reachability, and this helper does not invent one.
 - Decide only candidates in this run's worklist.
 - `prior_decision` is historical: it was invalidated for the listed reasons.
   Re-derive the decision from current evidence; never copy it.

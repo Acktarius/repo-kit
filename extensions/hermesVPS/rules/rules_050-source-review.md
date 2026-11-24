@@ -79,6 +79,11 @@ and relevant code or configuration excerpt.  Never invent findings.
 Distinguish confirmed evidence from uncertainty.  A supported candidate also
 identifies a reachable entry point or trust boundary, the flow or security
 decision, the sensitive operation, and the absent or ineffective control.
+When that same candidate section establishes them, name catalog `WC-*` ids
+and those four points there. Cross-reference the file, line, and excerpt
+already listed. Do not add a second evidence table. Omit the class when the
+mapping is uncertain. Candidates stay candidates: do not assign a reviewed
+status or an `SG-*` id, and do not write `security/findings-reviewed.json`.
 
 ## Report sections (required)
 

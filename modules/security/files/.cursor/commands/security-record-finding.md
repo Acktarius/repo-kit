@@ -54,7 +54,10 @@ Apply the conservative procedure of "Security generate finding":
 2. Check reviewed findings and accepted risks.
 3. Classify it as new, duplicate, accepted-risk, or rejected.
 4. For a supported new finding, generate an object matching the
-   current findings schema.
+   current findings schema. When the evidence establishes them, include
+   optional weaknessClasses and entrySink. Omit weaknessClasses when the
+   mapping is uncertain and explain that. Do not invent a class. These
+   fields do not lower the supported-finding threshold.
 
 Do not assume another command has already performed these steps.
 Do not invoke a separate agent or command automatically.
@@ -111,6 +114,10 @@ After explicit approval:
 - if they changed, regenerate the proposal and request fresh approval;
 - use an available local schema validator to validate the prospective
   complete findings document against security/findings.schema.json;
+- the schema does not check catalog membership or that endLine is at least
+  startLine. Also reject unknown WC-* ids, one-sided line numbers, and
+  reversed ranges. validate_finding_metadata is that check when the
+  repo-kit validator is the one available;
 - if validation is unavailable or fails, stop without writing;
 - do not install dependencies, use the network, or execute target
   project scripts to obtain validation without separate approval;

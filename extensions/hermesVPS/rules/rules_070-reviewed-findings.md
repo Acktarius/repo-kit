@@ -65,6 +65,13 @@ that artifact X was registered for the same `candidate_id`.
 Support every proposed finding with concrete evidence (file, line, excerpt).
 Never invent exploit paths, impact, or remediation.
 Preserve unknowns and blockers explicitly.
+When the evidence establishes them, include optional `weaknessClasses` and
+`entrySink` on `proposed_finding`. Read `security-assets/weakness-classes.md`
+for the ids. Omit the class when the mapping is uncertain and say why.
+Do not invent a class. These fields do not lower the evidence bar, do not
+assign a reviewed-store status, and do not allocate an `SG-*` id.
+Do not write `security/findings-reviewed.json`. Cross-reference evidence
+already in the assessment instead of repeating it in a second table.
 
 ## Report sections (required)
 

@@ -24,6 +24,14 @@ Finding object required fields: `id`, `title`, `status`, `severity`, `files`.
 - **status:** `open` | `fixed` | `accepted-risk` | `duplicate` | `rejected`
 - **severity:** `low` | `medium` | `high` | `critical`
 - **confidence (optional):** `low` | `medium` | `high` | null
+- **weaknessClasses (optional):** non-empty unique `WC-*` ids from `weakness-classes.md`
+- **entrySink (optional):** entry point, flow, sensitive operation, control gap, and source references
+
+Records that omit the optional fields stay valid. A toolkit that still ships
+the previous schema rejects records that contain `weaknessClasses` or
+`entrySink`. This bundle does not migrate a target findings store. Catalog
+membership and `endLine >= startLine` are checked by `validate_finding_metadata`,
+not by JSON Schema alone.
 
 Phase 010 (inventory) does **not** generate findings. Presence of the schema
 does not authorize creating or updating `findings-reviewed.json`.

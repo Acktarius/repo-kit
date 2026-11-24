@@ -175,7 +175,10 @@ PHASE_TABLE: dict[str, PhaseInfo] = {
             "rules/rules_070-reviewed-findings.md",
             "tasks/070-reviewed-findings.md",
             "templates/phase-070-report.md",
-            extra=["templates/finding-record.schema.json"],
+            extra=[
+                "templates/finding-record.schema.json",
+                "security-assets/weakness-classes.md",
+            ],
         ),
         subject_id_required=True,
         payload_required=True,

@@ -140,6 +140,12 @@ For each supported candidate, include:
 
 Do not allocate permanent SG IDs or update canonical records automatically.
 Do not force unknown severity into the reviewed schema.
+When the candidate section already establishes them, name catalog `WC-*`
+ids and the entry point, flow, sensitive operation, and control gap there.
+Cross-reference the file, line, and excerpt already in that section. Do not
+add a second evidence table. Omit the class when the mapping is uncertain.
+These labels do not assign a reviewed status or an `SG-*` id, and they do
+not write `security/findings-reviewed.json`.
 Do not duplicate advisory candidates from Rule 040; cross-reference them.
 
 ## Required response

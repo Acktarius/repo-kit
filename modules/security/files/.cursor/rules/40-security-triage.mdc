@@ -15,3 +15,10 @@ alwaysApply: false
 - Do not reopen accepted risks unless code or severity changed materially.
 - Do not mark a finding fixed without current evidence.
 - Propose updates clearly and leave final approval to a human reviewer.
+- Keep existing `weaknessClasses` and `entrySink` unless an approved change
+  replaces them. Do not backfill old findings from titles, keywords, or
+  advisory text.
+- A missing optional class or entry/sink is not evidence that the finding
+  is invalid.
+- Do not treat a shared weakness class as a reason to mark findings
+  duplicates. Deduplicate on the issue, not the label.

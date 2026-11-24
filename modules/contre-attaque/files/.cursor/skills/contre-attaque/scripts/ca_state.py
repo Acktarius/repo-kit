@@ -116,7 +116,7 @@ def locked(root: str, timeout: float = LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
 
 _ANNOTATIONS = {"$schema", "$id", "title", "description", "default", "format", "$comment"}
 _KEYWORDS = {"type", "const", "enum", "required", "properties", "additionalProperties",
-             "items", "pattern", "minimum", "minItems"}
+             "items", "pattern", "minimum", "minItems", "uniqueItems"}
 
 
 def _type_ok(value: Any, typ: str) -> bool:
@@ -163,9 +163,95 @@ def validate_schema(value: Any, schema: dict[str, Any], label: str = "$") -> Non
     if isinstance(value, list):
         if "minItems" in schema and len(value) < schema["minItems"]:
             raise StateError(f"{label}: needs at least {schema['minItems']} item(s)")
+        if schema.get("uniqueItems") is True:
+            for i in range(len(value)):
+                for j in range(i):
+                    if value[i] == value[j]:
+                        raise StateError(f"{label}: duplicate item at [{i}]")
+        elif "uniqueItems" in schema and schema["uniqueItems"] is not False:
+            raise StateError(f"{label}: uniqueItems must be a boolean")
         for i, item in enumerate(value):
             if "items" in schema:
                 validate_schema(item, schema["items"], f"{label}[{i}]")
+
+
+_WC_HEADING = re.compile(r"^### (WC-[A-Z0-9-]+)\s*$", re.MULTILINE)
+
+
+def catalog_class_ids(catalog_text: str) -> list[str]:
+    """Return WC-* headings from the canonical weakness-class catalog."""
+    ids = _WC_HEADING.findall(catalog_text)
+    if not ids:
+        raise StateError("weakness-class catalog has no ### WC-* headings")
+    if len(ids) != len(set(ids)):
+        raise StateError("weakness-class catalog has duplicate ### WC-* headings")
+    return ids
+
+
+def validate_finding_metadata(finding: Any, catalog_ids: Any, label: str = "finding") -> None:
+    """Reject unknown or duplicate WC-* ids and invalid entrySink line ranges.
+
+    Call after validate_schema. A WC-* pattern is not catalog membership, and
+    JSON Schema does not compare endLine with startLine.
+    """
+    if not isinstance(finding, dict):
+        raise StateError(f"{label}: finding metadata requires an object")
+    allowed = set(catalog_ids)
+    classes = finding.get("weaknessClasses")
+    if classes is not None:
+        if not isinstance(classes, list):
+            raise StateError(f"{label}.weaknessClasses: expected an array")
+        seen: set[str] = set()
+        for i, item in enumerate(classes):
+            if not isinstance(item, str) or item in seen:
+                raise StateError(f"{label}.weaknessClasses[{i}]: duplicate or non-string {item!r}")
+            seen.add(item)
+            if item not in allowed:
+                raise StateError(f"{label}.weaknessClasses[{i}]: {item!r} is not a catalog WC-* id")
+    sink = finding.get("entrySink")
+    if not isinstance(sink, dict):
+        return
+    evidence = sink.get("evidence")
+    if not isinstance(evidence, list):
+        return
+    for i, ref in enumerate(evidence):
+        if not isinstance(ref, dict):
+            continue
+        has_start = "startLine" in ref and ref.get("startLine") is not None
+        has_end = "endLine" in ref and ref.get("endLine") is not None
+        if has_start != has_end:
+            raise StateError(
+                f"{label}.entrySink.evidence[{i}]: startLine and endLine must be supplied together"
+            )
+        if has_start and has_end and ref["endLine"] < ref["startLine"]:
+            raise StateError(
+                f"{label}.entrySink.evidence[{i}]: endLine {ref['endLine']} is before startLine {ref['startLine']}"
+            )
+
+
+def validate_findings_document(
+    doc: Any, schema: dict[str, Any], catalog_ids: Any, label: str = "findings"
+) -> None:
+    """Schema-check a findings store, then check optional classification metadata."""
+    validate_schema(doc, schema, label)
+    findings = doc.get("findings") if isinstance(doc, dict) else None
+    if not isinstance(findings, list):
+        return
+    for i, finding in enumerate(findings):
+        validate_finding_metadata(finding, catalog_ids, f"{label}[{i}]")
+
+
+def catalog_ids_for_document(root: str, findings: Any) -> list[str]:
+    """Load catalog ids when a finding carries weaknessClasses. Otherwise return []."""
+    if not any(isinstance(f, dict) and "weaknessClasses" in f for f in findings or []):
+        return []
+    path = os.path.join(root, "security", "weakness-classes.md")
+    if not os.path.isfile(path):
+        raise StateError(
+            "security/weakness-classes.md is missing; weaknessClasses cannot be checked"
+        )
+    with open(path, encoding="utf-8") as fh:
+        return catalog_class_ids(fh.read())
 
 
 _SCHEMA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

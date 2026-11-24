@@ -9,6 +9,7 @@
 2. `.repo-kit/hermes/review-rules/rules_000-safety-and-scope.md`
 3. `.repo-kit/hermes/review-rules/rules_005-report-output.md`
 4. `.repo-kit/hermes/review-rules/rules_070-reviewed-findings.md`
+5. `.repo-kit/hermes/review-rules/weakness-classes.md`
 
 If any of these files is missing, report the missing path and stop.
 

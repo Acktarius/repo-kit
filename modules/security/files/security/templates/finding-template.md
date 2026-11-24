@@ -30,3 +30,18 @@
 ## Review notes
 
 Record relevant status changes and supporting evidence.
+
+## Optional classification
+
+Omit this section when the mapping is uncertain or the evidence is incomplete.
+Do not invent a class. Do not use an empty list or a placeholder to fill it.
+`S-*` and `F-*` ids stay in the review narrative; they are not store fields.
+
+- **Weakness classes:** one or more catalog `WC-*` ids, only when the evidence supports each one
+- **Entry point:** evidence-backed trust boundary
+- **Flow:** data flow, control flow, or security decision
+- **Sensitive operation:** the sensitive use
+- **Control gap:** the absent or ineffective control
+- **Evidence:** repository-relative path, optional symbol, optional line range, and what that reference establishes
+
+A line range needs both ends, with the end on or after the start.
