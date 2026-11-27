@@ -1,0 +1,35 @@
+---
+description: Keep roadmap, progress, and decisions in sync while slicing work; use /slice for status.
+alwaysApply: true
+---
+
+# Roadmap, progress, and decisions
+
+Tracked planning lives under `docs/`:
+
+| File | Role |
+| --- | --- |
+| `docs/roadmap.md` | Ordered slices; ✅ / ⬜ status |
+| `docs/progress.md` | Dated log of what was verified |
+| `docs/DECISIONS.md` | Durable CLI / path / default / format choices |
+
+Session handoff (gitignored): `.repo-kit/chat/current.md` and `current.json` via the chat-context skill.
+
+## When the user names a slice
+
+If they say **let's work on slice N**, **continue slice N**, or similar:
+
+1. Follow `.cursor/skills/slice/SKILL.md` for that slice (or run `/slice N`).
+2. Do not re-ingest the whole roadmap every turn — only the active slice and notes tied to it.
+3. Prefer concrete next checks from **Done when** / **Next** over inventing new scope.
+
+## When a slice finishes
+
+1. Set its Status row to ✅ in `docs/roadmap.md`.
+2. Append a dated section to `docs/progress.md` (What changed / Checks / Live result / Next).
+3. If the slice changed a CLI option, default, file location, or output format, append a `DEC-XXXX` entry in `docs/DECISIONS.md` and link it from the slice or progress note.
+4. Optionally refresh chat-context so the handoff points at the next slice.
+
+## Status without a named slice
+
+Use `/slice` (no argument) — do not dump full docs into the reply unless asked.
